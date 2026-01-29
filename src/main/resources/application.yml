@@ -1,0 +1,45 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: community
+
+  # 1. ????? (?? url ????????? password)
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/community?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai
+    username: root
+    password: yangyiming.com
+  # 2. Redis ??
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      password: yangyiming.com
+      database: 0
+
+  # 3. RabbitMQ ??
+  rabbitmq:
+    host: localhost
+    port: 5672
+    username: zongzuo
+    password: yangyiming.com
+
+  # 4. ???? (SMTP) - ????????????????????????????????
+  mail:
+    host: smtp.163.com
+    username: metrocommunity@163.com # ?????
+    password: GTg3F34BVVjFK4XB    # ?????
+    default-encoding: UTF-8
+    debug: true
+
+# MyBatis-Plus ??
+mybatis-plus:
+  configuration:
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl # ??????? SQL?????
+  global-config:
+    db-config:
+      logic-delete-field: deleted # ???????
+      logic-delete-value: 1
+      logic-not-delete-value: 0
