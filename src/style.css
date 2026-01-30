@@ -1,79 +1,79 @@
+/* src/style.css */
+
+/* 1. CSS Reset & 全局设置 */
 :root {
-  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
+  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
   line-height: 1.5;
   font-weight: 400;
-
-  color-scheme: light dark;
-  color: rgba(255, 255, 255, 0.87);
-  background-color: #242424;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
-
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-a:hover {
-  color: #535bf2;
+  text-align: left; /* 强制左对齐 */
+  background-color: #f6f6f6;
+  color: #213547;
 }
 
 body {
   margin: 0;
-  display: flex;
-  place-items: center;
+  padding: 0;
   min-width: 320px;
   min-height: 100vh;
 }
 
-h1 {
-  font-size: 3.2em;
-  line-height: 1.1;
+/* 2. 滚动条美化 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-thumb {
+  background: #ccc;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
 }
 
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  background-color: #1a1a1a;
-  cursor: pointer;
-  transition: border-color 0.25s;
+/* 3. 自定义工具栏“文字按钮”样式 */
+/* 这会让 icon="v-md-custom-text-align" 的按钮直接显示文字，而不是图标 */
+.v-md-custom-text-align {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: auto !important; /* 宽度自适应 */
+  padding: 0 5px;
+  font-size: 14px;
+  font-style: normal;
 }
-button:hover {
-  border-color: #646cff;
+.v-md-custom-text-align::before {
+  content: '对齐方式'; /* 按钮上显示的文字 */
+  color: #606266;
 }
-button:focus,
-button:focus-visible {
-  outline: 4px auto -webkit-focus-ring-color;
-}
-
-.card {
-  padding: 2em;
+.v-md-editor__toolbar-item:hover .v-md-custom-text-align::before {
+  color: #000;
 }
 
-#app {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 2rem;
-  text-align: center;
+/* src/style.css */
+
+/* ... (保留上面的全局样式) ... */
+
+/* --- 核心修复：自定义“对齐”图标 --- */
+/* 1. 定义图标容器 */
+.v-md-icon-align {
+  display: inline-block;
+  width: 24px;
+  height: 24px;
+  /* 强制覆盖字体图标的默认行为 */
+  font-family: sans-serif !important;
+  /* 使用 SVG 绘制一个类似知乎的“段落对齐”图标 */
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' width='24' height='24'%3E%3Cpath fill='none' d='M0 0h24v24H0z'/%3E%3Cpath d='M3 4h18v2H3V4zm0 15h18v2H3v-2zm0-5h12v2H3v-2zm0-5h12v2H3V9z' fill='%23666'/%3E%3C/svg%3E") no-repeat center center;
+  background-size: 18px;
 }
 
-@media (prefers-color-scheme: light) {
-  :root {
-    color: #213547;
-    background-color: #ffffff;
-  }
-  a:hover {
-    color: #747bff;
-  }
-  button {
-    background-color: #f9f9f9;
-  }
+/* 2. 鼠标悬停时图标变黑 */
+.v-md-editor__toolbar-item:hover .v-md-icon-align {
+  opacity: 0.8;
+  filter: brightness(0); /* 变纯黑 */
+}
+
+/* 3. 强制隐藏原本可能存在的伪元素文字 */
+.v-md-icon-align::before {
+  content: '' !important;
+  display: none !important;
 }
