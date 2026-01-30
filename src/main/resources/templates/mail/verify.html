@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="zh" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <title>邮箱验证码</title>
+    <style>
+        /* 简单的 CSS Reset */
+        body { margin: 0; padding: 0; font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; background-color: #f4f4f5; }
+        .container {
+            max-width: 600px;
+            margin: 20px auto;
+            background-color: #ffffff;
+            border-radius: 8px;
+            overflow: hidden; /* 防止圆角溢出 */
+            box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.1);
+        }
+        .header {
+            background: linear-gradient(135deg, #409EFF 0%, #0056b3 100%); /* 仿雪莲Pro的蓝色渐变 */
+            color: white;
+            padding: 30px 20px;
+            text-align: center;
+        }
+        .header h1 { margin: 0; font-size: 24px; font-weight: 500; }
+        .content { padding: 30px; color: #606266; line-height: 1.8; }
+        .code-box {
+            background-color: #ecf5ff;
+            border-left: 5px solid #409EFF;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 4px;
+        }
+        .code {
+            font-size: 28px;
+            font-weight: bold;
+            color: #409EFF;
+            letter-spacing: 4px; /* 字间距加大 */
+            display: block;
+            margin-bottom: 10px;
+        }
+        .footer {
+            background-color: #fbfbfb;
+            padding: 15px;
+            text-align: center;
+            font-size: 12px;
+            color: #909399;
+            border-top: 1px solid #ebeef5;
+        }
+        .link { color: #409EFF; text-decoration: none; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h1>Community 开发者社区</h1>
+    </div>
+
+    <div class="content">
+        <p>尊敬的用户，您好！</p>
+        <p>您正在注册 Community 社区账号，您的验证码是：</p>
+
+        <div class="code-box">
+            <span class="code" th:text="${code}">888888</span>
+            <span style="font-size: 14px; color: #909399;">(有效期 5 分钟，请勿泄露给他人)</span>
+        </div>
+
+        <p>如果您没有进行此操作，请忽略此邮件。</p>
+        <p style="margin-top: 30px; text-align: right;">
+            —— Community 团队
+        </p>
+    </div>
+
+    <div class="footer">
+        <p>此邮件由系统自动发送，请勿回复</p>
+        <p>Copyright © 2026 Community. All Rights Reserved.</p>
+    </div>
+</div>
+</body>
+</html>

@@ -1,22 +1,30 @@
 package cumt.zongzuo.community.mq;
 
+import jakarta.mail.MessagingException;
+import jakarta.mail.internet.MimeMessage;
 import org.springframework.amqp.rabbit.annotation.RabbitHandler;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.mail.SimpleMailMessage;
 import org.springframework.mail.javamail.JavaMailSender;
+import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.stereotype.Component;
+import org.thymeleaf.TemplateEngine;
+import org.thymeleaf.context.Context;
+
 import java.util.Map;
 
 @Component
-@RabbitListener(queues = "mail.queue") // 监听刚才定义的队列
+@RabbitListener(queues = "mail.queue")
 public class MailConsumer {
 
     @Autowired
     private JavaMailSender mailSender;
 
-    // 获取配置文件里的发送人邮箱
+    // 【新增】注入模板引擎
+    @Autowired
+    private TemplateEngine templateEngine;
+
     @Value("${spring.mail.username}")
     private String from;
 
@@ -25,19 +33,31 @@ public class MailConsumer {
         String email = map.get("email");
         String code = map.get("code");
 
+        // 创建上下文对象，用于给模板传递数据
+        Context context = new Context();
+        context.setVariable("code", code); // 对应模板里的 ${code}
+        context.setVariable("email", email);
+
+        // 核心：解析 HTML 模板
+        // "mail/verify" 对应 resources/templates/mail/verify.html
+        String content = templateEngine.process("mail/verify", context);
+
         try {
-            SimpleMailMessage message = new SimpleMailMessage();
-            message.setFrom(from);
-            message.setTo(email);
-            // 修改邮件标题和正文，使其看起来更正式
-            message.setSubject("【Community社区】账号安全验证"); // 不要写“测试”
-            message.setText("尊敬的用户您好：\n\n您正在注册 Community 开发者社区，您的验证码是：" + code + "。\n\n该验证码 5 分钟内有效，请尽快完成注册。\n如果这不是您本人的操作，请忽略此邮件。");
+            // 使用 MimeMessage 发送 HTML 邮件
+            MimeMessage message = mailSender.createMimeMessage();
+            MimeMessageHelper helper = new MimeMessageHelper(message, true); // true 表示支持多部分(附件/HTML)
+
+            helper.setFrom(from);
+            helper.setTo(email);
+            helper.setSubject("【Community】您的注册验证码");
+
+            // 第二个参数 true 表示这是一段 HTML 代码
+            helper.setText(content, true);
 
             mailSender.send(message);
-            System.out.println("✅ 邮件已发送给: " + email);
-        } catch (Exception e) {
+            System.out.println("✅ HTML 邮件已发送给: " + email);
+        } catch (MessagingException e) {
             System.err.println("❌ 邮件发送失败: " + e.getMessage());
-            // 实际生产中这里可能需要重试机制
         }
     }
 }
