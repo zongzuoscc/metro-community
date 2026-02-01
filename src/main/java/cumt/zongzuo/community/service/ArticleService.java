@@ -13,4 +13,6 @@ public interface ArticleService extends IService<Article> {
     List<Article> getHotRank();
     // ArticleService.java
     void publishArticle(ArticleDTO dto, Long userId);
+
+    Article getDetail(Long id);
 }
