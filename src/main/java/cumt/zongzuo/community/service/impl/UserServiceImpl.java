@@ -85,7 +85,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
 
     @Override
     public Result<Map<String, Object>> login(LoginDTO dto) {
-        // 1. 查询用户 (使用 ServiceImpl 自带的 getOne 方法)
+        // 1. 查询用户
         User user = getOne(new QueryWrapper<User>().eq("email", dto.getEmail()));
 
         if (user == null) return Result.error("用户不存在");
@@ -101,6 +101,10 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         // 4. 返回数据
         Map<String, Object> map = new HashMap<>();
         map.put("token", token);
+
+        // 【核心修复】必须把 ID 返回给前端！
+        map.put("id", user.getId());
+
         map.put("username", user.getUsername());
         map.put("avatar", user.getAvatar());
 

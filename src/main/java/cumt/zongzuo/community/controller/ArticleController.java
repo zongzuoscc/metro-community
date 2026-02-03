@@ -45,4 +45,11 @@ public class ArticleController {
         articleService.publishArticle(dto, userId);
         return Result.success("发布成功");
     }
+
+    // 获取文章详情
+    @GetMapping("/detail/{id}")
+    public Result<Article> getDetail(@PathVariable Long id) {
+        Article article = articleService.getDetail(id);
+        return Result.success(article);
+    }
 }

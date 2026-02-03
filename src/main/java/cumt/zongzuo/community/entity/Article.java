@@ -36,4 +36,16 @@ public class Article {
 
     @TableField(exist = false)
     private String authorAvatar;
+
+    @TableField(exist = false)
+    private String authorIntro;       // 作者简介
+
+    @TableField(exist = false)
+    private Long authorArticleCount;  // 作者文章总数
+
+    @TableField(exist = false)
+    private Long authorTotalLikes;    // 作者获赞总数
+
+    @TableField(exist = false)
+    private Boolean isLiked; // 当前登录用户是否已点赞
 }
