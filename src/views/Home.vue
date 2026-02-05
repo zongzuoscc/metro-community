@@ -26,7 +26,7 @@
 
         <div class="navbar-right">
           <div class="action-btns">
-            <el-button type="primary" round>提问</el-button>
+            <el-button type="primary" round @click="$router.push('/publish')">提问</el-button>
           </div>
 
           <div class="user-area">
@@ -35,7 +35,7 @@
 
             <div class="profile-box">
               <template v-if="user && user.username">
-                <el-dropdown trigger="click">
+                <el-dropdown trigger="click" @command="handleCommand">
                   <div class="avatar-wrapper">
                     <el-avatar
                         shape="square"
@@ -48,10 +48,17 @@
                   </div>
                   <template #dropdown>
                     <el-dropdown-menu>
-                      <el-dropdown-item @click="$router.push('/settings')">
+                      <el-dropdown-item command="userCenter">
+                        <el-icon><User /></el-icon> 个人中心
+                      </el-dropdown-item>
+
+                      <el-dropdown-item command="settings">
                         <el-icon><Setting /></el-icon> 个人设置
                       </el-dropdown-item>
-                      <el-dropdown-item divided @click="logout">退出登录</el-dropdown-item>
+
+                      <el-dropdown-item divided command="logout">
+                        <el-icon><SwitchButton /></el-icon> 退出登录
+                      </el-dropdown-item>
                     </el-dropdown-menu>
                   </template>
                 </el-dropdown>
@@ -167,11 +174,14 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '../utils/request'
 import { getHotRank } from '../api/article'
 import { UserFilled } from '@element-plus/icons-vue'
 
 const router = useRouter()
+
+// 获取用户信息
 const getUser = () => {
   try {
     const u = localStorage.getItem('user')
@@ -187,6 +197,34 @@ const loading = ref(false)
 const noMore = ref(false)
 
 const disabled = computed(() => loading.value || noMore.value)
+
+// 【新增】下拉菜单指令处理
+const handleCommand = (command) => {
+  if (command === 'userCenter') {
+    // 跳转个人中心
+    if (user.value.id) {
+      router.push(`/user/${user.value.id}`)
+    } else {
+      ElMessage.warning('请先登录')
+      router.push('/login')
+    }
+  }
+  else if (command === 'settings') {
+    router.push('/settings')
+  }
+  else if (command === 'logout') {
+    // 退出登录确认
+    ElMessageBox.confirm('确定要退出登录吗?', '提示', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning'
+    }).then(() => {
+      localStorage.clear()
+      router.push('/login')
+      ElMessage.success('已退出')
+    }).catch(() => {})
+  }
+}
 
 const loadMore = async () => {
   if (loading.value || noMore.value) return
@@ -225,7 +263,6 @@ onMounted(() => {
 })
 
 const toDetail = (id) => router.push(`/article/${id}`)
-const logout = () => { localStorage.clear(); router.push('/login') }
 const refreshPage = () => { window.location.reload() }
 const formatTime = (time) => {
   if(!time) return ''
@@ -248,7 +285,6 @@ const formatTime = (time) => {
 
 .navbar-container {
   width: 100%; height: 100%;
-  /* 增加容器的右侧内边距 */
   padding: 0 50px 0 30px;
   display: flex; align-items: center; justify-content: space-between;
 }
@@ -282,11 +318,7 @@ const formatTime = (time) => {
 /* 右侧 */
 .navbar-right {
   display: flex; align-items: center; gap: 20px; flex-shrink: 0; white-space: nowrap;
-
-  /* 【核心修复点】 */
-  /* 大幅增加右侧外边距，强制整个模块向左移动 */
-  /* 60px 足够避开任何滚动条了 */
-  margin-right: 60px;
+  margin-right: 60px; /* 避免遮挡 */
 
   .action-btns { margin-right: 10px; }
   .user-area {
