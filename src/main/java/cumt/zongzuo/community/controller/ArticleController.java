@@ -6,7 +6,7 @@ import cumt.zongzuo.community.entity.Article;
 import cumt.zongzuo.community.service.ArticleService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
-
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import java.util.List;
 
 @RestController
@@ -51,5 +51,19 @@ public class ArticleController {
     public Result<Article> getDetail(@PathVariable Long id) {
         Article article = articleService.getDetail(id);
         return Result.success(article);
+    }
+
+
+
+    // ...
+
+    // 查询指定用户的文章列表 (支持分页)
+    // GET /api/article/user/{userId}?page=1&size=10
+    @GetMapping("/user/{userId}")
+    public Result<Page<Article>> getUserArticles(@PathVariable Long userId,
+                                                 @RequestParam(defaultValue = "1") int page,
+                                                 @RequestParam(defaultValue = "10") int size) {
+        Page<Article> pageResult = articleService.getUserArticles(userId, page, size);
+        return Result.success(pageResult);
     }
 }

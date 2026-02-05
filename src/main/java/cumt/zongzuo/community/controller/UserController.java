@@ -38,4 +38,19 @@ public class UserController {
 
         return Result.success("修改成功");
     }
+
+    // 获取任意用户的个人主页信息
+    // GET /api/user/profile/{userId}
+    @GetMapping("/profile/{userId}")
+    public Result<User> getUserProfile(@PathVariable Long userId, @RequestHeader(value = "token", required = false) String token) {
+        Long currentUserId = null;
+        if (token != null && !token.isEmpty()) {
+            try {
+                currentUserId = JwtUtils.getUserId(token);
+            } catch (Exception e) {}
+        }
+
+        User user = userService.getUserProfile(userId, currentUserId);
+        return Result.success(user);
+    }
 }

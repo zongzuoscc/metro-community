@@ -18,4 +18,11 @@ public interface UserService extends IService<User> {
 
     // 登录
     Result<Map<String, Object>> login(LoginDTO dto);
+
+    /**
+     * 获取用户个人主页信息 (带统计数据)
+     * @param targetUserId 要查看的用户ID
+     * @param currentUserId 当前登录用户ID (用于判断是否关注了对方)
+     */
+    User getUserProfile(Long targetUserId, Long currentUserId);
 }

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cumt.zongzuo.community.mapper.FavoriteFolderMapper">
+
+    <select id="selectUserFoldersWithCount" resultType="cumt.zongzuo.community.entity.FavoriteFolder">
+        SELECT
+            ff.*,
+            COUNT(f.id) AS count
+        FROM
+            favorite_folder ff
+                LEFT JOIN
+            favorite f ON ff.id = f.folder_id
+        WHERE
+            ff.user_id = #{userId}
+        GROUP BY
+            ff.id, ff.create_time  ORDER BY
+            ff.create_time ASC
+    </select>
+
+</mapper>

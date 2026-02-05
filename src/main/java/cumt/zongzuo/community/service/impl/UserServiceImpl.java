@@ -7,7 +7,11 @@ import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import cumt.zongzuo.community.common.Result;
 import cumt.zongzuo.community.dto.LoginDTO;
 import cumt.zongzuo.community.dto.RegisterDTO;
+import cumt.zongzuo.community.entity.Article;
+import cumt.zongzuo.community.entity.Follow;
 import cumt.zongzuo.community.entity.User;
+import cumt.zongzuo.community.mapper.ArticleMapper;
+import cumt.zongzuo.community.mapper.FollowMapper;
 import cumt.zongzuo.community.mapper.UserMapper;
 import cumt.zongzuo.community.service.UserService;
 import cumt.zongzuo.community.utils.JwtUtils;
@@ -15,6 +19,7 @@ import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
+import cumt.zongzuo.community.service.FavoriteService;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -28,6 +33,15 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
 
     @Autowired
     private RabbitTemplate rabbitTemplate;
+
+    @Autowired
+    private FavoriteService favoriteService;
+
+    @Autowired
+    private ArticleMapper articleMapper;
+
+    @Autowired
+    private FollowMapper followMapper;
 
     // 注意：因为继承了 ServiceImpl，这里自带了 baseMapper (就是 UserMapper)，
     // 所以不需要再显式注入 UserMapper，直接用 baseMapper 即可，或者用 this.save() 等方法
@@ -77,7 +91,10 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         // 5. 保存到数据库 (使用 ServiceImpl 自带的 save 方法)
         save(user);
 
-        // 6. 删除 Redis 验证码
+        // 6. 【新增】为新用户创建默认收藏夹
+        favoriteService.createDefaultFolder(user.getId());
+
+        // 7. 删除 Redis 验证码
         redisTemplate.delete(key);
 
         return Result.success("注册成功");
@@ -109,5 +126,44 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         map.put("avatar", user.getAvatar());
 
         return Result.success(map);
+    }
+
+    @Override
+    public User getUserProfile(Long targetUserId, Long currentUserId) {
+        // 1. 查基本信息
+        User user = getById(targetUserId);
+        if (user == null) {
+            throw new RuntimeException("用户不存在");
+        }
+        // 脱敏
+        user.setPassword(null);
+
+        // 2. 统计文章数
+        Long articleCount = articleMapper.selectCount(new QueryWrapper<Article>().eq("author_id", targetUserId));
+        user.setArticleCount(articleCount);
+
+        // 3. 统计获赞数 (调用 ArticleMapper 中写好的 SQL)
+        Long likeCount = articleMapper.sumLikesByAuthorId(targetUserId);
+        user.setLikeCount(likeCount == null ? 0 : likeCount);
+
+        // 4. 统计关注数 (我关注了多少人)
+        Long followingCount = followMapper.selectCount(new QueryWrapper<Follow>().eq("follower_id", targetUserId));
+        user.setFollowingCount(followingCount);
+
+        // 5. 统计粉丝数 (有多少人关注我)
+        Long fanCount = followMapper.selectCount(new QueryWrapper<Follow>().eq("followed_id", targetUserId));
+        user.setFanCount(fanCount);
+
+        // 6. 判断我是否关注了他
+        if (currentUserId != null && !currentUserId.equals(targetUserId)) {
+            Long count = followMapper.selectCount(new QueryWrapper<Follow>()
+                    .eq("follower_id", currentUserId)
+                    .eq("followed_id", targetUserId));
+            user.setIsFollowed(count > 0);
+        } else {
+            user.setIsFollowed(false);
+        }
+
+        return user;
     }
 }

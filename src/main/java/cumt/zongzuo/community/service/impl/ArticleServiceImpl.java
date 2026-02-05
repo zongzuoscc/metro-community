@@ -2,6 +2,7 @@ package cumt.zongzuo.community.service.impl;
 
 import cn.hutool.core.util.StrUtil;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import cumt.zongzuo.community.dto.ArticleDTO;
 import cumt.zongzuo.community.entity.Article;
@@ -205,6 +206,27 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
                 article.setAuthorAvatar("https://cube.elemecdn.com/9/c2/f0ee8a3c7c9638a54940382568c9dpng.png"); // 默认头像
             }
         }
+    }
+
+    // ...
+
+    @Override
+    public Page<Article> getUserArticles(Long userId, int pageNo, int pageSize) {
+        // 1. 构建分页对象
+        Page<Article> page = new Page<>(pageNo, pageSize);
+
+        // 2. 构建查询条件
+        QueryWrapper<Article> wrapper = new QueryWrapper<>();
+        wrapper.eq("author_id", userId);
+        wrapper.orderByDesc("create_time");
+
+        // 3. 执行查询
+        Page<Article> result = page(page, wrapper);
+
+        // 4. (可选) 如果你想在列表里显示"xxx 赞了文章"，可以这里填充作者信息
+        // 但因为这是查"某人"的文章，作者都是同一个，前端直接用外面的用户信息即可，这里可以省略填充
+
+        return result;
     }
 
 }
