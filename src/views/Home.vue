@@ -48,8 +48,9 @@
                   </div>
                   <template #dropdown>
                     <el-dropdown-menu>
-                      <el-dropdown-item><el-icon><User /></el-icon> 我的主页</el-dropdown-item>
-                      <el-dropdown-item><el-icon><Setting /></el-icon> 设置</el-dropdown-item>
+                      <el-dropdown-item @click="$router.push('/settings')">
+                        <el-icon><Setting /></el-icon> 个人设置
+                      </el-dropdown-item>
                       <el-dropdown-item divided @click="logout">退出登录</el-dropdown-item>
                     </el-dropdown-menu>
                   </template>

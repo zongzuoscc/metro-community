@@ -12,6 +12,16 @@ const routes = [
         name: 'Publish',
         component: () => import('../views/Publish.vue')
     },
+    {
+        path: '/article/:id',  // :id 是动态参数
+        name: 'ArticleDetail',
+        component: () => import('../views/ArticleDetail.vue')
+    },
+    {
+        path: '/settings',
+        name: 'UserSetting',
+        component: () => import('../views/UserSetting.vue')
+    },
 // ...
 ]
 

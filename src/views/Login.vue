@@ -1,80 +1,97 @@
 <template>
   <div class="login-container">
-    <div class="left-banner">
-      <div class="banner-content">
-        <h1>Community 开发者社区</h1>
-        <p>连接 · 分享 · 共进</p>
-        <p class="sub-text">加入我们，与万千开发者一起探索技术世界</p>
-      </div>
-    </div>
-
-    <div class="right-form-container">
-      <el-card class="box-card">
-        <div class="header">
-          <h2>👋 欢迎回来</h2>
-          <p>请使用账号密码登录</p>
+    <el-card class="login-card">
+      <template #header>
+        <div class="card-header">
+          <span>🚀 登录 Community</span>
         </div>
+      </template>
 
-        <el-form :model="form" :rules="rules" ref="ruleFormRef" size="large">
-          <el-form-item prop="email">
-            <el-input v-model="form.email" placeholder="请输入注册邮箱" prefix-icon="Message" />
-          </el-form-item>
+      <el-form :model="loginForm" label-position="top" size="large">
+        <el-form-item label="邮箱">
+          <el-input v-model="loginForm.email" placeholder="请输入邮箱" prefix-icon="Message" />
+        </el-form-item>
 
-          <el-form-item prop="password">
-            <el-input v-model="form.password" type="password" placeholder="请输入密码" prefix-icon="Lock" show-password />
-          </el-form-item>
+        <el-form-item label="密码">
+          <el-input
+              v-model="loginForm.password"
+              type="password"
+              placeholder="请输入密码"
+              prefix-icon="Lock"
+              show-password
+              @keyup.enter="handleLogin"
+          />
+        </el-form-item>
 
-          <el-button type="primary" class="submit-btn" :loading="loading" @click="handleLogin" round>
+        <el-form-item>
+          <el-button type="primary" :loading="loading" class="login-btn" @click="handleLogin">
             立即登录
           </el-button>
+        </el-form-item>
 
-          <div class="footer-links">
-            <span>还没有账号？</span>
-            <router-link to="/register">免费注册一个</router-link>
-          </div>
-        </el-form>
-      </el-card>
-    </div>
+        <div class="actions">
+          <el-link type="primary" @click="$router.push('/register')">没有账号？去注册</el-link>
+        </div>
+      </el-form>
+    </el-card>
   </div>
 </template>
 
 <script setup>
-// ... script 部分代码与之前完全一致，不用动 ...
-import { reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
-import { login } from '../api/auth'
+import { ref, reactive } from 'vue'
+import { useRouter } from 'vue-router'  // 1. 必须导入这个
 import { ElMessage } from 'element-plus'
+import request from '../utils/request'
 
+// 2. 必须初始化 router
 const router = useRouter()
-const ruleFormRef = ref(null)
+
 const loading = ref(false)
 
-const form = reactive({ email: '', password: '' })
+// 3. 必须定义表单数据 (名字要和模板里的 :model="loginForm" 一致)
+const loginForm = reactive({
+  email: '',
+  password: ''
+})
 
-const rules = {
-  email: [{ required: true, message: '请输入邮箱', trigger: 'blur' }],
-  password: [{ required: true, message: '请输入密码', trigger: 'blur' }]
-}
-
+// 完整的登录逻辑
 const handleLogin = async () => {
-  if (!ruleFormRef.value) return
-  await ruleFormRef.value.validate(async (valid) => {
-    if (valid) {
-      loading.value = true
-      try {
-        const res = await login(form)
-        ElMessage.success('登录成功')
-        localStorage.setItem('token', res.data.token)
-        localStorage.setItem('user', JSON.stringify({
-          username: res.data.username,
-          avatar: res.data.avatar
-        }))
+  // 校验
+  if (!loginForm.email || !loginForm.password) {
+    return ElMessage.warning('请输入邮箱和密码')
+  }
+
+  loading.value = true
+
+  try {
+    const res = await request.post('/api/auth/login', loginForm)
+
+    if (res.code === 200) {
+      // 后端返回的数据: { id: 1, token: "...", username: "...", avatar: "..." }
+      const userData = res.data
+
+      // 1. 存 Token
+      localStorage.setItem('token', userData.token)
+
+      // 2. 存完整的 User 对象 (包含 id)
+      localStorage.setItem('user', JSON.stringify(userData))
+
+      ElMessage.success('登录成功')
+
+      // 3. 跳转 (确保 /home 路由存在，如果你的首页是 /，请改为 push('/'))
+      setTimeout(() => {
         router.push('/home')
-      } finally {
-        loading.value = false
-      }
+      }, 500)
+    } else {
+      ElMessage.error(res.msg || '登录失败')
     }
-  })
+  } catch (e) {
+    console.error(e)
+    // 如果被拦截器拦截了，这里可能会报错，为了用户体验可以加个提示
+    // ElMessage.error('网络请求异常')
+  } finally {
+    loading.value = false
+  }
 }
 </script>
 
@@ -82,64 +99,18 @@ const handleLogin = async () => {
 .login-container {
   height: 100vh;
   display: flex;
-  background: #fff;
-
-  .left-banner {
-    flex: 1; // 占据左侧剩余空间
-    background-image: url('https://images.unsplash.com/photo-1518770660439-4636190af475?ixlib=rb-1.2.1&auto=format&fit=crop&w=1950&q=80'); // 科技感背景图
-    background-size: cover;
-    background-position: center;
-    position: relative;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-
-    // 加一个半透明遮罩层，让文字更清晰
-    &::before {
-      content: '';
-      position: absolute;
-      top: 0; left: 0; right: 0; bottom: 0;
-      background: rgba(0, 0, 0, 0.5);
-    }
-
-    .banner-content {
-      position: relative;
-      z-index: 1;
-      color: #fff;
-      text-align: center;
-      h1 { font-size: 3rem; margin-bottom: 20px; }
-      p { font-size: 1.5rem; letter-spacing: 5px; }
-      .sub-text { font-size: 1rem; margin-top: 30px; opacity: 0.8; letter-spacing: 1px; }
-    }
-  }
-
-  .right-form-container {
-    width: 500px; // 右侧固定宽度
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: #fff;
-
-    .box-card {
-      width: 360px;
-      border: none; // 去掉卡片边框，更融合
-      box-shadow: none !important; // 去掉阴影
-
-      .header {
-        margin-bottom: 40px;
-        h2 { font-size: 28px; margin-bottom: 10px; color: #333; }
-        p { color: #999; font-size: 16px; }
-      }
-      .submit-btn { width: 100%; padding: 22px 0; font-size: 18px; margin-top: 20px; font-weight: bold; }
-      .footer-links { margin-top: 20px; text-align: center; color: #666; a { color: #409EFF; text-decoration: none; font-weight: bold;} }
-    }
-  }
+  justify-content: center;
+  align-items: center;
+  background-color: #f6f8fa;
 }
-
-// 响应式处理：小屏幕下隐藏左侧
-@media (max-width: 900px) {
-  .login-container .left-banner { display: none; }
-  .login-container .right-form-container { width: 100%; background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%); }
-  .login-container .right-form-container .box-card { box-shadow: 0 2px 12px 0 rgba(0,0,0,0.1) !important; background: #fff; padding: 20px; border-radius: 8px;}
+.login-card {
+  width: 400px;
+}
+.login-btn {
+  width: 100%;
+}
+.actions {
+  text-align: right;
+  font-size: 14px;
 }
 </style>

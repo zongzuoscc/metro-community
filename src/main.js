@@ -12,12 +12,17 @@ import '@kangc/v-md-editor/lib/style/base-editor.css';
 import vuepressTheme from '@kangc/v-md-editor/lib/theme/vuepress.js';
 import '@kangc/v-md-editor/lib/theme/style/vuepress.css';
 import Prism from 'prismjs';
+import VMdPreview from '@kangc/v-md-editor/lib/preview';
+import '@kangc/v-md-editor/lib/style/preview.css';
 
 // 应用主题
 VueMarkdownEditor.use(vuepressTheme, {
   Prism,
 });
 // -----------------------
+VMdPreview.use(vuepressTheme, {
+  Prism,
+});
 
 const app = createApp(App)
 
@@ -28,5 +33,6 @@ for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
 app.use(router)
 app.use(ElementPlus)
 app.use(VueMarkdownEditor)
+app.use(VMdPreview)
 
 app.mount('#app')

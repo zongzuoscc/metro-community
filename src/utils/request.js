@@ -9,15 +9,20 @@ const service = axios.create({
 })
 
 // 【新增】请求拦截器：每次请求都带上 Token
+// 请求拦截器
 service.interceptors.request.use(
     config => {
+        // 每次发请求前，从 localStorage 拿 token
         const token = localStorage.getItem('token')
         if (token) {
-            config.headers['token'] = token // 把 Token 塞进请求头
+            // 挂载到请求头，后端 LoginInterceptor 取的是 "token" 或 "Authorization"
+            config.headers['token'] = token
         }
         return config
     },
-    error => Promise.reject(error)
+    error => {
+        return Promise.reject(error)
+    }
 )
 
 // 响应拦截器
