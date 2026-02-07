@@ -8,6 +8,7 @@ import cumt.zongzuo.community.entity.User;
 import cumt.zongzuo.community.mapper.FollowMapper;
 import cumt.zongzuo.community.mapper.UserMapper;
 import cumt.zongzuo.community.service.FollowService;
+import cumt.zongzuo.community.service.MessageService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
@@ -26,6 +27,9 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
 
     @Autowired
     private UserMapper userMapper;
+
+    @Autowired
+    private MessageService messageService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -57,6 +61,9 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
 
             try {
                 save(follow);
+                // 【新增】发送通知 (type=3 关注)
+                // targetId 此时可以是 followerId，点击跳转到关注者主页
+                messageService.send(followerId, followedId, 3, followerId, null);
             } catch (Exception e) {
                 // 忽略唯一索引冲突
                 return;

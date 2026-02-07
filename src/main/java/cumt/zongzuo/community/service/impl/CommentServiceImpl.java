@@ -3,11 +3,14 @@ package cumt.zongzuo.community.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import cumt.zongzuo.community.dto.CommentDTO;
+import cumt.zongzuo.community.entity.Article;
 import cumt.zongzuo.community.entity.Comment;
 import cumt.zongzuo.community.entity.User;
+import cumt.zongzuo.community.mapper.ArticleMapper;
 import cumt.zongzuo.community.mapper.CommentMapper;
 import cumt.zongzuo.community.mapper.UserMapper;
 import cumt.zongzuo.community.service.CommentService;
+import cumt.zongzuo.community.service.MessageService;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -22,6 +25,11 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
 
     @Autowired
     private UserMapper userMapper;
+
+    @Autowired
+    private MessageService messageService;
+    @Autowired
+    private ArticleMapper articleMapper;
 
     @Override
     public void publishComment(CommentDTO dto, Long userId) {
@@ -40,6 +48,26 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
         }
 
         save(comment);
+        Long receiverId;
+        if (comment.getTargetUserId() != null) {
+            // 回复某人
+            receiverId = comment.getTargetUserId();
+        } else {
+            // 回复文章，找文章作者
+            Article article = articleMapper.selectById(comment.getArticleId());
+            receiverId = (article != null) ? article.getAuthorId() : null;
+        }
+
+        if (receiverId != null) {
+            // type=2 代表评论
+            // content 截取前30个字提示一下
+            String summary = comment.getContent().length() > 30
+                    ? comment.getContent().substring(0, 30) + "..."
+                    : comment.getContent();
+
+            // targetId 我们统一存文章ID，这样点击通知能跳到文章详情
+            messageService.send(userId, receiverId, 2, comment.getArticleId(), summary);
+        }
     }
 
     @Override

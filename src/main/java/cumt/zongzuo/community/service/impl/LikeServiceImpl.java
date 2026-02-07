@@ -9,6 +9,7 @@ import cumt.zongzuo.community.mapper.ArticleMapper;
 import cumt.zongzuo.community.mapper.CommentMapper; // 引入 Mapper
 import cumt.zongzuo.community.mapper.LikeRecordMapper;
 import cumt.zongzuo.community.service.LikeService;
+import cumt.zongzuo.community.service.MessageService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
@@ -27,6 +28,9 @@ public class LikeServiceImpl extends ServiceImpl<LikeRecordMapper, LikeRecord> i
 
     @Autowired
     private CommentMapper commentMapper; // 【新增】注入 CommentMapper
+
+    @Autowired
+    private MessageService messageService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -94,6 +98,21 @@ public class LikeServiceImpl extends ServiceImpl<LikeRecordMapper, LikeRecord> i
             }
 
             redisTemplate.opsForSet().add(key, userId.toString());
+            // 【新增】发送通知
+            // 我们需要知道这篇文章/评论是谁写的
+            Long receiverId = null;
+            if (targetType == 1) { // 文章
+                Article article = articleMapper.selectById(targetId);
+                if(article != null) receiverId = article.getAuthorId();
+            } else if (targetType == 2) { // 评论
+                Comment comment = commentMapper.selectById(targetId);
+                if(comment != null) receiverId = comment.getUserId();
+            }
+
+            if (receiverId != null) {
+                // type=1 代表点赞
+                messageService.send(userId, receiverId, 1, targetId, null);
+            }
         }
     }
 
