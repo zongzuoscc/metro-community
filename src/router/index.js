@@ -56,7 +56,12 @@ const routes = [
         path: '/favorite/:id',
         name: 'FavoriteDetail',
         component: () => import('../views/FavoriteDetail.vue')
-    }
+    },
+    {
+        path: '/reset-password',
+        name: 'ResetPassword',
+        component: () => import('../views/ResetPassword.vue')
+    },
 ]
 
 const router = createRouter({
