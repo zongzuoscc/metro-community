@@ -7,6 +7,8 @@ import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import cumt.zongzuo.community.common.Result;
 import cumt.zongzuo.community.dto.LoginDTO;
 import cumt.zongzuo.community.dto.RegisterDTO;
+import cumt.zongzuo.community.dto.ResetPasswordDTO;
+import cumt.zongzuo.community.dto.UpdatePasswordDTO;
 import cumt.zongzuo.community.entity.Article;
 import cumt.zongzuo.community.entity.Follow;
 import cumt.zongzuo.community.entity.User;
@@ -165,5 +167,55 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         }
 
         return user;
+    }
+
+    @Override
+    public void updatePassword(Long userId, UpdatePasswordDTO dto) {
+        // 1. 查出当前用户
+        User user = getById(userId);
+
+        // 2. 校验旧密码
+        if (!BCrypt.checkpw(dto.getOldPassword(), user.getPassword())) {
+            throw new RuntimeException("旧密码不正确");
+        }
+
+        // 3. 校验新密码长度等 (简单校验)
+        if (dto.getNewPassword().length() < 6) {
+            throw new RuntimeException("新密码长度不能少于6位");
+        }
+
+        // 4. 加密并更新
+        user.setPassword(BCrypt.hashpw(dto.getNewPassword()));
+        updateById(user);
+    }
+
+    @Override
+    public Result<String> resetPassword(ResetPasswordDTO dto) {
+        // 1. 校验验证码
+        String key = "verify:email:" + dto.getEmail();
+        String savedCode = redisTemplate.opsForValue().get(key);
+
+        if (savedCode == null) return Result.error("验证码已过期，请重新发送");
+        if (!savedCode.equals(dto.getCode())) return Result.error("验证码错误");
+
+        // 2. 查询用户是否存在
+        User user = getOne(new QueryWrapper<User>().eq("email", dto.getEmail()));
+        if (user == null) {
+            return Result.error("该邮箱未注册");
+        }
+
+        // 3. 校验新密码长度
+        if (dto.getNewPassword().length() < 6) {
+            return Result.error("密码长度至少6位");
+        }
+
+        // 4. 重置密码
+        user.setPassword(BCrypt.hashpw(dto.getNewPassword()));
+        updateById(user);
+
+        // 5. 删除验证码 (防止被重复使用)
+        redisTemplate.delete(key);
+
+        return Result.success("密码重置成功");
     }
 }

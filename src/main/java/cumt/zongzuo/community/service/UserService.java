@@ -4,6 +4,8 @@ import com.baomidou.mybatisplus.extension.service.IService;
 import cumt.zongzuo.community.common.Result;
 import cumt.zongzuo.community.dto.LoginDTO; // 或者你的DTO包
 import cumt.zongzuo.community.dto.RegisterDTO;
+import cumt.zongzuo.community.dto.ResetPasswordDTO;
+import cumt.zongzuo.community.dto.UpdatePasswordDTO;
 import cumt.zongzuo.community.entity.User;
 
 import java.util.Map;
@@ -25,4 +27,10 @@ public interface UserService extends IService<User> {
      * @param currentUserId 当前登录用户ID (用于判断是否关注了对方)
      */
     User getUserProfile(Long targetUserId, Long currentUserId);
+
+    // 修改密码
+    void updatePassword(Long userId, UpdatePasswordDTO dto);
+
+    // 【新增】重置密码 (忘记密码用)
+    Result<String> resetPassword(ResetPasswordDTO dto);
 }

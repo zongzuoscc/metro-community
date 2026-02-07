@@ -1,6 +1,7 @@
 package cumt.zongzuo.community.controller;
 
 import cumt.zongzuo.community.common.Result;
+import cumt.zongzuo.community.dto.UpdatePasswordDTO;
 import cumt.zongzuo.community.entity.User;
 import cumt.zongzuo.community.service.UserService;
 import cumt.zongzuo.community.utils.JwtUtils;
@@ -32,10 +33,12 @@ public class UserController {
         // 只能修改自己的信息
         user.setId(userId);
 
-        // 这里的 updateById 是 MyBatis-Plus 自带的，会自动忽略 null 字段
-        // 所以前端只传 avatar，就只会更新 avatar
-        userService.updateById(user);
+        // 【安全修正】强制将敏感字段置空，防止被恶意修改
+        user.setPassword(null);
+        user.setEmail(null); // 邮箱修改通常需要验证码，不应在这里直接改
+        // user.setRole(null); // 如果有角色字段也要置空
 
+        userService.updateById(user);
         return Result.success("修改成功");
     }
 
@@ -53,4 +56,16 @@ public class UserController {
         User user = userService.getUserProfile(userId, currentUserId);
         return Result.success(user);
     }
+
+    @PostMapping("/password")
+    public Result<String> updatePassword(@RequestBody UpdatePasswordDTO dto, @RequestHeader("token") String token) {
+        Long userId = JwtUtils.getUserId(token);
+        try {
+            userService.updatePassword(userId, dto);
+            return Result.success("密码修改成功");
+        } catch (RuntimeException e) {
+            return Result.error(e.getMessage());
+        }
+    }
+
 }

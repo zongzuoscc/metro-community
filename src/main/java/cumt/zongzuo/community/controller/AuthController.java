@@ -3,6 +3,7 @@ package cumt.zongzuo.community.controller;
 import cumt.zongzuo.community.common.Result;
 import cumt.zongzuo.community.dto.LoginDTO;
 import cumt.zongzuo.community.dto.RegisterDTO;
+import cumt.zongzuo.community.dto.ResetPasswordDTO;
 import cumt.zongzuo.community.service.UserService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
@@ -32,5 +33,10 @@ public class AuthController {
     @PostMapping("/login")
     public Result<Map<String, Object>> login(@RequestBody LoginDTO dto) {
         return userService.login(dto);
+    }
+
+    @PostMapping("/reset-password")
+    public Result<String> resetPassword(@RequestBody ResetPasswordDTO dto) {
+        return userService.resetPassword(dto);
     }
 }
