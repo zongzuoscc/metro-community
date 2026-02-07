@@ -62,6 +62,16 @@ const routes = [
         name: 'ResetPassword',
         component: () => import('../views/ResetPassword.vue')
     },
+    {
+        path: '/message',
+        name: 'Message',
+        component: () => import('../views/Message.vue')
+    },
+    {
+        path: '/chat',
+        name: 'Chat',
+        component: () => import('../views/Chat.vue')
+    },
 ]
 
 const router = createRouter({

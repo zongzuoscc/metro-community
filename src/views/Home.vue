@@ -30,8 +30,16 @@
           </div>
 
           <div class="user-area">
-            <el-icon class="icon-btn" :size="22"><Bell /></el-icon>
-            <el-icon class="icon-btn" :size="22"><Message /></el-icon>
+            <div class="icon-btn" @click="$router.push('/message')">
+              <el-badge :value="unreadCount" :max="99" :hidden="unreadCount === 0" class="bell-badge">
+                <el-icon :size="22"><Bell /></el-icon>
+              </el-badge>
+            </div>
+            <div class="icon-btn" @click="$router.push('/chat')">
+              <el-badge :value="chatUnreadCount" :max="99" :hidden="chatUnreadCount === 0" class="bell-badge">
+                <el-icon :size="22"><Message /></el-icon>
+              </el-badge>
+            </div>
 
             <div class="profile-box">
               <template v-if="user && user.username">
@@ -181,6 +189,18 @@ import { UserFilled } from '@element-plus/icons-vue'
 
 const router = useRouter()
 
+// 1. 定义未读数变量
+const unreadCount = ref(0)
+
+// 2. 定义获取未读数的方法
+const getUnreadCount = async () => {
+  if (!user.value.id) return // 未登录不查
+  try {
+    const res = await request.get('/api/message/unread')
+    unreadCount.value = res.data || 0
+  } catch(e) {}
+}
+
 // 获取用户信息
 const getUser = () => {
   try {
@@ -257,9 +277,21 @@ const loadHotRank = async () => {
   } catch (e) { console.error(e) }
 }
 
+const chatUnreadCount = ref(0)
+
+const getChatUnread = async () => {
+  if(!user.value.id) return
+  try {
+    const res = await request.get('/api/chat/unread')
+    chatUnreadCount.value = res.data || 0
+  } catch(e){}
+}
+
 onMounted(() => {
   loadMore()
   loadHotRank()
+  getUnreadCount()
+  getChatUnread() // 获取私信未读数
 })
 
 const toDetail = (id) => router.push(`/article/${id}`)
@@ -413,4 +445,11 @@ const formatTime = (time) => {
 
 .loading-state { padding: 20px; text-align: center; background: #fff; }
 .no-more { color: #8590a6; font-size: 14px; padding: 20px 0; }
+
+.bell-badge {
+  display: flex; align-items: center;
+  :deep(.el-badge__content) {
+    transform: translateY(-50%) translateX(100%) scale(0.8) !important; /* 调整小红点位置 */
+  }
+}
 </style>
