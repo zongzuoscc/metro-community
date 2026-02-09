@@ -1,6 +1,7 @@
 package cumt.zongzuo.community.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import cumt.zongzuo.community.entity.Follow;
@@ -140,5 +141,19 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
         userPage.setRecords(users);
 
         return userPage;
+    }
+
+    @Override
+    public void updateRemark(Long userId, Long targetId, String remark, String description) {
+        // 只能给“我关注的人”设置备注
+        UpdateWrapper<Follow> updateWrapper = new UpdateWrapper<>();
+        updateWrapper.eq("follower_id", userId).eq("followed_id", targetId);
+        updateWrapper.set("remark", remark);
+        updateWrapper.set("description", description);
+
+        boolean updated = update(updateWrapper);
+        if (!updated) {
+            throw new RuntimeException("你没有关注此人，无法设置备注");
+        }
     }
 }

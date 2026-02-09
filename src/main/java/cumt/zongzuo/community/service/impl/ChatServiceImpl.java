@@ -13,9 +13,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 import java.util.stream.Collectors;
 
 @Service
@@ -76,25 +74,56 @@ public class ChatServiceImpl extends ServiceImpl<ChatMsgMapper, ChatMsg> impleme
 
     @Override
     public List<User> getMyFriends(Long userId) {
-        // 1. 查我关注的人
-        List<Follow> followings = followMapper.selectList(new QueryWrapper<Follow>().eq("follower_id", userId));
-        Set<Long> followingIds = followings.stream().map(Follow::getFollowedId).collect(Collectors.toSet());
+        // 1. 获取所有通过话的人 (Send or Receive)
+        List<ChatMsg> allMsgs = list(new QueryWrapper<ChatMsg>()
+                .and(w -> w.eq("from_id", userId).or().eq("to_id", userId))
+                .select("from_id", "to_id"));
 
-        if (followingIds.isEmpty()) return new ArrayList<>();
+        Set<Long> contactIds = new HashSet<>();
+        for (ChatMsg msg : allMsgs) {
+            contactIds.add(msg.getFromId());
+            contactIds.add(msg.getToId());
+        }
+        contactIds.remove(userId); // 排除自己
 
-        // 2. 查关注我的人 (粉丝)
-        List<Follow> fans = followMapper.selectList(new QueryWrapper<Follow>().eq("followed_id", userId));
-        Set<Long> fanIds = fans.stream().map(Follow::getFollowerId).collect(Collectors.toSet());
+        // 2. 获取我的关注列表 (为了拿备注)
+        List<Follow> myFollowings = followMapper.selectList(new QueryWrapper<Follow>().eq("follower_id", userId));
+        Map<Long, Follow> followingMap = myFollowings.stream()
+                .collect(Collectors.toMap(Follow::getFollowedId, f -> f));
 
-        // 3. 取交集 (既关注我，我也关注他 -> 互关好友)
-        followingIds.retainAll(fanIds);
+        // 3. 获取我的粉丝列表 (为了判断互关)
+        List<Follow> myFans = followMapper.selectList(new QueryWrapper<Follow>().eq("followed_id", userId));
+        Set<Long> fanIds = myFans.stream().map(Follow::getFollowerId).collect(Collectors.toSet());
 
-        if (followingIds.isEmpty()) return new ArrayList<>();
+        // 4. 将互关好友也加入联系人列表 (即使没聊过天也显示)
+        for (Follow f : myFollowings) {
+            if (fanIds.contains(f.getFollowedId())) {
+                contactIds.add(f.getFollowedId());
+            }
+        }
 
-        // 4. 查用户信息
-        List<User> friends = userMapper.selectBatchIds(followingIds);
-        friends.forEach(u -> u.setPassword(null));
-        return friends;
+        if (contactIds.isEmpty()) return new ArrayList<>();
+
+        // 5. 查询 User 信息并填充
+        List<User> users = userMapper.selectBatchIds(contactIds);
+
+        for (User u : users) {
+            u.setPassword(null);
+
+            // 判断是否是好友 (互关)
+            boolean isFollowing = followingMap.containsKey(u.getId());
+            boolean isFan = fanIds.contains(u.getId());
+            u.setIsFriend(isFollowing && isFan);
+
+            // 填充备注
+            if (isFollowing) {
+                Follow f = followingMap.get(u.getId());
+                u.setRemark(f.getRemark());
+                u.setDescription(f.getDescription());
+            }
+        }
+
+        return users;
     }
 
     @Override

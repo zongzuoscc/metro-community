@@ -31,10 +31,12 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
 
     @Autowired
     private MessageService messageService;
+
     @Autowired
     private ArticleMapper articleMapper;
 
     @Override
+    @Transactional(rollbackFor = Exception.class) // 建议加上事务
     public void publishComment(CommentDTO dto, Long userId) {
         Comment comment = new Comment();
         // 1. 复制属性 (content, articleId, parentId, targetUserId)
@@ -50,7 +52,16 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
             comment.setParentId(0L); // 默认为根评论
         }
 
+        // 4. 保存评论
         save(comment);
+
+        // 5. 【核心修复】更新文章评论数 +1
+        UpdateWrapper<Article> updateWrapper = new UpdateWrapper<>();
+        updateWrapper.setSql("comment_count = comment_count + 1");
+        updateWrapper.eq("id", dto.getArticleId());
+        articleMapper.update(null, updateWrapper);
+
+        // 6. 发送通知
         Long receiverId;
         if (comment.getTargetUserId() != null) {
             // 回复某人
@@ -63,7 +74,6 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
 
         if (receiverId != null) {
             // type=2 代表评论
-            // content 截取前30个字提示一下
             String summary = comment.getContent().length() > 30
                     ? comment.getContent().substring(0, 30) + "..."
                     : comment.getContent();
@@ -85,8 +95,7 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
             return new ArrayList<>();
         }
 
-        // 2. 【核心优化】批量查询用户信息 (发送者 + 被回复者)
-        // 如果不这样做，每一条评论都要去查一次 User 表，100条评论就是101次查询，性能极差。
+        // 2. 批量查询用户信息 (发送者 + 被回复者)
         Set<Long> userIds = new HashSet<>();
         for (Comment c : allComments) {
             userIds.add(c.getUserId());         // 发送者
@@ -96,7 +105,6 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
         }
 
         List<User> users = userMapper.selectBatchIds(userIds);
-        // 转成 Map<UserId, User> 方便快速查找
         Map<Long, User> userMap = users.stream().collect(Collectors.toMap(User::getId, Function.identity()));
 
         // 3. 填充用户信息到 Comment 对象中
@@ -120,19 +128,15 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
             }
         }
 
-        // 4. 【核心逻辑】构建树形结构 (根评论 -> 子评论列表)
-        // 思路：先把所有评论分成两组：根评论(parentId=0) 和 子评论(parentId!=0)
-
+        // 4. 构建树形结构 (根评论 -> 子评论列表)
         List<Comment> rootComments = allComments.stream()
                 .filter(c -> c.getParentId() == 0)
                 .collect(Collectors.toList());
 
-        // 将子评论按 parentId 分组 -> Map<ParentId, List<Child>>
         Map<Long, List<Comment>> childrenMap = allComments.stream()
                 .filter(c -> c.getParentId() != 0)
                 .collect(Collectors.groupingBy(Comment::getParentId));
 
-        // 遍历根评论，把对应的子评论塞进去
         for (Comment root : rootComments) {
             List<Comment> children = childrenMap.get(root.getId());
             if (children == null) {
@@ -144,9 +148,6 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
         return rootComments;
     }
 
-    /**
-     * 删除评论 (修复版：使用 parentId)
-     */
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void deleteComment(Long commentId, Long userId) {
@@ -163,7 +164,6 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
         }
 
         // 3. 权限校验
-        // 规则：当前用户是评论发布者 OR 当前用户是文章作者
         boolean isSelf = comment.getUserId().equals(userId);
         boolean isAuthor = article.getAuthorId().equals(userId);
 
@@ -178,7 +178,6 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
         // 5. 判断是否是根评论 (parentId == 0)
         // 如果是根评论，需要删除该楼层下的所有子评论
         if (comment.getParentId() == null || comment.getParentId() == 0) {
-            // 查询所有 parentId = 当前评论ID 的子评论
             List<Comment> children = list(new QueryWrapper<Comment>().eq("parent_id", commentId));
             if (children != null && !children.isEmpty()) {
                 List<Long> childIds = children.stream().map(Comment::getId).collect(Collectors.toList());

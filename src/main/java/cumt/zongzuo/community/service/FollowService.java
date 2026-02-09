@@ -17,4 +17,6 @@ public interface FollowService extends IService<Follow> {
 
     // 分页获取粉丝列表 (返回 User 信息)
     Page<User> getUserFans(Long userId, int pageNo, int pageSize);
+    // 设置好友备注
+    void updateRemark(Long userId, Long targetId, String remark, String description);
 }

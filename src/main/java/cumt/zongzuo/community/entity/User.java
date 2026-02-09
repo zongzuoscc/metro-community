@@ -44,4 +44,13 @@ public class User implements Serializable {
     // 该用户是否被当前登录用户关注 (用于查看别人主页时，显示"关注"还是"已关注"按钮)
     @TableField(exist = false)
     private Boolean isFollowed;
+
+    @TableField(exist = false)
+    private Boolean isFriend; // 【新增】是否互相关注(好友)
+
+    @TableField(exist = false)
+    private String remark;    // 【新增】我对他的备注
+
+    @TableField(exist = false)
+    private String description; // 【新增】我对他的描述
 }

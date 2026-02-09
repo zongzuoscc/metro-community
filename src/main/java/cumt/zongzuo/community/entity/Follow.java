@@ -23,5 +23,8 @@ public class Follow {
      */
     private Long followedId;
 
+    private String remark;      // 【新增】备注
+    private String description; // 【新增】描述
+
     private LocalDateTime createTime;
 }

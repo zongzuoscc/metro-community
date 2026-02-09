@@ -58,4 +58,15 @@ public class FollowController {
         Page<User> list = followService.getUserFans(userId, page, size);
         return Result.success(list);
     }
+    // 设置备注
+    @PostMapping("/remark")
+    public Result<String> setRemark(@RequestParam Long targetId,
+                                    @RequestParam String remark,
+                                    @RequestParam(required = false) String description,
+                                    @RequestHeader("token") String token) {
+        Long userId = JwtUtils.getUserId(token);
+        followService.updateRemark(userId, targetId, remark, description);
+        return Result.success("设置成功");
+    }
+
 }
