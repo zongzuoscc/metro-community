@@ -123,7 +123,7 @@
                 <el-icon><CaretBottom /></el-icon>
               </button>
               <div class="action-item text-btn">
-                <el-icon><ChatDotRound /></el-icon> {{ article.viewCount }} 条评论
+                <el-icon><ChatDotRound /></el-icon> {{ article.viewCount || 0 }} 条评论
               </div>
               <div class="action-item text-btn">
                 <el-icon><Star /></el-icon> 收藏

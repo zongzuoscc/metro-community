@@ -17,6 +17,7 @@
           <div class="action-box">
             <template v-if="isMe">
               <el-button type="primary" plain round @click="editProfile">编辑资料</el-button>
+              <el-button type="primary" round icon="Plus" @click="$router.push('/publish')">创作</el-button>
             </template>
             <template v-else>
               <el-button
@@ -27,7 +28,7 @@
               >
                 {{ userInfo.isFollowed ? '已关注' : '+ 关注' }}
               </el-button>
-              <el-button plain round icon="ChatDotRound">私信</el-button>
+              <el-button plain round icon="ChatDotRound" @click="$router.push(`/chat?to=${userInfo.id}`)">私信</el-button>
             </template>
           </div>
         </div>
@@ -59,13 +60,27 @@
 
           <el-tab-pane label="文章" name="articles">
             <div class="article-list" v-loading="loading">
-              <div v-for="article in articleList" :key="article.id" class="article-item" @click="$router.push(`/article/${article.id}`)">
-                <div class="a-title">{{ article.title }}</div>
-                <div class="a-summary">{{ article.summary }}</div>
-                <div class="a-meta">
-                  <span>{{ formatTime(article.createTime) }}</span>
-                  <span><el-icon><View /></el-icon> {{ article.viewCount }}</span>
-                  <span><el-icon><CaretTop /></el-icon> {{ article.likeCount }}</span>
+              <div v-for="article in articleList" :key="article.id" class="article-item">
+                <div class="content-main" @click="$router.push(`/article/${article.id}`)">
+                  <div class="a-title">
+                    {{ article.title }}
+                    <el-tag v-if="article.status === 0" size="small" type="info">草稿</el-tag>
+                  </div>
+                  <div class="a-summary">{{ article.summary }}</div>
+                  <div class="a-meta">
+                    <span>{{ formatTime(article.createTime) }}</span>
+                    <span><el-icon><View /></el-icon> {{ article.viewCount }}</span>
+                    <span><el-icon><CaretTop /></el-icon> {{ article.likeCount }}</span>
+                  </div>
+                </div>
+
+                <div v-if="isMe" class="action-btns">
+                  <el-button type="primary" link icon="Edit" @click.stop="toEdit(article.id)">编辑</el-button>
+                  <el-popconfirm title="确定移入回收站吗？可在7天内恢复" @confirm="handleDelete(article.id)">
+                    <template #reference>
+                      <el-button type="danger" link icon="Delete" @click.stop>删除</el-button>
+                    </template>
+                  </el-popconfirm>
                 </div>
               </div>
               <el-empty v-if="!loading && articleList.length === 0" description="暂无文章"></el-empty>
@@ -100,12 +115,7 @@
 
           <el-tab-pane v-if="isMe" label="收藏" name="favorites">
             <div class="fav-grid" v-loading="loading">
-              <div
-                  v-for="folder in favList"
-                  :key="folder.id"
-                  class="fav-card"
-                  @click="$router.push(`/favorite/${folder.id}`)"
-              >
+              <div v-for="folder in favList" :key="folder.id" class="fav-card" @click="$router.push(`/favorite/${folder.id}`)">
                 <div class="f-icon"><el-icon><StarFilled /></el-icon></div>
                 <div class="f-name">{{ folder.name }}</div>
                 <div class="f-count">{{ folder.count }} 篇文章</div>
@@ -113,6 +123,53 @@
               <el-empty v-if="!loading && favList.length === 0" description="暂无收藏夹"></el-empty>
             </div>
           </el-tab-pane>
+
+          <el-tab-pane v-if="isMe" label="草稿箱" name="drafts">
+            <div class="article-list" v-loading="loading">
+              <div v-for="draft in draftList" :key="draft.id" class="article-item draft-item">
+                <div class="content-main" @click="toEdit(draft.id)">
+                  <div class="a-title">{{ draft.title || '无标题草稿' }}</div>
+                  <div class="a-summary">{{ draft.summary || '暂无内容...' }}</div>
+                  <div class="a-meta">
+                    <span>上次编辑: {{ formatTime(draft.updateTime || draft.createTime) }}</span>
+                  </div>
+                </div>
+                <div class="action-btns">
+                  <el-button type="primary" link icon="Edit" @click.stop="toEdit(draft.id)">继续编辑</el-button>
+                  <el-popconfirm title="确定丢弃这个草稿吗？" @confirm="handleDelete(draft.id)">
+                    <template #reference>
+                      <el-button type="danger" link icon="Delete" @click.stop>丢弃</el-button>
+                    </template>
+                  </el-popconfirm>
+                </div>
+              </div>
+              <el-empty v-if="!loading && draftList.length === 0" description="空空如也"></el-empty>
+            </div>
+          </el-tab-pane>
+
+          <el-tab-pane v-if="isMe" label="回收站" name="recycle">
+            <div class="article-list" v-loading="loading">
+              <div v-for="binItem in recycleList" :key="binItem.id" class="article-item draft-item">
+                <div class="content-main" style="cursor: default;">
+                  <div class="a-title" style="color: #999;">{{ binItem.title || '无标题' }}</div>
+                  <div class="a-summary" style="color: #bbb;">{{ binItem.summary }}</div>
+                  <div class="a-meta">
+                    <span style="color: #f56c6c;">将在 {{ getExpireDays(binItem.deleteTime) }} 天后自动清理</span>
+                  </div>
+                </div>
+                <div class="action-btns">
+                  <el-button type="success" link icon="RefreshLeft" @click="handleRestore(binItem.id)">恢复</el-button>
+                  <el-popconfirm title="彻底删除无法找回，确定吗？" @confirm="handleHardDelete(binItem.id)">
+                    <template #reference>
+                      <el-button type="danger" link icon="Delete">彻底删除</el-button>
+                    </template>
+                  </el-popconfirm>
+                </div>
+              </div>
+              <el-empty v-if="!loading && recycleList.length === 0" description="回收站是空的"></el-empty>
+            </div>
+          </el-tab-pane>
+
         </el-tabs>
       </div>
     </div>
@@ -124,6 +181,8 @@ import { ref, onMounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import request from '../utils/request'
+// 引入所有需要的 API
+import { deleteArticle, getDrafts, getRecycleBin, restoreArticle, hardDeleteArticle } from '../api/article'
 
 const route = useRoute()
 const router = useRouter()
@@ -135,6 +194,8 @@ const loading = ref(false)
 const articleList = ref([])
 const userList = ref([])
 const favList = ref([])
+const draftList = ref([]) // 草稿列表
+const recycleList = ref([]) // 回收站列表
 
 const currentUser = computed(() => {
   const str = localStorage.getItem('user')
@@ -147,26 +208,27 @@ const isMe = computed(() => {
   return String(targetUserId.value) === String(currentUser.value.id)
 })
 
-// 1. 加载用户信息
+// 加载个人信息
 const loadProfile = async () => {
   try {
     const id = targetUserId.value
     if(!id) return
     const res = await request.get(`/api/user/profile/${id}`)
     userInfo.value = res.data || {}
-  } catch(e) {
-    console.error(e)
-  }
+  } catch(e) {}
 }
 
-// 2. 加载 Tab 数据
+// 加载 Tab 数据
 const loadTabData = async () => {
   loading.value = true
   const id = targetUserId.value
-  // 清空旧数据，防止闪烁
-  articleList.value = []
-  userList.value = []
-  favList.value = []
+
+  // 清空当前列表，防止闪烁旧数据
+  if (activeTab.value === 'articles') articleList.value = []
+  if (activeTab.value === 'following' || activeTab.value === 'fans') userList.value = []
+  if (activeTab.value === 'favorites') favList.value = []
+  if (activeTab.value === 'drafts') draftList.value = []
+  if (activeTab.value === 'recycle') recycleList.value = []
 
   try {
     if (activeTab.value === 'articles') {
@@ -185,6 +247,16 @@ const loadTabData = async () => {
       const res = await request.get(`/api/favorite/list`)
       favList.value = res.data || []
     }
+    // 【新增】加载草稿
+    else if (activeTab.value === 'drafts' && isMe.value) {
+      const res = await getDrafts()
+      draftList.value = res.data || []
+    }
+    // 【新增】加载回收站
+    else if (activeTab.value === 'recycle' && isMe.value) {
+      const res = await getRecycleBin()
+      recycleList.value = res.data || []
+    }
   } catch(e) {
     console.error(e)
   } finally {
@@ -192,11 +264,59 @@ const loadTabData = async () => {
   }
 }
 
-// 【核心修复】监听 activeTab 的变化
-// 无论是点击 Tab 标签，还是点击上面的数字，都会触发这个监听器
-watch(activeTab, () => {
-  loadTabData()
-})
+// 监听 Tab 切换
+watch(activeTab, () => { loadTabData() })
+
+// 跳转编辑
+const toEdit = (id) => {
+  router.push(`/publish?id=${id}`)
+}
+
+// 删除文章 (移入回收站)
+const handleDelete = async (id) => {
+  try {
+    await deleteArticle(id)
+    ElMessage.success('已移入回收站')
+    loadTabData() // 刷新列表
+    loadProfile() // 刷新统计数据
+  } catch(e) {
+    ElMessage.error('删除失败')
+  }
+}
+
+// 恢复文章
+const handleRestore = async (id) => {
+  try {
+    await restoreArticle(id)
+    ElMessage.success('已恢复')
+    loadTabData()
+    loadProfile()
+  } catch(e) {
+    ElMessage.error('恢复失败')
+  }
+}
+
+// 彻底删除
+const handleHardDelete = async (id) => {
+  try {
+    await hardDeleteArticle(id)
+    ElMessage.success('彻底删除成功')
+    loadTabData()
+  } catch(e) {
+    ElMessage.error('操作失败')
+  }
+}
+
+// 计算过期天数
+const getExpireDays = (deleteTime) => {
+  if(!deleteTime) return 7
+  const delDate = new Date(deleteTime)
+  // 假设过期时间是删除时间 + 7天
+  const expireDate = new Date(delDate.getTime() + 7 * 24 * 60 * 60 * 1000)
+  const diff = expireDate - new Date()
+  const days = Math.ceil(diff / (1000 * 60 * 60 * 24))
+  return days > 0 ? days : 0
+}
 
 // 关注操作
 const handleFollow = async () => {
@@ -204,38 +324,25 @@ const handleFollow = async () => {
   try {
     await request.post(`/api/follow/${targetUserId.value}`)
     userInfo.value.isFollowed = !userInfo.value.isFollowed
-    if(userInfo.value.isFollowed) {
-      userInfo.value.fanCount = (userInfo.value.fanCount || 0) + 1
-    } else {
-      userInfo.value.fanCount = (userInfo.value.fanCount || 0) - 1
-    }
+    if(userInfo.value.isFollowed) userInfo.value.fanCount++
+    else userInfo.value.fanCount--
     ElMessage.success(userInfo.value.isFollowed ? '关注成功' : '已取消关注')
-
-    // 如果当前在粉丝列表Tab，刷新一下列表
-    if (activeTab.value === 'fans') {
-      loadTabData()
-    }
+    if (activeTab.value === 'fans') loadTabData()
   } catch(e) {
     ElMessage.error(e.msg || '操作失败')
   }
 }
 
-const toUser = (uid) => {
-  router.push(`/user/${uid}`)
-}
-
-// 【修复】跳转到设置页
-const editProfile = () => {
-  router.push('/settings')
-}
+const toUser = (uid) => router.push(`/user/${uid}`)
+const editProfile = () => router.push('/settings')
 
 const formatTime = (time) => {
   if(!time) return ''
   if(Array.isArray(time)) return `${time[0]}-${time[1]}-${time[2]}`
-  return String(time).substring(0, 10)
+  return String(time).replace('T', ' ').substring(0, 10)
 }
 
-// 监听路由参数ID变化 (例如从我的主页跳到别人的主页)
+// 监听路由参数变化 (查看他人主页 -> 我的主页)
 watch(() => route.params.id, () => {
   loadProfile()
   loadTabData()
@@ -248,18 +355,10 @@ onMounted(() => {
 </script>
 
 <style scoped lang="scss">
-.user-center-layout {
-  min-height: 100vh; background: #f6f6f6; padding-top: 20px;
-}
-.nav-back {
-  width: 1000px; margin: 0 auto 20px; cursor: pointer; display: flex; align-items: center; gap: 5px; color: #666;
-  &:hover { color: #0066ff; }
-}
-.main-container {
-  width: 1000px; margin: 0 auto;
-}
+.user-center-layout { min-height: 100vh; background: #f6f6f6; padding-top: 20px; }
+.nav-back { width: 1000px; margin: 0 auto 20px; cursor: pointer; display: flex; align-items: center; gap: 5px; color: #666; &:hover { color: #0066ff; } }
+.main-container { width: 1000px; margin: 0 auto; }
 
-/* 头部卡片 */
 .profile-header {
   background: #fff; padding: 40px; border-radius: 4px; box-shadow: 0 1px 3px rgba(18,18,18,0.1); margin-bottom: 20px;
   .info-row {
@@ -282,18 +381,19 @@ onMounted(() => {
   }
 }
 
-/* 内容 Tab */
-.content-tabs {
-  background: #fff; padding: 20px 30px; border-radius: 4px; box-shadow: 0 1px 3px rgba(18,18,18,0.1); min-height: 500px;
-}
+.content-tabs { background: #fff; padding: 20px 30px; border-radius: 4px; box-shadow: 0 1px 3px rgba(18,18,18,0.1); min-height: 500px; }
 
-/* 列表通用样式 */
 .article-item {
-  padding: 20px 0; border-bottom: 1px solid #f0f0f0; cursor: pointer;
-  &:hover .a-title { color: #0066ff; }
-  .a-title { font-size: 18px; font-weight: 600; color: #121212; margin-bottom: 10px; }
-  .a-summary { font-size: 14px; color: #555; margin-bottom: 12px; line-height: 1.6; }
-  .a-meta { display: flex; gap: 20px; font-size: 13px; color: #999; display: flex; align-items: center; }
+  padding: 20px 0; border-bottom: 1px solid #f0f0f0; display: flex; justify-content: space-between; align-items: flex-start;
+  .content-main {
+    flex: 1; cursor: pointer;
+    &:hover .a-title { color: #0066ff; }
+    .a-title { font-size: 18px; font-weight: 600; color: #121212; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+    .a-summary { font-size: 14px; color: #555; margin-bottom: 12px; line-height: 1.6; }
+    .a-meta { display: flex; gap: 20px; font-size: 13px; color: #999; display: flex; align-items: center; }
+  }
+  .action-btns { margin-left: 20px; display: flex; align-items: center; opacity: 0; transition: opacity 0.2s; }
+  &:hover .action-btns { opacity: 1; }
 }
 
 .user-item {

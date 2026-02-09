@@ -1,17 +1,58 @@
 import request from '../utils/request'
 
-// 获取热门文章列表
-export function getHotArticles() {
-    return request({
-        url: '/api/article/hot',
-        method: 'get'
+// 获取热榜
+export const getHotRank = () => {
+    return request.get('/api/article/hot-rank')
+}
+
+// 获取文章详情
+export const getArticleDetail = (id) => {
+    return request.get(`/api/article/detail/${id}`)
+}
+
+// ---------------- 新增接口 ----------------
+
+// 发布文章 (新增或修改，status=1)
+export const publishArticle = (data) => {
+    return request.post('/api/article/publish', data)
+}
+
+// 存为草稿 (新增或修改，status=0)
+export const saveDraft = (data) => {
+    return request.post('/api/article/draft', data)
+}
+
+// 删除文章
+export const deleteArticle = (id) => {
+    return request.delete(`/api/article/${id}`)
+}
+
+// 获取我的草稿列表
+export const getDrafts = () => {
+    return request.get('/api/article/drafts')
+}
+
+// 获取文章详情用于编辑 (回显)
+export const getArticleForEdit = (id) => {
+    return request.get(`/api/article/edit/${id}`)
+}
+
+// 获取某用户的文章列表 (已发布)
+export const getUserArticles = (userId, page, size) => {
+    return request.get(`/api/article/user/${userId}`, {
+        params: { page, size }
     })
 }
 
-// 获取右侧全局热榜
-export function getHotRank() {
-    return request({
-        url: '/api/article/hot-rank',
-        method: 'get'
-    })
+// 获取回收站
+export const getRecycleBin = () => {
+    return request.get('/api/article/recycle-bin')
+}
+// 恢复文章
+export const restoreArticle = (id) => {
+    return request.post(`/api/article/restore/${id}`)
+}
+// 彻底删除
+export const hardDeleteArticle = (id) => {
+    return request.delete(`/api/article/hard/${id}`)
 }

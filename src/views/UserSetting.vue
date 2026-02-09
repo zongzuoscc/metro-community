@@ -22,6 +22,7 @@
                       :show-file-list="false"
                       :on-success="handleAvatarSuccess"
                       :before-upload="beforeAvatarUpload"
+                      :headers="uploadHeaders"
                   >
                     <img v-if="form.avatar" :src="form.avatar" class="avatar" />
                     <el-icon v-else class="avatar-uploader-icon"><Plus /></el-icon>
@@ -96,7 +97,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, reactive } from 'vue'
+import { ref, onMounted, reactive, computed } from 'vue' // 【核心修复 2】引入 computed
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '../utils/request'
@@ -109,6 +110,11 @@ const form = reactive({
   avatar: '',
   intro: '',
   email: ''
+})
+
+// 【核心修复 3】定义上传请求头
+const uploadHeaders = computed(() => {
+  return { token: localStorage.getItem('token') }
 })
 
 // 密码表单
@@ -146,7 +152,7 @@ const loadUserInfo = async () => {
       form.username = u.username
       form.avatar = u.avatar
       form.intro = u.intro
-      form.email = u.email // 后端需要把email也返回回来
+      form.email = u.email
     }
   } catch(e) {}
 }
@@ -217,22 +223,16 @@ const handleForget = () => {
         type: 'warning'
       }
   ).then(() => {
-    // 1. 清除本地登录信息
     localStorage.clear()
-
-    // 2. 提示并跳转
     ElMessage.success('已退出登录，正在前往重置页面...')
     setTimeout(() => {
       router.push('/reset-password')
     }, 500)
-  }).catch(() => {
-    // 取消操作，不做任何事
-  })
+  }).catch(() => {})
 }
 
 // 头像上传相关
 const handleAvatarSuccess = (response, uploadFile) => {
-  // 假设后端返回 Result<String>，url 在 data 里
   if(response.code === 200) {
     form.avatar = response.data
   } else {
