@@ -21,4 +21,11 @@ public interface CommentService extends IService<Comment> {
      * @return 组装好的评论列表
      */
     List<Comment> getCommentsByArticleId(Long articleId);
+
+    /**
+     * 删除评论 (支持本人删除 或 文章作者删除)
+     * @param commentId 评论ID
+     * @param userId 当前操作用户ID
+     */
+    void deleteComment(Long commentId, Long userId);
 }

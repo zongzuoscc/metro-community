@@ -13,6 +13,7 @@ import cumt.zongzuo.community.service.ArticleService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -27,7 +28,6 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
     @Autowired
     private UserMapper userMapper;
 
-    // 使用 StringRedisTemplate 以支持自增操作和可读性
     @Autowired
     private StringRedisTemplate stringRedisTemplate;
 
@@ -35,167 +35,305 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
     private static final String ARTICLE_VIEW_COUNT_KEY = "article:view:count:";
     public static final String ARTICLE_VIEW_DIRTY_SET = "article:view:dirty:ids";
 
+    /**
+     * 获取全站热榜 (status=1 已发布 AND is_deleted=0 未删除)
+     */
     @Override
     public List<Article> getHotArticles() {
-        // 1. 查询最新的 10 篇文章
         QueryWrapper<Article> query = new QueryWrapper<>();
+        query.eq("status", 1).eq("is_deleted", 0); // 【关键过滤】
         query.orderByDesc("create_time").last("limit 10");
         List<Article> list = list(query);
 
-        // 2. 【新增】填充作者信息
         fillArticleAuthors(list);
-
         return list;
     }
 
+    /**
+     * 获取推荐流 (status=1 已发布 AND is_deleted=0 未删除)
+     */
     @Override
     public List<Article> getFeedArticles(String lastCreateTime) {
         QueryWrapper<Article> query = new QueryWrapper<>();
+        query.eq("status", 1).eq("is_deleted", 0); // 【关键过滤】
+
         if (StrUtil.isNotBlank(lastCreateTime)) {
             query.lt("create_time", lastCreateTime);
         }
         query.orderByDesc("create_time").last("limit 10");
 
         List<Article> list = list(query);
-
-        // 2. 【新增】填充作者信息
         fillArticleAuthors(list);
 
         return list;
     }
+
+    /**
+     * 获取热榜排行 (status=1 已发布 AND is_deleted=0 未删除)
+     */
     @Override
     public List<Article> getHotRank() {
         QueryWrapper<Article> query = new QueryWrapper<>();
-        // 只查询 id 和 title，减少数据库传输压力
+        query.eq("status", 1).eq("is_deleted", 0); // 【关键过滤】
         query.select("id", "title");
-        // 按浏览量倒序
         query.orderByDesc("view_count");
-        // 取前 10 条
         query.last("limit 10");
-
         return list(query);
     }
 
+    /**
+     * 【核心】发布文章或存草稿 (新增/修改)
+     */
     @Override
-    public void publishArticle(ArticleDTO dto, Long userId) {
-        Article article = new Article();
+    @Transactional(rollbackFor = Exception.class)
+    public Long publishOrSave(ArticleDTO dto, boolean isPublish, Long userId) {
+        Article article;
+
+        // 1. 判断是【新增】还是【修改】
+        if (dto.getId() != null) {
+            // --- 修改逻辑 ---
+            article = getById(dto.getId());
+            if (article == null) {
+                throw new RuntimeException("文章不存在");
+            }
+            // 权限校验
+            if (!article.getAuthorId().equals(userId)) {
+                throw new RuntimeException("无权修改他人文章");
+            }
+            // 更新时间
+            article.setUpdateTime(LocalDateTime.now());
+        } else {
+            // --- 新增逻辑 ---
+            article = new Article();
+            article.setAuthorId(userId);
+            article.setCreateTime(LocalDateTime.now());
+            article.setUpdateTime(LocalDateTime.now());
+            article.setViewCount(0);
+            article.setLikeCount(0);
+            article.setIsDeleted(0); // 默认为正常状态
+        }
+
+        // 2. 填充通用字段
         article.setTitle(dto.getTitle());
         article.setContent(dto.getContent());
+        article.setCover(dto.getCover()); // 封面图
 
-        // 摘要处理
+        // 3. 自动生成摘要
         if (dto.getSummary() == null || dto.getSummary().isEmpty()) {
-            String cleanContent = dto.getContent().replaceAll("#|`|\\*", "");
-            article.setSummary(cleanContent.length() > 100 ? cleanContent.substring(0, 100) + "..." : cleanContent);
+            String content = dto.getContent();
+            // 【核心修复】先去除 Markdown 图片语法 ![...](...)
+            content = content.replaceAll("!\\[.*?\\]\\(.*?\\)", "");
+            // 再去除其他 Markdown 符号
+            String cleanTxt = content.replaceAll("[#*>`~-]", "");
+            // 去除多余空白
+            cleanTxt = cleanTxt.trim();
+
+            article.setSummary(cleanTxt.length() > 100 ? cleanTxt.substring(0, 100) + "..." : cleanTxt);
         } else {
             article.setSummary(dto.getSummary());
         }
 
-        // 核心：只存 ID，不存 Name
-        article.setAuthorId(userId);
-        // article.setAuthorName(...) <--- 这行代码删掉，因为数据库没这个列了
+        // 4. 设置状态 (1:发布, 0:草稿)
+        article.setStatus(isPublish ? 1 : 0);
 
-        article.setViewCount(0);
-        article.setLikeCount(0);
+        // 5. 保存或更新
+        saveOrUpdate(article);
 
-        // 手动设置时间
-        LocalDateTime now = LocalDateTime.now();
-        article.setCreateTime(now);
-        article.setUpdateTime(now);
-
-        save(article);
+        return article.getId();
     }
 
+    /**
+     * 兼容旧接口，直接调用新逻辑
+     */
+    @Override
+    public void publishArticle(ArticleDTO dto, Long userId) {
+        publishOrSave(dto, true, userId);
+    }
+
+    /**
+     * 获取文章详情
+     */
     @Override
     public Article getDetail(Long id) {
-        // 1. 查询文章基础信息
         Article article = getById(id);
         if (article == null) {
-            // 【新增日志】打印接收到的ID，方便确认是否发生了精度丢失 (例如收到 ...00 结尾的ID)
-            System.err.println("❌ 查询文章失败，数据库中未找到 ID 为: " + id + " 的文章");
             throw new RuntimeException("文章不存在");
         }
 
-        // 2. 填充作者信息 (昵称、头像、简介、统计数据)
+        // 如果文章已删除，且查看者不是作者本人，应该提示不存在 (这里简单起见暂不做作者校验拦截，前端会过滤)
+        if (article.getIsDeleted() == 1) {
+            // throw new RuntimeException("文章已被删除"); // 可选：严格模式下抛出异常
+        }
+
+        // 填充作者信息
         Long authorId = article.getAuthorId();
         if (authorId != null) {
             User author = userMapper.selectById(authorId);
             if (author != null) {
-                // 基础信息
                 article.setAuthorName(author.getUsername());
                 article.setAuthorAvatar(author.getAvatar());
-                // 【新增】简介
                 article.setAuthorIntro(author.getIntro());
 
-                // 【新增】统计数据
-                // 1. 文章总数 (直接用 MyBatis-Plus 的 count 方法)
-                Long articleCount = this.count(new QueryWrapper<Article>().eq("author_id", authorId));
+                // 统计文章总数 (status=1 AND is_deleted=0)
+                Long articleCount = this.count(new QueryWrapper<Article>()
+                        .eq("author_id", authorId)
+                        .eq("status", 1)
+                        .eq("is_deleted", 0));
                 article.setAuthorArticleCount(articleCount);
 
-                // 2. 获赞总数 (调用刚才在 Mapper 写的 SQL)
+                // 统计获赞总数
+                // 注意：这里建议优化 ArticleMapper.sumLikesByAuthorId 的SQL，加上 status=1 AND is_deleted=0
                 Long totalLikes = baseMapper.sumLikesByAuthorId(authorId);
                 article.setAuthorTotalLikes(totalLikes);
-
             } else {
-                article.setAuthorName("用户已注销");
+                article.setAuthorName("注销用户");
                 article.setAuthorAvatar("https://cube.elemecdn.com/9/c2/f0ee8a3c7c9638a54940382568c9dpng.png");
-                article.setAuthorIntro("该用户已离家出走");
-                article.setAuthorArticleCount(0L);
-                article.setAuthorTotalLikes(0L);
             }
         }
 
-        // 3. 处理浏览量 (Redis 计数)
+        // 处理浏览量 (Redis)
         String viewCountKey = ARTICLE_VIEW_COUNT_KEY + id;
-
-        // 如果 Redis 里没有这个 key (比如缓存过期或刚发布)，先从 DB 初始化
         if (Boolean.FALSE.equals(stringRedisTemplate.hasKey(viewCountKey))) {
-            // 【核心修复】防止数据库 view_count 为 null 导致 .toString() 报空指针异常
             Integer dbViewCount = article.getViewCount();
-            // 如果是 null 则默认为 "0"
             String initValue = (dbViewCount == null) ? "0" : dbViewCount.toString();
-
-            // 设置 24 小时过期，防止冷数据占用内存
             stringRedisTemplate.opsForValue().set(viewCountKey, initValue, 24, TimeUnit.HOURS);
         }
-
-        // Redis 原子 +1
         Long newViewCount = stringRedisTemplate.opsForValue().increment(viewCountKey);
-
-        // 赋值给返回值 (只改变内存对象，不写库)
         if (newViewCount != null) {
             article.setViewCount(newViewCount.intValue());
         }
-
-        // 4. 标记脏数据，等待定时任务同步
         stringRedisTemplate.opsForSet().add(ARTICLE_VIEW_DIRTY_SET, id.toString());
 
         return article;
     }
 
+    // ================== 回收站与删除逻辑 ==================
+
     /**
-     * 私有辅助方法：批量填充文章列表的作者信息
-     * 原理：拿到一堆文章 -> 提取所有作者ID -> 一次性查出所有User -> 填回去
+     * 移入回收站 (软删除)
+     */
+    @Override
+    public void moveToRecycleBin(Long articleId, Long userId) {
+        Article article = getById(articleId);
+        if (article == null) return;
+
+        if (!article.getAuthorId().equals(userId)) {
+            throw new RuntimeException("无权删除");
+        }
+
+        article.setIsDeleted(1); // 标记为删除
+        article.setDeleteTime(LocalDateTime.now()); // 记录删除时间
+        updateById(article);
+    }
+
+    /**
+     * 兼容旧接口名，实际上执行移入回收站逻辑
+     */
+    @Override
+    public void deleteArticle(Long articleId, Long userId) {
+        moveToRecycleBin(articleId, userId);
+    }
+
+    /**
+     * 恢复文章
+     */
+    @Override
+    public void restoreArticle(Long articleId, Long userId) {
+        Article article = getById(articleId);
+        if (article == null) return;
+        if (!article.getAuthorId().equals(userId)) throw new RuntimeException("无权操作");
+
+        article.setIsDeleted(0); // 恢复正常
+        article.setDeleteTime(null);
+        updateById(article);
+    }
+
+    /**
+     * 彻底删除 (物理删除)
+     */
+    @Override
+    public void deletePermanently(Long articleId, Long userId) {
+        Article article = getById(articleId);
+        if (article == null) return;
+        if (!article.getAuthorId().equals(userId)) throw new RuntimeException("无权操作");
+
+        removeById(articleId); // 物理删除
+    }
+
+    /**
+     * 获取回收站列表 (is_deleted=1)
+     */
+    @Override
+    public List<Article> getRecycleBin(Long userId) {
+        QueryWrapper<Article> wrapper = new QueryWrapper<>();
+        wrapper.eq("author_id", userId);
+        wrapper.eq("is_deleted", 1);
+        wrapper.orderByDesc("delete_time");
+        return list(wrapper);
+    }
+
+    /**
+     * 定时任务清理过期文章
+     */
+    @Override
+    public void cleanExpiredArticles() {
+        LocalDateTime sevenDaysAgo = LocalDateTime.now().minusDays(7);
+        QueryWrapper<Article> wrapper = new QueryWrapper<>();
+        wrapper.eq("is_deleted", 1);
+        wrapper.le("delete_time", sevenDaysAgo);
+        remove(wrapper);
+    }
+
+    // ================== 草稿箱与列表 ==================
+
+    /**
+     * 获取草稿列表 (status=0 AND is_deleted=0)
+     */
+    @Override
+    public List<Article> getMyDrafts(Long userId) {
+        QueryWrapper<Article> wrapper = new QueryWrapper<>();
+        wrapper.eq("author_id", userId);
+        wrapper.eq("status", 0);
+        wrapper.eq("is_deleted", 0);
+        wrapper.orderByDesc("create_time");
+        return list(wrapper);
+    }
+
+    /**
+     * 获取编辑详情 (回显)
+     */
+    @Override
+    public Article getArticleForEdit(Long articleId, Long userId) {
+        Article article = getById(articleId);
+        if (article == null) throw new RuntimeException("文章不存在");
+        if (!article.getAuthorId().equals(userId)) throw new RuntimeException("无权编辑");
+        return article;
+    }
+
+    /**
+     * 获取用户文章列表 (status=1 AND is_deleted=0)
+     */
+    @Override
+    public Page<Article> getUserArticles(Long userId, int pageNo, int pageSize) {
+        Page<Article> page = new Page<>(pageNo, pageSize);
+        QueryWrapper<Article> wrapper = new QueryWrapper<>();
+        wrapper.eq("author_id", userId);
+        wrapper.eq("status", 1).eq("is_deleted", 0); // 【关键过滤】
+        wrapper.orderByDesc("create_time");
+        return page(page, wrapper);
+    }
+
+    /**
+     * 辅助方法：填充作者信息
      */
     private void fillArticleAuthors(List<Article> articles) {
         if (articles == null || articles.isEmpty()) {
             return;
         }
-
-        // 1. 提取所有不重复的 authorId
-        // 需要导入: java.util.Set, java.util.stream.Collectors
-        Set<Long> userIds = articles.stream()
-                .map(Article::getAuthorId)
-                .collect(Collectors.toSet());
-
-        // 2. 批量查询 User 表 (SELECT * FROM sys_user WHERE id IN (...))
-        // 需要导入: java.util.Map
+        Set<Long> userIds = articles.stream().map(Article::getAuthorId).collect(Collectors.toSet());
         List<User> users = userMapper.selectBatchIds(userIds);
+        Map<Long, User> userMap = users.stream().collect(Collectors.toMap(User::getId, u -> u));
 
-        // 3. 转成 Map 方便匹配 (Key: userId, Value: User对象)
-        Map<Long, User> userMap = users.stream()
-                .collect(Collectors.toMap(User::getId, u -> u));
-
-        // 4. 回填数据
         for (Article article : articles) {
             User u = userMap.get(article.getAuthorId());
             if (u != null) {
@@ -203,30 +341,8 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
                 article.setAuthorAvatar(u.getAvatar());
             } else {
                 article.setAuthorName("注销用户");
-                article.setAuthorAvatar("https://cube.elemecdn.com/9/c2/f0ee8a3c7c9638a54940382568c9dpng.png"); // 默认头像
+                article.setAuthorAvatar("https://cube.elemecdn.com/9/c2/f0ee8a3c7c9638a54940382568c9dpng.png");
             }
         }
     }
-
-    // ...
-
-    @Override
-    public Page<Article> getUserArticles(Long userId, int pageNo, int pageSize) {
-        // 1. 构建分页对象
-        Page<Article> page = new Page<>(pageNo, pageSize);
-
-        // 2. 构建查询条件
-        QueryWrapper<Article> wrapper = new QueryWrapper<>();
-        wrapper.eq("author_id", userId);
-        wrapper.orderByDesc("create_time");
-
-        // 3. 执行查询
-        Page<Article> result = page(page, wrapper);
-
-        // 4. (可选) 如果你想在列表里显示"xxx 赞了文章"，可以这里填充作者信息
-        // 但因为这是查"某人"的文章，作者都是同一个，前端直接用外面的用户信息即可，这里可以省略填充
-
-        return result;
-    }
-
 }

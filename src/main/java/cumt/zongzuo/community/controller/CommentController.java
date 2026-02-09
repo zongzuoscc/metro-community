@@ -36,4 +36,11 @@ public class CommentController {
         commentService.publishComment(dto, userId);
         return Result.success("评论成功");
     }
+
+    @DeleteMapping("/{id}")
+    public Result<String> delete(@PathVariable Long id, @RequestHeader("token") String token) {
+        Long userId = JwtUtils.getUserId(token);
+        commentService.deleteComment(id, userId);
+        return Result.success("删除成功");
+    }
 }

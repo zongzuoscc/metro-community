@@ -1,6 +1,8 @@
 package cumt.zongzuo.community.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import cumt.zongzuo.community.dto.CommentDTO;
 import cumt.zongzuo.community.entity.Article;
@@ -14,6 +16,7 @@ import cumt.zongzuo.community.service.MessageService;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.*;
@@ -139,5 +142,61 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
         }
 
         return rootComments;
+    }
+
+    /**
+     * 删除评论 (修复版：使用 parentId)
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void deleteComment(Long commentId, Long userId) {
+        // 1. 查询评论是否存在
+        Comment comment = getById(commentId);
+        if (comment == null) {
+            throw new RuntimeException("评论不存在");
+        }
+
+        // 2. 查询所属文章 (用于校验文章作者权限)
+        Article article = articleMapper.selectById(comment.getArticleId());
+        if (article == null) {
+            throw new RuntimeException("关联文章不存在");
+        }
+
+        // 3. 权限校验
+        // 规则：当前用户是评论发布者 OR 当前用户是文章作者
+        boolean isSelf = comment.getUserId().equals(userId);
+        boolean isAuthor = article.getAuthorId().equals(userId);
+
+        if (!isSelf && !isAuthor) {
+            throw new RuntimeException("无权删除该评论");
+        }
+
+        // 4. 收集需要删除的评论ID
+        List<Long> deleteIds = new ArrayList<>();
+        deleteIds.add(commentId);
+
+        // 5. 判断是否是根评论 (parentId == 0)
+        // 如果是根评论，需要删除该楼层下的所有子评论
+        if (comment.getParentId() == null || comment.getParentId() == 0) {
+            // 查询所有 parentId = 当前评论ID 的子评论
+            List<Comment> children = list(new QueryWrapper<Comment>().eq("parent_id", commentId));
+            if (children != null && !children.isEmpty()) {
+                List<Long> childIds = children.stream().map(Comment::getId).collect(Collectors.toList());
+                deleteIds.addAll(childIds);
+            }
+        }
+
+        // 6. 批量删除
+        removeBatchByIds(deleteIds);
+
+        // 7. 更新文章评论数 (减去实际删除的数量)
+        int deleteCount = deleteIds.size();
+        if (deleteCount > 0) {
+            UpdateWrapper<Article> updateWrapper = new UpdateWrapper<>();
+            // 使用 SQL 原子减，并防止减为负数
+            updateWrapper.setSql("comment_count = GREATEST(comment_count - " + deleteCount + ", 0)");
+            updateWrapper.eq("id", article.getId());
+            articleMapper.update(null, updateWrapper);
+        }
     }
 }

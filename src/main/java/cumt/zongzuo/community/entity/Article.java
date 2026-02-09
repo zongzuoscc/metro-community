@@ -21,31 +21,40 @@ public class Article {
 
     private String summary;
 
+    private String cover;
+
     private Long authorId;
 
     private Integer viewCount;
 
     private Integer likeCount;
+    // 【新增】
+    private Integer commentCount;
 
     private LocalDateTime createTime;
-
     private LocalDateTime updateTime;
+    private Integer status;
+
+    /**
+     * 是否软删除: 0-否, 1-是
+     */
+    private Integer isDeleted;
+
+    /**
+     * 删除时间 (用于计算过期)
+     */
+    private LocalDateTime deleteTime;
 
     @TableField(exist = false)
     private String authorName;
-
     @TableField(exist = false)
     private String authorAvatar;
-
     @TableField(exist = false)
-    private String authorIntro;       // 作者简介
-
+    private String authorIntro;
     @TableField(exist = false)
-    private Long authorArticleCount;  // 作者文章总数
-
+    private Long authorArticleCount;
     @TableField(exist = false)
-    private Long authorTotalLikes;    // 作者获赞总数
-
+    private Long authorTotalLikes;
     @TableField(exist = false)
-    private Boolean isLiked; // 当前登录用户是否已点赞
+    private Boolean isLiked;
 }
