@@ -56,3 +56,27 @@ export const restoreArticle = (id) => {
 export const hardDeleteArticle = (id) => {
     return request.delete(`/api/article/hard/${id}`)
 }
+
+// 【新增】获取草稿数量
+export const getDraftCount = () => {
+    return request.get('/api/article/draft-count')
+}
+
+// 【新增】获取7天热榜
+export const getHotFeed = () => {
+    return request.get('/api/article/hot-feed')
+}
+
+// 【新增】获取关注流
+export const getFollowFeed = (page) => {
+    return request.get('/api/article/follow-feed', {
+        params: { page }
+    })
+}
+
+// 【新增】搜索文章
+export const searchArticles = (keyword, page) => {
+    return request.get('/api/article/search', {
+        params: { keyword, page }
+    })
+}

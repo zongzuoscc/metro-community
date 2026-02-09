@@ -188,7 +188,7 @@ const route = useRoute()
 const router = useRouter()
 
 const userInfo = ref({})
-const activeTab = ref('articles')
+const activeTab = ref(route.query.tab || 'articles')
 const loading = ref(false)
 
 const articleList = ref([])
@@ -266,6 +266,11 @@ const loadTabData = async () => {
 
 // 监听 Tab 切换
 watch(activeTab, () => { loadTabData() })
+
+// 👇 添加监听: 如果路由参数变化，自动切换 Tab (支持深度链接)
+watch(() => route.query.tab, (newTab) => {
+  if (newTab) activeTab.value = newTab
+})
 
 // 跳转编辑
 const toEdit = (id) => {

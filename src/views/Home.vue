@@ -6,10 +6,9 @@
         <div class="navbar-left">
           <div class="logo" @click="refreshPage">Metro</div>
           <div class="nav-links">
-            <span class="nav-item active">推荐</span>
-            <span class="nav-item">热榜</span>
-            <span class="nav-item">关注</span>
-            <span class="nav-item">专栏</span>
+            <span class="nav-item" :class="{ active: activeNav === 'recommend' }" @click="switchNav('recommend')">推荐</span>
+            <span class="nav-item" :class="{ active: activeNav === 'hot' }" @click="switchNav('hot')">热榜</span>
+            <span class="nav-item" :class="{ active: activeNav === 'follow' }" @click="switchNav('follow')">关注</span>
           </div>
         </div>
 
@@ -17,9 +16,10 @@
           <div class="search-box">
             <el-input
                 v-model="searchText"
-                placeholder="搜索感兴趣的内容..."
+                placeholder="搜索感兴趣的内容或用户..."
                 class="search-input"
                 suffix-icon="Search"
+                @keydown.enter="handleSearch"
             />
           </div>
         </div>
@@ -59,11 +59,9 @@
                       <el-dropdown-item command="userCenter">
                         <el-icon><User /></el-icon> 个人中心
                       </el-dropdown-item>
-
                       <el-dropdown-item command="settings">
                         <el-icon><Setting /></el-icon> 个人设置
                       </el-dropdown-item>
-
                       <el-dropdown-item divided command="logout">
                         <el-icon><SwitchButton /></el-icon> 退出登录
                       </el-dropdown-item>
@@ -71,7 +69,6 @@
                   </template>
                 </el-dropdown>
               </template>
-
               <template v-else>
                 <el-button type="primary" link @click="$router.push('/login')" class="login-text-btn">登录</el-button>
               </template>
@@ -84,7 +81,7 @@
 
     <div class="main-container">
       <div class="feed-column">
-        <el-card class="creation-card" shadow="never">
+        <el-card class="creation-card" shadow="never" v-if="activeNav === 'recommend'">
           <div class="creation-actions">
             <div class="action-item"><el-icon :size="20" color="#e6a23c"><Edit /></el-icon><span>写回答</span></div>
             <div class="action-item" @click="$router.push('/publish')">
@@ -96,9 +93,24 @@
         </el-card>
 
         <div class="feed-tabs">
-          <span class="tab-item active">推荐</span>
-          <span class="tab-item">最新</span>
-          <span class="tab-item">热榜</span>
+          <template v-if="activeNav === 'search'">
+            <div class="search-tabs">
+              <span class="tab-item" :class="{ active: searchType === 'article' }" @click="switchSearchType('article')">文章</span>
+              <span class="tab-item" :class="{ active: searchType === 'user' }" @click="switchSearchType('user')">用户</span>
+            </div>
+            <div class="search-info">
+              关于 "{{ currentSearchKeyword }}" 的搜索结果
+              <el-button link type="primary" size="small" @click="clearSearch" style="margin-left: 10px;">
+                返回推荐
+              </el-button>
+            </div>
+          </template>
+
+          <template v-else>
+                <span class="tab-item active" style="cursor: default;">
+                    {{ getTabTitle() }}
+                </span>
+          </template>
         </div>
 
         <div class="article-list"
@@ -106,51 +118,61 @@
              :infinite-scroll-disabled="disabled"
              infinite-scroll-distance="50">
 
-          <el-card v-for="article in articleList" :key="article.id" class="feed-card" shadow="never" @click.native="toDetail(article.id)">
-            <div class="card-body">
-              <div class="text-content">
-                <h2 class="title">{{ article.title }}</h2>
-                <div class="content-preview">
-                  <div class="text-summary">
-                    <span class="author-tag" v-if="article.authorName">{{ article.authorName }}:</span>
-                    {{ article.summary }}
+          <template v-if="activeNav !== 'search' || searchType === 'article'">
+            <el-card v-for="(article, index) in articleList" :key="article.id" class="feed-card" shadow="never" @click.native="toDetail(article.id)">
+              <div class="card-body">
+                <div class="rank-badge" v-if="activeNav === 'hot'" :class="'rank-' + (index + 1)">
+                  {{ index + 1 }}
+                </div>
+
+                <div class="text-content">
+                  <h2 class="title" v-html="highlightKeyword(article.title)"></h2>
+                  <div class="content-preview">
+                    <div class="text-summary">
+                      <span class="author-tag" v-if="article.authorName">{{ article.authorName }}:</span>
+                      <span v-html="highlightKeyword(article.summary)"></span>
+                    </div>
                   </div>
+                </div>
+
+                <div class="cover-box" v-if="article.cover">
+                  <img :src="article.cover" alt="cover" />
                 </div>
               </div>
 
-              <div class="cover-box" v-if="article.cover">
-                <img :src="article.cover" alt="cover" />
+              <div class="card-actions" @click.stop>
+                <button class="vote-btn up">
+                  <el-icon><CaretTop /></el-icon> 赞同 {{ article.likeCount }}
+                </button>
+                <div class="action-item text-btn">
+                  <el-icon><ChatDotRound /></el-icon> {{ article.commentCount || 0 }} 条评论
+                </div>
+                <div class="time-stamp">
+                  {{ formatTime(article.createTime) }}
+                </div>
               </div>
+            </el-card>
+
+            <el-empty v-if="!loading && articleList.length === 0" :description="emptyText"></el-empty>
+          </template>
+
+          <template v-if="activeNav === 'search' && searchType === 'user'">
+            <div v-for="u in userList" :key="u.id" class="user-card" @click="toUser(u.id)">
+              <el-avatar :size="50" :src="u.avatar" icon="UserFilled"></el-avatar>
+              <div class="u-info">
+                <div class="name" v-html="highlightKeyword(u.username)"></div>
+                <div class="intro text-ellipsis" v-html="highlightKeyword(u.intro || '暂无简介')"></div>
+              </div>
+              <el-button round size="small" @click.stop="toUser(u.id)">查看主页</el-button>
             </div>
+            <el-empty v-if="!loading && userList.length === 0" description="没有找到相关用户"></el-empty>
+          </template>
 
-            <div class="card-actions" @click.stop>
-              <button class="vote-btn up">
-                <el-icon><CaretTop /></el-icon> 赞同 {{ article.likeCount }}
-              </button>
-              <button class="vote-btn down">
-                <el-icon><CaretBottom /></el-icon>
-              </button>
-
-              <div class="action-item text-btn">
-                <el-icon><ChatDotRound /></el-icon> {{ article.commentCount || 0 }} 条评论
-              </div>
-
-              <div class="action-item text-btn">
-                <el-icon><Star /></el-icon> 收藏
-              </div>
-              <div class="action-item text-btn">
-                <el-icon><Share /></el-icon> 分享
-              </div>
-              <div class="time-stamp">
-                {{ formatTime(article.createTime) }}
-              </div>
-            </div>
-          </el-card>
         </div>
 
         <div class="loading-state">
           <el-skeleton v-if="loading" :rows="3" animated />
-          <p v-if="noMore" class="no-more">—— 到底啦 ——</p>
+          <p v-if="noMore && (articleList.length > 0 || userList.length > 0)" class="no-more">—— 到底啦 ——</p>
         </div>
       </div>
 
@@ -158,7 +180,7 @@
         <el-card class="sidebar-card creator-center" shadow="never">
           <div class="card-header">
             <span class="title"><el-icon><Trophy /></el-icon> 创作中心</span>
-            <span class="link">草稿箱 (0)</span>
+            <span class="link" @click="toDrafts">草稿箱 ({{ draftCount }})</span>
           </div>
           <div class="creator-body">
             <div class="guide-text">开启你的技术创作之旅，快来发布第一篇文章吧~</div>
@@ -192,93 +214,198 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
-// 【新增】引入 ElNotification 用于好友消息弹窗
 import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
 import request from '../utils/request'
-import { getHotRank } from '../api/article'
+// 【引入 searchUsers】
+import { getHotRank, getDraftCount, getHotFeed, getFollowFeed, searchArticles } from '../api/article'
+import { searchUsers } from '../api/user'
 import { UserFilled } from '@element-plus/icons-vue'
 
 const router = useRouter()
 
-// 1. 定义未读数变量
-const unreadCount = ref(0)
-const chatUnreadCount = ref(0) // 私信未读
-
-// 2. 好友列表缓存 (用于判断是否弹窗)
-const friendIds = ref(new Set())
-
-// 获取用户信息
-const getUser = () => {
-  try {
-    const u = localStorage.getItem('user')
-    return u ? JSON.parse(u) : {}
-  } catch(e) { return {} }
-}
-const user = ref(getUser())
+// 状态变量
+const activeNav = ref('recommend')
 const searchText = ref('')
+const currentSearchKeyword = ref('')
+const searchType = ref('article') // 'article' | 'user'
+const pageNo = ref(1)
+
+const unreadCount = ref(0)
+const chatUnreadCount = ref(0)
+const friendIds = ref(new Set())
+const draftCount = ref(0)
+
+const user = ref(localStorage.getItem('user') ? JSON.parse(localStorage.getItem('user')) : {})
 
 const articleList = ref([])
+const userList = ref([]) // 存储搜索到的用户
 const hotTopics = ref([])
 const loading = ref(false)
 const noMore = ref(false)
 
 const disabled = computed(() => loading.value || noMore.value)
 
-// 下拉菜单指令处理
-const handleCommand = (command) => {
-  if (command === 'userCenter') {
-    if (user.value.id) {
-      router.push(`/user/${user.value.id}`)
-    } else {
-      ElMessage.warning('请先登录')
-      router.push('/login')
-    }
-  }
-  else if (command === 'settings') {
-    router.push('/settings')
-  }
-  else if (command === 'logout') {
-    ElMessageBox.confirm('确定要退出登录吗?', '提示', {
-      confirmButtonText: '确定',
-      cancelButtonText: '取消',
-      type: 'warning'
-    }).then(() => {
-      localStorage.clear()
-      router.push('/login')
-      ElMessage.success('已退出')
-    }).catch(() => {})
-  }
+const emptyText = computed(() => {
+  if (activeNav.value === 'follow') return '你还没有关注任何人，或关注的人暂无动态'
+  if (activeNav.value === 'hot') return '暂无热榜数据'
+  if (activeNav.value === 'search') return '没有找到相关内容'
+  return '暂无推荐内容'
+})
+
+const getTabTitle = () => {
+  if (activeNav.value === 'recommend') return '推荐'
+  if (activeNav.value === 'hot') return '🔥 7天热榜 TOP 10'
+  if (activeNav.value === 'follow') return '👀 我的关注动态'
+  return '列表'
 }
 
+const switchNav = (nav) => {
+  if (activeNav.value === nav) return
+  if (nav === 'follow' && !user.value.id) {
+    ElMessage.warning('请先登录')
+    router.push('/login')
+    return
+  }
+  activeNav.value = nav
+  searchText.value = ''
+  resetList()
+  loadMore()
+}
+
+// 切换搜索类型 (文章/用户)
+const switchSearchType = (type) => {
+  if (searchType.value === type) return
+  searchType.value = type
+  resetList()
+  loadMore()
+}
+
+const handleSearch = () => {
+  const kw = searchText.value.trim()
+  if (!kw) return ElMessage.warning('请输入搜索关键词')
+
+  activeNav.value = 'search'
+  currentSearchKeyword.value = kw
+  resetList()
+  loadMore()
+}
+
+const clearSearch = () => {
+  searchText.value = ''
+  switchNav('recommend')
+}
+
+const highlightKeyword = (text) => {
+  if (activeNav.value !== 'search' || !currentSearchKeyword.value || !text) return text
+  const reg = new RegExp(currentSearchKeyword.value, 'gi')
+  return text.replace(reg, (match) => `<span style="color: #f56c6c; font-weight: bold;">${match}</span>`)
+}
+
+const resetList = () => {
+  articleList.value = []
+  userList.value = []
+  pageNo.value = 1
+  noMore.value = false
+  loading.value = false
+}
+
+// --- 核心逻辑：加载数据 ---
 const loadMore = async () => {
   if (loading.value || noMore.value) return
   loading.value = true
+
   try {
-    let lastTime = null
-    if (articleList.value.length > 0) {
-      lastTime = articleList.value[articleList.value.length - 1].createTime
+    let res;
+
+    if (activeNav.value === 'recommend') {
+      let lastTime = null
+      if (articleList.value.length > 0) {
+        lastTime = articleList.value[articleList.value.length - 1].createTime
+      }
+      res = await request.get('/api/article/feed', { params: { lastCreateTime: lastTime } })
     }
-    const res = await request.get('/api/article/feed', {
-      params: { lastCreateTime: lastTime }
-    })
-    const newArticles = res.data || []
-    if (newArticles.length === 0) {
+    else if (activeNav.value === 'hot') {
+      res = await getHotFeed()
       noMore.value = true
-    } else {
-      articleList.value.push(...newArticles)
     }
+    else if (activeNav.value === 'follow') {
+      res = await getFollowFeed(pageNo.value)
+      if (res.code === 200) pageNo.value++
+    }
+    // 【搜索逻辑分支】
+    else if (activeNav.value === 'search') {
+      if (searchType.value === 'article') {
+        res = await searchArticles(currentSearchKeyword.value, pageNo.value)
+        if (res.code === 200) {
+          const newArticles = res.data?.records || []
+          if (newArticles.length === 0) noMore.value = true
+          else {
+            articleList.value.push(...newArticles)
+            pageNo.value++
+          }
+        }
+      } else {
+        // 搜索用户
+        res = await searchUsers(currentSearchKeyword.value, pageNo.value)
+        if (res.code === 200) {
+          const newUsers = res.data?.records || []
+          if (newUsers.length === 0) noMore.value = true
+          else {
+            userList.value.push(...newUsers)
+            pageNo.value++
+          }
+        }
+      }
+      loading.value = false // 提前结束，因为上面自己处理了数据
+      return
+    }
+
+    // 处理非搜索文章的数据
+    const newArticles = Array.isArray(res.data) ? res.data : (res.data?.records || [])
+    if (newArticles.length === 0) noMore.value = true
+    else articleList.value.push(...newArticles)
+
   } catch (e) {
     console.error(e)
+    noMore.value = true
   } finally {
     loading.value = false
   }
+}
+
+// ... 辅助函数 ...
+const handleCommand = (command) => {
+  if (command === 'userCenter') {
+    if (user.value.id) router.push(`/user/${user.value.id}`)
+    else router.push('/login')
+  } else if (command === 'settings') {
+    router.push('/settings')
+  } else if (command === 'logout') {
+    ElMessageBox.confirm('确定退出?', '提示').then(() => {
+      localStorage.clear()
+      router.push('/login')
+    }).catch(()=>{})
+  }
+}
+
+const toDrafts = () => {
+  if (!user.value.id) return ElMessage.warning('请先登录')
+  router.push({ path: `/user/${user.value.id}`, query: { tab: 'drafts' } })
+}
+
+const loadDraftCount = async () => {
+  if (!user.value.id) return
+  try {
+    const res = await getDraftCount()
+    draftCount.value = res.data || 0
+  } catch(e) {}
 }
 
 const loadHotRank = async () => {
   try {
     const res = await getHotRank()
     hotTopics.value = res.data || []
-  } catch (e) { console.error(e) }
+  } catch (e) {}
 }
 
 const getUnreadCount = async () => {
@@ -297,11 +424,9 @@ const getChatUnread = async () => {
   } catch(e){}
 }
 
-// 【新增】加载好友ID列表 (用于通知过滤)
 const loadFriendIds = async () => {
   if(!user.value.id) return
   try {
-    // 复用获取会话列表接口，后端已返回 isFriend 字段
     const res = await request.get('/api/chat/friends')
     const list = res.data || []
     friendIds.value.clear()
@@ -311,11 +436,8 @@ const loadFriendIds = async () => {
   } catch(e) {}
 }
 
-// 【新增】处理全局消息通知
 const handleGlobalMessage = (e) => {
   const msg = e.detail
-
-  // 1. 如果是好友发来的，右下角弹窗提示
   if (friendIds.value.has(msg.fromId)) {
     ElNotification({
       title: '好友消息',
@@ -323,15 +445,19 @@ const handleGlobalMessage = (e) => {
       type: 'info',
       position: 'bottom-right',
       duration: 4000,
-      onClick: () => {
-        // 点击通知跳转到聊天页，并选中该用户
-        router.push(`/chat?to=${msg.fromId}`)
-      }
+      onClick: () => { router.push(`/chat?to=${msg.fromId}`) }
     })
   }
-
-  // 2. 无论是否好友，都更新信封红点
   getChatUnread()
+}
+
+const toDetail = (id) => router.push(`/article/${id}`)
+const toUser = (id) => router.push(`/user/${id}`)
+const refreshPage = () => { window.location.reload() }
+const formatTime = (time) => {
+  if(!time) return ''
+  if(Array.isArray(time)) return `${time[0]}-${time[1]}-${time[2]}`
+  return String(time).replace('T', ' ').substring(0, 10)
 }
 
 onMounted(() => {
@@ -339,8 +465,7 @@ onMounted(() => {
   loadHotRank()
   getUnreadCount()
   getChatUnread()
-
-  // 初始化消息监听
+  loadDraftCount()
   loadFriendIds()
   window.addEventListener('on-chat-msg', handleGlobalMessage)
 })
@@ -348,14 +473,6 @@ onMounted(() => {
 onUnmounted(() => {
   window.removeEventListener('on-chat-msg', handleGlobalMessage)
 })
-
-const toDetail = (id) => router.push(`/article/${id}`)
-const refreshPage = () => { window.location.reload() }
-const formatTime = (time) => {
-  if(!time) return ''
-  if(Array.isArray(time)) return `${time[0]}-${time[1]}-${time[2]}`
-  return String(time).replace('T', ' ').substring(0, 10)
-}
 </script>
 
 <style scoped lang="scss">
@@ -365,23 +482,18 @@ const formatTime = (time) => {
   font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 
-/* --- 1. 顶部导航栏 --- */
 .navbar-wrapper {
   position: fixed; top: 0; left: 0; width: 100%; height: 52px; background: #fff; box-shadow: 0 1px 3px rgba(18, 18, 18, 0.1); z-index: 1000;
 }
 
 .navbar-container {
-  width: 100%; height: 100%;
-  padding: 0 50px 0 30px;
+  width: 100%; height: 100%; padding: 0 50px 0 30px;
   display: flex; align-items: center; justify-content: space-between;
 }
 
-/* 左侧 */
 .navbar-left {
   display: flex; align-items: center; flex-shrink: 0;
-  .logo {
-    font-size: 30px; font-weight: 900; color: #0066ff; margin-right: 30px; letter-spacing: -1px; cursor: pointer; line-height: 1;
-  }
+  .logo { font-size: 30px; font-weight: 900; color: #0066ff; margin-right: 30px; letter-spacing: -1px; cursor: pointer; line-height: 1; }
   .nav-links {
     display: flex; gap: 30px; height: 100%;
     .nav-item {
@@ -393,7 +505,6 @@ const formatTime = (time) => {
   }
 }
 
-/* 中间 */
 .navbar-center {
   flex: 1; display: flex; justify-content: center; padding: 0 20px; margin-right: 20px;
   .search-box {
@@ -402,21 +513,16 @@ const formatTime = (time) => {
   }
 }
 
-/* 右侧 */
 .navbar-right {
-  display: flex; align-items: center; gap: 20px; flex-shrink: 0; white-space: nowrap;
-  margin-right: 60px;
-
+  display: flex; align-items: center; gap: 20px; flex-shrink: 0; white-space: nowrap; margin-right: 60px;
   .action-btns { margin-right: 10px; }
   .user-area {
     display: flex; align-items: center; gap: 24px; flex-shrink: 0;
     .icon-btn { color: #8590a6; cursor: pointer; display: flex; align-items: center; &:hover { color: #76839b; } }
-
     .profile-box {
       display: flex; align-items: center; flex-shrink: 0;
       .avatar-wrapper {
-        cursor: pointer;
-        width: 34px; height: 34px; display: block;
+        cursor: pointer; width: 34px; height: 34px; display: block;
         .user-avatar { width: 100%; height: 100%; background-color: #f0f2f5; color: #909399; }
       }
     }
@@ -424,7 +530,6 @@ const formatTime = (time) => {
   }
 }
 
-/* --- 主体内容 --- */
 .main-container {
   width: 1000px; margin: 64px auto 0; display: flex; align-items: flex-start; gap: 10px;
   @media (max-width: 1050px) { width: 100%; padding: 0 10px; }
@@ -433,6 +538,7 @@ const formatTime = (time) => {
 .feed-column {
   width: 694px;
   @media (max-width: 1050px) { flex: 1; width: auto; }
+
   .creation-card {
     margin-bottom: 10px; border: none; box-shadow: 0 1px 3px rgba(18, 18, 18, 0.1);
     .creation-actions {
@@ -440,16 +546,23 @@ const formatTime = (time) => {
       .action-item { display: flex; align-items: center; gap: 8px; font-size: 15px; color: #444; cursor: pointer; &:hover { color: #0066ff; } }
     }
   }
+
   .feed-tabs {
-    background: #fff; padding: 15px 20px; border-bottom: 1px solid #f0f2f7; box-shadow: 0 1px 3px rgba(18, 18, 18, 0.1); display: flex; gap: 40px;
+    background: #fff; padding: 15px 20px; border-bottom: 1px solid #f0f2f7; box-shadow: 0 1px 3px rgba(18, 18, 18, 0.1);
+    display: flex; gap: 40px; align-items: center; justify-content: flex-start;
     .tab-item { font-size: 15px; color: #121212; cursor: pointer; &:hover { color: #0066ff; } &.active { color: #0066ff; font-weight: 600; } }
+
+    /* 搜索子Tab样式 */
+    .search-tabs {
+      display: flex; gap: 20px; border-right: 1px solid #eee; padding-right: 20px; margin-right: 10px;
+    }
+    .search-info { font-size: 14px; color: #666; flex: 1; display: flex; justify-content: space-between; align-items: center; }
   }
+
   .article-list {
     .feed-card {
       border: none; border-radius: 0; border-bottom: 1px solid #f0f0f0; box-shadow: none; padding: 20px; cursor: pointer;
       &:hover { background: #fcfcfc; }
-
-      /* 新增：文章内容布局 (左文右图) */
       .card-body {
         display: flex; gap: 20px;
         .text-content { flex: 1; min-width: 0; }
@@ -457,15 +570,20 @@ const formatTime = (time) => {
           flex-shrink: 0; width: 190px; height: 105px; border-radius: 4px; overflow: hidden; background: #f6f6f6;
           img { width: 100%; height: 100%; object-fit: cover; transition: transform 0.3s; }
         }
+        .rank-badge {
+          flex-shrink: 0; width: 24px; height: 24px; text-align: center; line-height: 24px;
+          font-weight: bold; color: #999; font-size: 16px; margin-right: 5px;
+          &.rank-1 { color: #f56c6c; font-size: 20px; }
+          &.rank-2 { color: #e6a23c; font-size: 18px; }
+          &.rank-3 { color: #e6a23c; font-size: 18px; }
+        }
       }
       &:hover .cover-box img { transform: scale(1.05); }
-
       .title { font-size: 18px; font-weight: 600; color: #121212; margin: 0 0 10px 0; line-height: 1.6; }
       .title:hover { color: #0066ff; }
       .content-preview {
         font-size: 15px; color: #121212; line-height: 1.67; margin-bottom: 10px;
         .author-tag { font-weight: 600; color: #444; margin-right: 4px; }
-        .read-more { color: #0066ff; margin-left: 4px; font-size: 14px; display: inline-flex; align-items: center; }
       }
       .card-actions {
         display: flex; align-items: center; gap: 20px; margin-top: 10px;
@@ -476,6 +594,16 @@ const formatTime = (time) => {
         }
         .text-btn { display: flex; align-items: center; gap: 4px; font-size: 14px; color: #8590a6; cursor: pointer; &:hover { color: #76839b; } }
         .time-stamp { margin-left: auto; font-size: 12px; color: #bfc1c7; }
+      }
+    }
+
+    /* 用户卡片样式 */
+    .user-card {
+      padding: 20px; border-bottom: 1px solid #f0f0f0; display: flex; align-items: center; gap: 15px; cursor: pointer; background: #fff;
+      &:hover { background: #fcfcfc; }
+      .u-info { flex: 1; min-width: 0;
+        .name { font-weight: 600; font-size: 16px; color: #333; margin-bottom: 4px; }
+        .intro { font-size: 14px; color: #8590a6; }
       }
     }
   }
@@ -490,6 +618,7 @@ const formatTime = (time) => {
       display: flex; justify-content: space-between; align-items: center; font-size: 14px; color: #8590a6; margin-bottom: 12px;
       .title { color: #121212; font-weight: 600; }
       &.border-bottom { border-bottom: 1px solid #f6f6f6; padding-bottom: 10px; margin-bottom: 10px; }
+      .link { cursor: pointer; &:hover { color: #0066ff; } }
     }
     &.creator-center {
       .guide-text { font-size: 13px; color: #8590a6; margin-bottom: 15px; text-align: center; }
@@ -512,6 +641,7 @@ const formatTime = (time) => {
 
 .loading-state { padding: 20px; text-align: center; background: #fff; }
 .no-more { color: #8590a6; font-size: 14px; padding: 20px 0; }
+.text-ellipsis { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .bell-badge {
   display: flex; align-items: center;
