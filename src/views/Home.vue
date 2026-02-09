@@ -107,14 +107,22 @@
              infinite-scroll-distance="50">
 
           <el-card v-for="article in articleList" :key="article.id" class="feed-card" shadow="never" @click.native="toDetail(article.id)">
-            <h2 class="title">{{ article.title }}</h2>
-            <div class="content-preview">
-              <div class="text-summary">
-                <span class="author-tag" v-if="article.authorName">{{ article.authorName }}:</span>
-                {{ article.summary }}
-                <span class="read-more">阅读全文 <el-icon><ArrowDown /></el-icon></span>
+            <div class="card-body">
+              <div class="text-content">
+                <h2 class="title">{{ article.title }}</h2>
+                <div class="content-preview">
+                  <div class="text-summary">
+                    <span class="author-tag" v-if="article.authorName">{{ article.authorName }}:</span>
+                    {{ article.summary }}
+                  </div>
+                </div>
+              </div>
+
+              <div class="cover-box" v-if="article.cover">
+                <img :src="article.cover" alt="cover" />
               </div>
             </div>
+
             <div class="card-actions" @click.stop>
               <button class="vote-btn up">
                 <el-icon><CaretTop /></el-icon> 赞同 {{ article.likeCount }}
@@ -122,9 +130,11 @@
               <button class="vote-btn down">
                 <el-icon><CaretBottom /></el-icon>
               </button>
+
               <div class="action-item text-btn">
-                <el-icon><ChatDotRound /></el-icon> {{ article.viewCount || 0 }} 条评论
+                <el-icon><ChatDotRound /></el-icon> {{ article.commentCount || 0 }} 条评论
               </div>
+
               <div class="action-item text-btn">
                 <el-icon><Star /></el-icon> 收藏
               </div>
@@ -180,9 +190,10 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
+// 【新增】引入 ElNotification 用于好友消息弹窗
+import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
 import request from '../utils/request'
 import { getHotRank } from '../api/article'
 import { UserFilled } from '@element-plus/icons-vue'
@@ -191,15 +202,10 @@ const router = useRouter()
 
 // 1. 定义未读数变量
 const unreadCount = ref(0)
+const chatUnreadCount = ref(0) // 私信未读
 
-// 2. 定义获取未读数的方法
-const getUnreadCount = async () => {
-  if (!user.value.id) return // 未登录不查
-  try {
-    const res = await request.get('/api/message/unread')
-    unreadCount.value = res.data || 0
-  } catch(e) {}
-}
+// 2. 好友列表缓存 (用于判断是否弹窗)
+const friendIds = ref(new Set())
 
 // 获取用户信息
 const getUser = () => {
@@ -218,10 +224,9 @@ const noMore = ref(false)
 
 const disabled = computed(() => loading.value || noMore.value)
 
-// 【新增】下拉菜单指令处理
+// 下拉菜单指令处理
 const handleCommand = (command) => {
   if (command === 'userCenter') {
-    // 跳转个人中心
     if (user.value.id) {
       router.push(`/user/${user.value.id}`)
     } else {
@@ -233,7 +238,6 @@ const handleCommand = (command) => {
     router.push('/settings')
   }
   else if (command === 'logout') {
-    // 退出登录确认
     ElMessageBox.confirm('确定要退出登录吗?', '提示', {
       confirmButtonText: '确定',
       cancelButtonText: '取消',
@@ -277,7 +281,13 @@ const loadHotRank = async () => {
   } catch (e) { console.error(e) }
 }
 
-const chatUnreadCount = ref(0)
+const getUnreadCount = async () => {
+  if (!user.value.id) return
+  try {
+    const res = await request.get('/api/message/unread')
+    unreadCount.value = res.data || 0
+  } catch(e) {}
+}
 
 const getChatUnread = async () => {
   if(!user.value.id) return
@@ -287,11 +297,56 @@ const getChatUnread = async () => {
   } catch(e){}
 }
 
+// 【新增】加载好友ID列表 (用于通知过滤)
+const loadFriendIds = async () => {
+  if(!user.value.id) return
+  try {
+    // 复用获取会话列表接口，后端已返回 isFriend 字段
+    const res = await request.get('/api/chat/friends')
+    const list = res.data || []
+    friendIds.value.clear()
+    list.forEach(u => {
+      if (u.isFriend) friendIds.value.add(u.id)
+    })
+  } catch(e) {}
+}
+
+// 【新增】处理全局消息通知
+const handleGlobalMessage = (e) => {
+  const msg = e.detail
+
+  // 1. 如果是好友发来的，右下角弹窗提示
+  if (friendIds.value.has(msg.fromId)) {
+    ElNotification({
+      title: '好友消息',
+      message: msg.content.length > 20 ? msg.content.substring(0, 20) + '...' : msg.content,
+      type: 'info',
+      position: 'bottom-right',
+      duration: 4000,
+      onClick: () => {
+        // 点击通知跳转到聊天页，并选中该用户
+        router.push(`/chat?to=${msg.fromId}`)
+      }
+    })
+  }
+
+  // 2. 无论是否好友，都更新信封红点
+  getChatUnread()
+}
+
 onMounted(() => {
   loadMore()
   loadHotRank()
   getUnreadCount()
-  getChatUnread() // 获取私信未读数
+  getChatUnread()
+
+  // 初始化消息监听
+  loadFriendIds()
+  window.addEventListener('on-chat-msg', handleGlobalMessage)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('on-chat-msg', handleGlobalMessage)
 })
 
 const toDetail = (id) => router.push(`/article/${id}`)
@@ -350,7 +405,7 @@ const formatTime = (time) => {
 /* 右侧 */
 .navbar-right {
   display: flex; align-items: center; gap: 20px; flex-shrink: 0; white-space: nowrap;
-  margin-right: 60px; /* 避免遮挡 */
+  margin-right: 60px;
 
   .action-btns { margin-right: 10px; }
   .user-area {
@@ -393,6 +448,18 @@ const formatTime = (time) => {
     .feed-card {
       border: none; border-radius: 0; border-bottom: 1px solid #f0f0f0; box-shadow: none; padding: 20px; cursor: pointer;
       &:hover { background: #fcfcfc; }
+
+      /* 新增：文章内容布局 (左文右图) */
+      .card-body {
+        display: flex; gap: 20px;
+        .text-content { flex: 1; min-width: 0; }
+        .cover-box {
+          flex-shrink: 0; width: 190px; height: 105px; border-radius: 4px; overflow: hidden; background: #f6f6f6;
+          img { width: 100%; height: 100%; object-fit: cover; transition: transform 0.3s; }
+        }
+      }
+      &:hover .cover-box img { transform: scale(1.05); }
+
       .title { font-size: 18px; font-weight: 600; color: #121212; margin: 0 0 10px 0; line-height: 1.6; }
       .title:hover { color: #0066ff; }
       .content-preview {
@@ -449,7 +516,7 @@ const formatTime = (time) => {
 .bell-badge {
   display: flex; align-items: center;
   :deep(.el-badge__content) {
-    transform: translateY(-50%) translateX(100%) scale(0.8) !important; /* 调整小红点位置 */
+    transform: translateY(-50%) translateX(100%) scale(0.8) !important;
   }
 }
 </style>
