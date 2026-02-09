@@ -62,4 +62,15 @@ public interface ArticleService extends IService<Article> {
 
     // 【新增】清理过期文章 (供定时任务调用)
     void cleanExpiredArticles();
+    // 【新增】获取草稿数量
+    Long getDraftCount(Long userId);
+
+    // 【新增】获取7天内的热榜文章 (主页显示)
+    List<Article> getHotArticles7Days();
+
+    // 【新增】获取关注的人的文章 (分页)
+    Page<Article> getFollowArticles(Long userId, int pageNo, int pageSize);
+
+    // 【新增】搜索文章
+    Page<Article> searchArticles(String keyword, int page, int size);
 }

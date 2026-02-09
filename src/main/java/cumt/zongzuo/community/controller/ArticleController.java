@@ -128,4 +128,34 @@ public class ArticleController {
         List<Article> list = articleService.getRecycleBin(userId);
         return Result.success(list);
     }
+
+    // 【新增】获取草稿数量
+    @GetMapping("/draft-count")
+    public Result<Long> getDraftCount(@RequestHeader("token") String token) {
+        Long userId = JwtUtils.getUserId(token);
+        return Result.success(articleService.getDraftCount(userId));
+    }
+
+    // 【新增】7天热榜接口
+    @GetMapping("/hot-feed")
+    public Result<List<Article>> getHotFeed() {
+        return Result.success(articleService.getHotArticles7Days());
+    }
+
+    // 【新增】关注流接口
+    @GetMapping("/follow-feed")
+    public Result<Page<Article>> getFollowFeed(@RequestParam(defaultValue = "1") int page,
+                                               @RequestHeader("token") String token) {
+        Long userId = JwtUtils.getUserId(token);
+        // 默认每页 10 条
+        return Result.success(articleService.getFollowArticles(userId, page, 10));
+    }
+
+    // 【新增】搜索接口
+    @GetMapping("/search")
+    public Result<Page<Article>> search(@RequestParam String keyword,
+                                        @RequestParam(defaultValue = "1") int page) {
+        // 默认每页 10 条
+        return Result.success(articleService.searchArticles(keyword, page, 10));
+    }
 }

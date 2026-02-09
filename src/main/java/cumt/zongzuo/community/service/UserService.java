@@ -1,5 +1,6 @@
 package cumt.zongzuo.community.service;
 
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.IService;
 import cumt.zongzuo.community.common.Result;
 import cumt.zongzuo.community.dto.LoginDTO; // 或者你的DTO包
@@ -33,4 +34,7 @@ public interface UserService extends IService<User> {
 
     // 【新增】重置密码 (忘记密码用)
     Result<String> resetPassword(ResetPasswordDTO dto);
+
+    // 【新增】搜索用户 (根据用户名或简介模糊查询)
+    Page<User> searchUsers(String keyword, int page, int size);
 }

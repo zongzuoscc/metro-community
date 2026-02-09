@@ -6,8 +6,10 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import cumt.zongzuo.community.dto.ArticleDTO;
 import cumt.zongzuo.community.entity.Article;
+import cumt.zongzuo.community.entity.Follow;
 import cumt.zongzuo.community.entity.User;
 import cumt.zongzuo.community.mapper.ArticleMapper;
+import cumt.zongzuo.community.mapper.FollowMapper;
 import cumt.zongzuo.community.mapper.UserMapper;
 import cumt.zongzuo.community.service.ArticleService;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -30,6 +32,9 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
 
     @Autowired
     private StringRedisTemplate stringRedisTemplate;
+
+    @Autowired
+    private FollowMapper followMapper;
 
     // 定义常量
     private static final String ARTICLE_VIEW_COUNT_KEY = "article:view:count:";
@@ -344,5 +349,82 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
                 article.setAuthorAvatar("https://cube.elemecdn.com/9/c2/f0ee8a3c7c9638a54940382568c9dpng.png");
             }
         }
+    }
+
+    @Override
+    public Long getDraftCount(Long userId) {
+        // 查询 status=0 (草稿) 且 is_deleted=0 (未删除) 的数量
+        return count(new QueryWrapper<Article>()
+                .eq("author_id", userId)
+                .eq("status", 0)
+                .eq("is_deleted", 0));
+    }
+
+    /**
+     * 实现：7天热榜
+     */
+    @Override
+    public List<Article> getHotArticles7Days() {
+        // 计算7天前的时间
+        LocalDateTime sevenDaysAgo = LocalDateTime.now().minusDays(7);
+
+        QueryWrapper<Article> query = new QueryWrapper<>();
+        query.eq("status", 1).eq("is_deleted", 0); // 必须是已发布且未删除
+        query.ge("create_time", sevenDaysAgo);     // create_time >= 7天前
+        query.orderByDesc("view_count");           // 按浏览量倒序 (也可以改成 (view*1 + like*5))
+        query.last("limit 10");                    // 只取前10
+
+        List<Article> list = list(query);
+        fillArticleAuthors(list); // 填充作者信息
+        return list;
+    }
+
+    /**
+     * 实现：关注流
+     */
+    @Override
+    public Page<Article> getFollowArticles(Long userId, int pageNo, int pageSize) {
+        Page<Article> page = new Page<>(pageNo, pageSize);
+
+        // 1. 先查我关注了谁
+        List<Follow> follows = followMapper.selectList(new QueryWrapper<Follow>().eq("follower_id", userId));
+        if (follows.isEmpty()) {
+            return page; // 没关注任何人，返回空页
+        }
+
+        Set<Long> followedIds = follows.stream().map(Follow::getFollowedId).collect(Collectors.toSet());
+
+        // 2. 查这些人的文章
+        QueryWrapper<Article> query = new QueryWrapper<>();
+        query.in("author_id", followedIds);        // 作者必须在关注列表里
+        query.eq("status", 1).eq("is_deleted", 0);
+        query.orderByDesc("create_time");          // 按时间倒序
+
+        page(page, query);
+        fillArticleAuthors(page.getRecords());
+        return page;
+    }
+
+    @Override
+    public Page<Article> searchArticles(String keyword, int page, int size) {
+        Page<Article> pageInfo = new Page<>(page, size);
+        QueryWrapper<Article> query = new QueryWrapper<>();
+
+        // 基础条件：已发布且未删除
+        query.eq("status", 1).eq("is_deleted", 0);
+
+        // 搜索条件：标题 OR 摘要 OR 内容 包含关键词
+        if (StrUtil.isNotBlank(keyword)) {
+            query.and(w -> w.like("title", keyword)
+                    .or().like("summary", keyword)
+                    .or().like("content", keyword));
+        }
+
+        // 按时间倒序
+        query.orderByDesc("create_time");
+
+        Page<Article> result = page(pageInfo, query);
+        fillArticleAuthors(result.getRecords()); // 别忘了填充作者信息
+        return result;
     }
 }

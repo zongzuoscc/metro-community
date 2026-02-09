@@ -1,5 +1,6 @@
 package cumt.zongzuo.community.controller;
 
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import cumt.zongzuo.community.common.Result;
 import cumt.zongzuo.community.dto.UpdatePasswordDTO;
 import cumt.zongzuo.community.entity.User;
@@ -68,4 +69,10 @@ public class UserController {
         }
     }
 
+    // 【新增】搜索用户接口
+    @GetMapping("/search")
+    public Result<Page<User>> search(@RequestParam String keyword,
+                                     @RequestParam(defaultValue = "1") int page) {
+        return Result.success(userService.searchUsers(keyword, page, 10));
+    }
 }

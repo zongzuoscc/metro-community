@@ -1,8 +1,10 @@
 package cumt.zongzuo.community.service.impl;
 
 import cn.hutool.core.util.RandomUtil;
+import cn.hutool.core.util.StrUtil;
 import cn.hutool.crypto.digest.BCrypt;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import cumt.zongzuo.community.common.Result;
 import cumt.zongzuo.community.dto.LoginDTO;
@@ -217,5 +219,22 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         redisTemplate.delete(key);
 
         return Result.success("密码重置成功");
+    }
+
+    @Override
+    public Page<User> searchUsers(String keyword, int page, int size) {
+        Page<User> pageInfo = new Page<>(page, size);
+        QueryWrapper<User> query = new QueryWrapper<>();
+
+        // 搜索条件：用户名 OR 简介包含关键词
+        if (StrUtil.isNotBlank(keyword)) {
+            query.and(w -> w.like("username", keyword)
+                    .or().like("intro", keyword));
+        }
+
+        // 不需要查密码
+        query.select(User.class, info -> !info.getColumn().equals("password"));
+
+        return page(pageInfo, query);
     }
 }
