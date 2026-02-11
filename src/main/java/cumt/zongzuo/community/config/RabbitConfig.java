@@ -1,7 +1,7 @@
 package cumt.zongzuo.community.config;
 
 import org.springframework.amqp.core.Queue;
-import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter; // 引入这个包
+import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
 import org.springframework.amqp.support.converter.MessageConverter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -9,14 +9,19 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 public class RabbitConfig {
 
+    // 原有的邮件队列
     @Bean
     public Queue mailQueue() {
         return new Queue("mail.queue", true);
     }
 
-    // 【新增】配置 JSON 消息转换器
-    // 这样发消息时会自动把 Map 转成 JSON 字符串
-    // 收消息时会自动把 JSON 字符串转回 Map
+    // 【新增】消息通知队列
+    @Bean
+    public Queue notificationQueue() {
+        return new Queue("message.notify.queue", true);
+    }
+
+    // JSON 转换器 (保持不变)
     @Bean
     public MessageConverter messageConverter() {
         return new Jackson2JsonMessageConverter();

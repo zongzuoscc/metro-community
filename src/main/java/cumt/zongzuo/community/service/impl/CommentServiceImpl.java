@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import cumt.zongzuo.community.dto.CommentDTO;
+import cumt.zongzuo.community.dto.NotificationMsgDTO;
 import cumt.zongzuo.community.entity.Article;
 import cumt.zongzuo.community.entity.Comment;
 import cumt.zongzuo.community.entity.User;
@@ -13,6 +14,7 @@ import cumt.zongzuo.community.mapper.CommentMapper;
 import cumt.zongzuo.community.mapper.UserMapper;
 import cumt.zongzuo.community.service.CommentService;
 import cumt.zongzuo.community.service.MessageService;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -28,6 +30,9 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
 
     @Autowired
     private UserMapper userMapper;
+
+    @Autowired
+    private RabbitTemplate rabbitTemplate; // 【新增注入】
 
     @Autowired
     private MessageService messageService;
@@ -61,25 +66,30 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
         updateWrapper.eq("id", dto.getArticleId());
         articleMapper.update(null, updateWrapper);
 
-        // 6. 发送通知
+        // 6. 【修改】异步发送通知
         Long receiverId;
         if (comment.getTargetUserId() != null) {
-            // 回复某人
             receiverId = comment.getTargetUserId();
         } else {
-            // 回复文章，找文章作者
             Article article = articleMapper.selectById(comment.getArticleId());
             receiverId = (article != null) ? article.getAuthorId() : null;
         }
 
         if (receiverId != null) {
-            // type=2 代表评论
+            // 构建 DTO
+            NotificationMsgDTO msg = new NotificationMsgDTO();
+            msg.setFromId(userId);
+            msg.setToId(receiverId);
+            msg.setType(2); // 评论
+            msg.setTargetId(comment.getArticleId());
+
             String summary = comment.getContent().length() > 30
                     ? comment.getContent().substring(0, 30) + "..."
                     : comment.getContent();
+            msg.setContent(summary);
 
-            // targetId 我们统一存文章ID，这样点击通知能跳到文章详情
-            messageService.send(userId, receiverId, 2, comment.getArticleId(), summary);
+            // 发送到 MQ
+            rabbitTemplate.convertAndSend("message.notify.queue", msg);
         }
     }
 

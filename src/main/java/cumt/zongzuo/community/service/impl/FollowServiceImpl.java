@@ -4,12 +4,14 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import cumt.zongzuo.community.dto.NotificationMsgDTO;
 import cumt.zongzuo.community.entity.Follow;
 import cumt.zongzuo.community.entity.User;
 import cumt.zongzuo.community.mapper.FollowMapper;
 import cumt.zongzuo.community.mapper.UserMapper;
 import cumt.zongzuo.community.service.FollowService;
 import cumt.zongzuo.community.service.MessageService;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
@@ -31,6 +33,9 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
 
     @Autowired
     private MessageService messageService;
+
+    @Autowired
+    private RabbitTemplate rabbitTemplate;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -62,14 +67,19 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
 
             try {
                 save(follow);
-                // 【新增】发送通知 (type=3 关注)
-                // targetId 此时可以是 followerId，点击跳转到关注者主页
-                messageService.send(followerId, followedId, 3, followerId, null);
+                // 【修改】异步发送通知
+                NotificationMsgDTO msg = new NotificationMsgDTO();
+                msg.setFromId(followerId);
+                msg.setToId(followedId);
+                msg.setType(3); // 关注
+                msg.setTargetId(followerId); // 点击跳转到粉丝主页
+
+                // 发送到 MQ
+                rabbitTemplate.convertAndSend("message.notify.queue", msg);
             } catch (Exception e) {
                 // 忽略唯一索引冲突
                 return;
             }
-
             redisTemplate.opsForSet().add(key, followedId.toString());
         }
     }

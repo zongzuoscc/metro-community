@@ -2,6 +2,7 @@ package cumt.zongzuo.community.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import cumt.zongzuo.community.dto.NotificationMsgDTO;
 import cumt.zongzuo.community.entity.Article;
 import cumt.zongzuo.community.entity.Comment; // 引入 Comment
 import cumt.zongzuo.community.entity.LikeRecord;
@@ -10,6 +11,7 @@ import cumt.zongzuo.community.mapper.CommentMapper; // 引入 Mapper
 import cumt.zongzuo.community.mapper.LikeRecordMapper;
 import cumt.zongzuo.community.service.LikeService;
 import cumt.zongzuo.community.service.MessageService;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
@@ -22,6 +24,9 @@ public class LikeServiceImpl extends ServiceImpl<LikeRecordMapper, LikeRecord> i
 
     @Autowired
     private StringRedisTemplate redisTemplate;
+
+    @Autowired
+    private RabbitTemplate rabbitTemplate;
 
     @Autowired
     private ArticleMapper articleMapper;
@@ -98,8 +103,7 @@ public class LikeServiceImpl extends ServiceImpl<LikeRecordMapper, LikeRecord> i
             }
 
             redisTemplate.opsForSet().add(key, userId.toString());
-            // 【新增】发送通知
-            // 我们需要知道这篇文章/评论是谁写的
+            // 【修改】异步发送通知
             Long receiverId = null;
             if (targetType == 1) { // 文章
                 Article article = articleMapper.selectById(targetId);
@@ -110,8 +114,14 @@ public class LikeServiceImpl extends ServiceImpl<LikeRecordMapper, LikeRecord> i
             }
 
             if (receiverId != null) {
-                // type=1 代表点赞
-                messageService.send(userId, receiverId, 1, targetId, null);
+                NotificationMsgDTO msg = new NotificationMsgDTO();
+                msg.setFromId(userId);
+                msg.setToId(receiverId);
+                msg.setType(1); // 点赞
+                msg.setTargetId(targetId);
+
+                // 发送到 MQ
+                rabbitTemplate.convertAndSend("message.notify.queue", msg);
             }
         }
     }
