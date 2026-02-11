@@ -3,6 +3,7 @@ package cumt.zongzuo.community.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import cumt.zongzuo.community.dto.NotificationMsgDTO;
 import cumt.zongzuo.community.entity.Article;
 import cumt.zongzuo.community.entity.Comment;
 import cumt.zongzuo.community.entity.Report;
@@ -12,6 +13,7 @@ import cumt.zongzuo.community.mapper.CommentMapper;
 import cumt.zongzuo.community.mapper.ReportMapper;
 import cumt.zongzuo.community.service.ReportService;
 import cumt.zongzuo.community.service.UserService;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -27,6 +29,9 @@ public class ReportServiceImpl extends ServiceImpl<ReportMapper, Report> impleme
     private ArticleMapper articleMapper;
     @Autowired
     private CommentMapper commentMapper;
+
+    @Autowired
+    private RabbitTemplate rabbitTemplate;
 
     @Override
     public void submitReport(Long userId, Long targetId, Integer targetType, String reason) {
@@ -91,6 +96,25 @@ public class ReportServiceImpl extends ServiceImpl<ReportMapper, Report> impleme
         report.setHandleTime(LocalDateTime.now());
         report.setResult(result);
         updateById(report);
+    }
+
+    // 发送系统通知
+    private void sendSystemNotification(Long toUserId, Long targetId, String content) {
+        try {
+            NotificationMsgDTO msg = new NotificationMsgDTO();
+            msg.setFromId(1L); // 1L 默认为管理员ID/系统ID，确保你的数据库里 ID=1 的用户存在
+            msg.setToId(toUserId);
+            msg.setType(0); // 0 代表系统通知 (需要在前端 Message.vue 适配显示，或复用 type=2)
+            // 为了兼容前端逻辑，我们也可以临时用 type=2 (评论类型)，但最好是 type=0
+
+            msg.setTargetId(targetId);
+            msg.setContent(content);
+
+            rabbitTemplate.convertAndSend("message.notify.queue", msg);
+        } catch (Exception e) {
+            // 发送通知失败不应回滚事务，记录日志即可
+            e.printStackTrace();
+        }
     }
 
     // 辅助：填充快照

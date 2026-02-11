@@ -223,6 +223,8 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
 
         map.put("username", user.getUsername());
         map.put("avatar", user.getAvatar());
+        // 【核心修复】必须把 role 放进去！
+        map.put("role", user.getRole());
 
         return Result.success(map);
     }

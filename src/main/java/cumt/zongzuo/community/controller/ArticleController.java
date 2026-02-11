@@ -5,13 +5,16 @@ import cumt.zongzuo.community.common.Result;
 import cumt.zongzuo.community.dto.ArticleDTO;
 import cumt.zongzuo.community.entity.Article;
 import cumt.zongzuo.community.entity.Tag;
+import cumt.zongzuo.community.entity.User;
 import cumt.zongzuo.community.mapper.TagMapper;
 import cumt.zongzuo.community.service.ArticleService;
+import cumt.zongzuo.community.service.UserService;
 import cumt.zongzuo.community.utils.JwtUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 @RestController
@@ -20,6 +23,9 @@ public class ArticleController {
 
     @Autowired
     private ArticleService articleService;
+
+    @Autowired
+    private UserService userService;
 
     @Autowired
     private TagMapper tagMapper; // 临时注入
@@ -180,5 +186,38 @@ public class ArticleController {
 
         Long userId = JwtUtils.getUserId(token);
         return Result.success(articleService.getMyAllArticles(userId, page, size));
+    }
+
+    @GetMapping("/admin/pending")
+    public Result<Page<Article>> getPendingList(
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "10") int size,
+            @RequestHeader("token") String token) {
+
+        checkAdmin(token);
+        return Result.success(articleService.getPendingArticles(page, size));
+    }
+
+    @PostMapping("/admin/audit")
+    public Result<String> auditArticle(
+            @RequestBody Map<String, Object> params,
+            @RequestHeader("token") String token) {
+
+        checkAdmin(token);
+        Long articleId = Long.valueOf(params.get("id").toString());
+        boolean pass = Boolean.parseBoolean(params.get("pass").toString());
+        String reason = (String) params.get("reason");
+
+        articleService.auditArticle(articleId, pass, reason);
+        return Result.success("操作成功");
+    }
+
+    private void checkAdmin(String token) {
+        Long userId = JwtUtils.getUserId(token);
+        User user = userService.getById(userId);
+        // 【关键修复】增加 null 判断，防止 NPE
+        if (user == null || user.getRole() == null || user.getRole() != 1) {
+            throw new RuntimeException("无权访问");
+        }
     }
 }

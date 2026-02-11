@@ -203,7 +203,9 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
 
         // 6. 批量逻辑删除 (DB操作)
         // 这里的 removeBatchByIds 会把 ID 列表里的所有评论 is_deleted 设为 1
-        removeBatchByIds(deleteIds);
+        if (!deleteIds.isEmpty()) {
+            removeBatchByIds(deleteIds);
+        }
 
         // 7. 【MQ 异步更新文章评论数】
         int deleteCount = deleteIds.size(); // 计算总共删了多少条
