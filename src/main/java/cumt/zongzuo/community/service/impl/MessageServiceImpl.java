@@ -8,6 +8,7 @@ import cumt.zongzuo.community.entity.User;
 import cumt.zongzuo.community.mapper.MessageMapper;
 import cumt.zongzuo.community.mapper.UserMapper;
 import cumt.zongzuo.community.service.MessageService;
+import cumt.zongzuo.community.service.UserService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -22,6 +23,9 @@ public class MessageServiceImpl extends ServiceImpl<MessageMapper, Message> impl
 
     @Autowired
     private UserMapper userMapper; // 用于填充发送者信息
+
+    @Autowired
+    private UserService userService;
 
     @Override
     public void send(Long fromId, Long toId, Integer type, Long targetId, String content) {
@@ -57,8 +61,8 @@ public class MessageServiceImpl extends ServiceImpl<MessageMapper, Message> impl
 
         // 2. 批量填充发送者信息 (fromId -> User)
         Set<Long> userIds = list.stream().map(Message::getFromId).collect(Collectors.toSet());
-        List<User> users = userMapper.selectBatchIds(userIds);
-        Map<Long, User> userMap = users.stream().collect(Collectors.toMap(User::getId, u -> u));
+        // 【优化】
+        Map<Long, User> userMap = userService.getUserMapCached(userIds);
 
         for (Message msg : list) {
             User u = userMap.get(msg.getFromId());

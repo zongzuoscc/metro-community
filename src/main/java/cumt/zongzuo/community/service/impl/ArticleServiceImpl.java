@@ -8,6 +8,7 @@ import cumt.zongzuo.community.dto.ArticleDTO;
 import cumt.zongzuo.community.entity.*;
 import cumt.zongzuo.community.mapper.*;
 import cumt.zongzuo.community.service.ArticleService;
+import cumt.zongzuo.community.service.UserService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
@@ -41,6 +42,12 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
     private TagMapper tagMapper; // 【新增】
     @Autowired
     private ArticleTagMapper articleTagMapper; // 【新增】
+
+    // 定义缓存 Key 前缀
+    private static final String ARTICLE_DETAIL_CACHE_PREFIX = "article:detail:";
+
+    @Autowired
+    private UserService userService;
 
     // 定义常量
     private static final String ARTICLE_VIEW_COUNT_KEY = "article:view:count:";
@@ -192,6 +199,11 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
             }
         }
 
+        // 【新增】删除缓存 (如果是修改操作)
+        if (dto.getId() != null) {
+            stringRedisTemplate.delete(ARTICLE_DETAIL_CACHE_PREFIX + dto.getId());
+        }
+
         return article.getId();
     }
 
@@ -208,57 +220,68 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
      */
     @Override
     public Article getDetail(Long id) {
-        Article article = getById(id);
-        if (article == null) {
-            throw new RuntimeException("文章不存在");
-        }
+        // 1. 先查 Redis 缓存
+        String cacheKey = ARTICLE_DETAIL_CACHE_PREFIX + id;
+        String json = stringRedisTemplate.opsForValue().get(cacheKey);
 
-        // 如果文章已删除，且查看者不是作者本人，应该提示不存在 (这里简单起见暂不做作者校验拦截，前端会过滤)
-        if (article.getIsDeleted() == 1) {
-            throw new RuntimeException("文章已被删除"); // 可选：严格模式下抛出异常
-        }
-
-        // 填充作者信息
-        Long authorId = article.getAuthorId();
-        if (authorId != null) {
-            User author = userMapper.selectById(authorId);
-            if (author != null) {
-                article.setAuthorName(author.getUsername());
-                article.setAuthorAvatar(author.getAvatar());
-                article.setAuthorIntro(author.getIntro());
-
-                // 统计文章总数 (status=1 AND is_deleted=0)
-                Long articleCount = this.count(new QueryWrapper<Article>()
-                        .eq("author_id", authorId)
-                        .eq("status", 1)
-                        .eq("is_deleted", 0));
-                article.setAuthorArticleCount(articleCount);
-
-                // 统计获赞总数
-                // 注意：这里建议优化 ArticleMapper.sumLikesByAuthorId 的SQL，加上 status=1 AND is_deleted=0
-                Long totalLikes = baseMapper.sumLikesByAuthorId(authorId);
-                article.setAuthorTotalLikes(totalLikes);
-            } else {
-                article.setAuthorName("注销用户");
-                article.setAuthorAvatar("https://cube.elemecdn.com/9/c2/f0ee8a3c7c9638a54940382568c9dpng.png");
+        Article article = null;
+        if (StrUtil.isNotBlank(json)) {
+            try {
+                // 反序列化
+                article = objectMapper.readValue(json, Article.class);
+            } catch (Exception e) {
+                log.error("文章详情缓存解析失败", e);
             }
         }
 
-        // 处理浏览量 (Redis)
-        String viewCountKey = ARTICLE_VIEW_COUNT_KEY + id;
-        if (Boolean.FALSE.equals(stringRedisTemplate.hasKey(viewCountKey))) {
-            Integer dbViewCount = article.getViewCount();
-            String initValue = (dbViewCount == null) ? "0" : dbViewCount.toString();
-            stringRedisTemplate.opsForValue().set(viewCountKey, initValue, 24, TimeUnit.HOURS);
-        }
-        Long newViewCount = stringRedisTemplate.opsForValue().increment(viewCountKey);
-        if (newViewCount != null) {
-            article.setViewCount(newViewCount.intValue());
-        }
-        stringRedisTemplate.opsForSet().add(ARTICLE_VIEW_DIRTY_SET, id.toString());
+        // 2. 缓存未命中，查数据库 (回源)
+        if (article == null) {
+            article = getById(id);
+            if (article == null) {
+                throw new RuntimeException("文章不存在");
+            }
+            if (article.getIsDeleted() == 1) {
+                throw new RuntimeException("文章已被删除");
+            }
 
-        // 【优化】填充标签 (SQL Join)
-        fillArticleTags(article);
+            // 填充作者信息 (使用我们之前写的 user cache 方法)
+            if (article.getAuthorId() != null) {
+                User author = userService.getUserCached(article.getAuthorId());
+                if (author != null) {
+                    article.setAuthorName(author.getUsername());
+                    article.setAuthorAvatar(author.getAvatar());
+                    article.setAuthorIntro(author.getIntro());
+                    // ... 填充统计数据 (这部分如果不频繁变动也可以缓存，或者前端单独查) ...
+                }
+            }
+
+            // 填充标签
+            fillArticleTags(article);
+
+            // 3. 写入 Redis (设置过期时间，例如 1 小时，防止冷数据长期占用内存)
+            try {
+                String cacheValue = objectMapper.writeValueAsString(article);
+                stringRedisTemplate.opsForValue().set(cacheKey, cacheValue, 1, TimeUnit.HOURS);
+            } catch (Exception e) {
+                log.error("文章详情写入缓存失败", e);
+            }
+        }
+
+        // ============ 浏览量单独处理 (Redis) ============
+        // 注意：浏览量是实时变化的，不能用缓存里的旧值，必须覆盖
+        String viewCountKey = ARTICLE_VIEW_COUNT_KEY + id;
+
+        // 确保浏览量 Key 存在
+        if (Boolean.FALSE.equals(stringRedisTemplate.hasKey(viewCountKey))) {
+            stringRedisTemplate.opsForValue().set(viewCountKey, article.getViewCount().toString());
+        }
+
+        // 自增
+        Long newViewCount = stringRedisTemplate.opsForValue().increment(viewCountKey);
+        article.setViewCount(newViewCount.intValue()); // 覆盖成最新的
+
+        // 标记为脏数据，等待定时任务同步回库
+        stringRedisTemplate.opsForSet().add(ARTICLE_VIEW_DIRTY_SET, id.toString());
 
         return article;
     }
@@ -280,6 +303,8 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         article.setIsDeleted(1); // 标记为删除
         article.setDeleteTime(LocalDateTime.now()); // 记录删除时间
         updateById(article);
+        // 【新增】删除缓存
+        stringRedisTemplate.delete(ARTICLE_DETAIL_CACHE_PREFIX + articleId);
     }
 
     /**
@@ -302,6 +327,8 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         article.setIsDeleted(0); // 恢复正常
         article.setDeleteTime(null);
         updateById(article);
+        // 【新增】删除缓存
+        stringRedisTemplate.delete(ARTICLE_DETAIL_CACHE_PREFIX + articleId);
     }
 
     /**
@@ -385,18 +412,20 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
      * 辅助方法：填充作者信息
      */
     private void fillArticleAuthors(List<Article> articles) {
-        if (articles == null || articles.isEmpty()) {
-            return;
-        }
+        if (articles == null || articles.isEmpty()) return;
+
+        // 收集所有作者ID
         Set<Long> userIds = articles.stream().map(Article::getAuthorId).collect(Collectors.toSet());
-        List<User> users = userMapper.selectBatchIds(userIds);
-        Map<Long, User> userMap = users.stream().collect(Collectors.toMap(User::getId, u -> u));
+
+        // 【优化】走 Redis 批量查询
+        Map<Long, User> userMap = userService.getUserMapCached(userIds);
 
         for (Article article : articles) {
             User u = userMap.get(article.getAuthorId());
             if (u != null) {
                 article.setAuthorName(u.getUsername());
                 article.setAuthorAvatar(u.getAvatar());
+                // 其他需要的字段...
             } else {
                 article.setAuthorName("注销用户");
                 article.setAuthorAvatar("https://cube.elemecdn.com/9/c2/f0ee8a3c7c9638a54940382568c9dpng.png");

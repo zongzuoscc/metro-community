@@ -30,7 +30,6 @@ public class UserController {
     @PostMapping("/update")
     public Result<String> updateUserInfo(@RequestBody User user, @RequestHeader("token") String token) {
         Long userId = JwtUtils.getUserId(token);
-
         // 只能修改自己的信息
         user.setId(userId);
 
@@ -40,7 +39,10 @@ public class UserController {
         // user.setRole(null); // 如果有角色字段也要置空
 
         userService.updateById(user);
-        return Result.success("修改成功");
+
+        // 【新增】清除缓存，保证下次读取是新的
+        userService.clearUserCache(user.getId());
+        return Result.success("更新成功");
     }
 
     // 获取任意用户的个人主页信息

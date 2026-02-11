@@ -10,6 +10,7 @@ import cumt.zongzuo.community.dto.UpdatePasswordDTO;
 import cumt.zongzuo.community.entity.User;
 
 import java.util.Map;
+import java.util.Set;
 
 public interface UserService extends IService<User> {
 
@@ -37,4 +38,22 @@ public interface UserService extends IService<User> {
 
     // 【新增】搜索用户 (根据用户名或简介模糊查询)
     Page<User> searchUsers(String keyword, int page, int size);
+
+    // ============ 【新增】缓存相关接口 ============
+
+    /**
+     * 获取用户信息 (优先查缓存)
+     */
+    User getUserCached(Long userId);
+
+    /**
+     * 批量获取用户信息 (优先查缓存，防击穿)
+     * @return Map<UserId, User> 方便调用者直接 .get(id)
+     */
+    Map<Long, User> getUserMapCached(Set<Long> userIds);
+
+    /**
+     * 清除用户缓存 (更新资料时调用)
+     */
+    void clearUserCache(Long userId);
 }

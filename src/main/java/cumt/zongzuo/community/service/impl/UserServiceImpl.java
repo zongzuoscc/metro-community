@@ -6,6 +6,7 @@ import cn.hutool.crypto.digest.BCrypt;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import cumt.zongzuo.community.common.Result;
 import cumt.zongzuo.community.dto.LoginDTO;
 import cumt.zongzuo.community.dto.RegisterDTO;
@@ -25,9 +26,9 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import cumt.zongzuo.community.service.FavoriteService;
 
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 @Service // 标记这是一个业务逻辑组件
 public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements UserService {
@@ -39,6 +40,9 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
     private RabbitTemplate rabbitTemplate;
 
     @Autowired
+    private ObjectMapper objectMapper; // SpringBoot自带的JSON工具
+
+    @Autowired
     private FavoriteService favoriteService;
 
     @Autowired
@@ -47,8 +51,99 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
     @Autowired
     private FollowMapper followMapper;
 
+    private static final String USER_CACHE_PREFIX = "user:info:";
+
     // 注意：因为继承了 ServiceImpl，这里自带了 baseMapper (就是 UserMapper)，
     // 所以不需要再显式注入 UserMapper，直接用 baseMapper 即可，或者用 this.save() 等方法
+
+    @Override
+    public User getUserCached(Long userId) {
+        if (userId == null) return null;
+
+        String key = USER_CACHE_PREFIX + userId;
+        String json = redisTemplate.opsForValue().get(key);
+
+        if (StrUtil.isNotBlank(json)) {
+            try {
+                return objectMapper.readValue(json, User.class);
+            } catch (Exception e) {
+                // 解析失败，查库覆盖
+            }
+        }
+
+        // 查库
+        User user = getById(userId);
+        if (user != null) {
+            cacheUser(user);
+        }
+        return user;
+    }
+
+    @Override
+    public Map<Long, User> getUserMapCached(Set<Long> userIds) {
+        Map<Long, User> result = new HashMap<>();
+        if (userIds == null || userIds.isEmpty()) return result;
+
+        // 1. 构造 Keys
+        List<Long> idList = new ArrayList<>(userIds);
+        List<String> keys = idList.stream()
+                .map(id -> USER_CACHE_PREFIX + id)
+                .collect(Collectors.toList());
+
+        // 2. 批量查 Redis (Pipeline/MultiGet)
+        List<String> jsonList = redisTemplate.opsForValue().multiGet(keys);
+
+        List<Long> missingIds = new ArrayList<>();
+
+        // 3. 解析结果
+        for (int i = 0; i < idList.size(); i++) {
+            String json = (jsonList != null && jsonList.size() > i) ? jsonList.get(i) : null;
+            Long uid = idList.get(i);
+            if (StrUtil.isNotBlank(json)) {
+                try {
+                    User u = objectMapper.readValue(json, User.class);
+                    result.put(uid, u);
+                } catch (Exception e) {
+                    missingIds.add(uid);
+                }
+            } else {
+                missingIds.add(uid);
+            }
+        }
+
+        // 4. 回源查库 (查询缺失的部分)
+        if (!missingIds.isEmpty()) {
+            List<User> dbUsers = baseMapper.selectBatchIds(missingIds);
+            for (User u : dbUsers) {
+                result.put(u.getId(), u);
+                cacheUser(u); // 写入缓存
+            }
+        }
+
+        return result;
+    }
+
+    @Override
+    public void clearUserCache(Long userId) {
+        redisTemplate.delete(USER_CACHE_PREFIX + userId);
+    }
+
+    // 私有方法：写入缓存
+    private void cacheUser(User user) {
+        try {
+            // 敏感信息置空再缓存（可选，视业务而定，这里为了安全建议置空密码）
+            // 注意：因为是引用传递，为了不影响当前线程使用，最好copy一份或者只缓存非敏感字段
+            // 这里简单处理：User实体里password不返回前端，但缓存里可能有。
+            // 建议：User 实体加 @JsonIgnore 在 password 上，或者在这里处理。
+
+            String json = objectMapper.writeValueAsString(user);
+            // 随机过期时间 24h + 随机 (防止雪崩)
+            long ttl = 24 * 60 * 60 + RandomUtil.randomLong(3600);
+            redisTemplate.opsForValue().set(USER_CACHE_PREFIX + user.getId(), json, ttl, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            log.error("缓存用户信息失败", e);
+        }
+    }
 
     @Override
     public Result<String> sendCode(String email) {
@@ -237,4 +332,5 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
 
         return page(pageInfo, query);
     }
+
 }

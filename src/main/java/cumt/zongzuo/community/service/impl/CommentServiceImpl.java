@@ -14,6 +14,7 @@ import cumt.zongzuo.community.mapper.CommentMapper;
 import cumt.zongzuo.community.mapper.UserMapper;
 import cumt.zongzuo.community.service.CommentService;
 import cumt.zongzuo.community.service.MessageService;
+import cumt.zongzuo.community.service.UserService;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -36,6 +37,9 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
 
     @Autowired
     private MessageService messageService;
+
+    @Autowired
+    private UserService userService;
 
     @Autowired
     private ArticleMapper articleMapper;
@@ -114,8 +118,7 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
             }
         }
 
-        List<User> users = userMapper.selectBatchIds(userIds);
-        Map<Long, User> userMap = users.stream().collect(Collectors.toMap(User::getId, Function.identity()));
+        Map<Long, User> userMap = userService.getUserMapCached(userIds);
 
         // 3. 填充用户信息到 Comment 对象中
         for (Comment c : allComments) {
