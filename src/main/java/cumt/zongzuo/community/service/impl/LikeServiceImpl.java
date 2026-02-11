@@ -2,6 +2,7 @@ package cumt.zongzuo.community.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import cumt.zongzuo.community.dto.LikeTaskDTO;
 import cumt.zongzuo.community.dto.NotificationMsgDTO;
 import cumt.zongzuo.community.entity.Article;
 import cumt.zongzuo.community.entity.Comment; // 引入 Comment
@@ -38,92 +39,31 @@ public class LikeServiceImpl extends ServiceImpl<LikeRecordMapper, LikeRecord> i
     private MessageService messageService;
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public void like(Long userId, Long targetId, Integer targetType) {
         String key = getRedisKey(targetId, targetType);
 
-        // 1. 判断是否已点赞
-        Boolean isMember = redisTemplate.opsForSet().isMember(key, userId.toString());
-
-        if (Boolean.TRUE.equals(isMember)) {
-            // --- 取消点赞 ---
-            QueryWrapper<LikeRecord> wrapper = new QueryWrapper<>();
-            wrapper.eq("user_id", userId)
-                    .eq("target_id", targetId)
-                    .eq("target_type", targetType);
-            remove(wrapper);
-
-            // 1.2.1 如果是文章
-            if (targetType == 1) {
-                Article article = articleMapper.selectById(targetId);
-                if (article != null && article.getLikeCount() > 0) {
-                    article.setLikeCount(article.getLikeCount() - 1);
-                    articleMapper.updateById(article);
-                }
-            }
-            // 1.2.2 【新增】如果是评论，减少点赞数
-            else if (targetType == 2) {
-                Comment comment = commentMapper.selectById(targetId);
-                if (comment != null && comment.getLikeCount() > 0) {
-                    comment.setLikeCount(comment.getLikeCount() - 1);
-                    commentMapper.updateById(comment);
-                }
-            }
-
+        // 1. 操作 Redis (即时反馈)
+        boolean isLike;
+        if (Boolean.TRUE.equals(redisTemplate.opsForSet().isMember(key, userId.toString()))) {
+            // 已点赞 -> 取消
             redisTemplate.opsForSet().remove(key, userId.toString());
-
+            isLike = false;
         } else {
-            // --- 点赞 ---
-            LikeRecord record = new LikeRecord();
-            record.setUserId(userId);
-            record.setTargetId(targetId);
-            record.setTargetType(targetType);
-            record.setCreateTime(LocalDateTime.now());
-            try {
-                save(record);
-            } catch (Exception e) {
-                return;
-            }
-
-            // 2.2.1 如果是文章
-            if (targetType == 1) {
-                Article article = articleMapper.selectById(targetId);
-                if (article != null) {
-                    article.setLikeCount(article.getLikeCount() + 1);
-                    articleMapper.updateById(article);
-                }
-            }
-            // 2.2.2 【新增】如果是评论，增加点赞数
-            else if (targetType == 2) {
-                Comment comment = commentMapper.selectById(targetId);
-                if (comment != null) {
-                    comment.setLikeCount(comment.getLikeCount() + 1);
-                    commentMapper.updateById(comment);
-                }
-            }
-
+            // 未点赞 -> 点赞
             redisTemplate.opsForSet().add(key, userId.toString());
-            // 【修改】异步发送通知
-            Long receiverId = null;
-            if (targetType == 1) { // 文章
-                Article article = articleMapper.selectById(targetId);
-                if(article != null) receiverId = article.getAuthorId();
-            } else if (targetType == 2) { // 评论
-                Comment comment = commentMapper.selectById(targetId);
-                if(comment != null) receiverId = comment.getUserId();
-            }
-
-            if (receiverId != null) {
-                NotificationMsgDTO msg = new NotificationMsgDTO();
-                msg.setFromId(userId);
-                msg.setToId(receiverId);
-                msg.setType(1); // 点赞
-                msg.setTargetId(targetId);
-
-                // 发送到 MQ
-                rabbitTemplate.convertAndSend("message.notify.queue", msg);
-            }
+            isLike = true;
         }
+
+        // 2. 发送异步消息 (削峰填谷)
+        LikeTaskDTO task = new LikeTaskDTO();
+        task.setUserId(userId);
+        task.setTargetId(targetId);
+        task.setTargetType(targetType);
+        task.setLike(isLike);
+
+        rabbitTemplate.convertAndSend("like.task.queue", task);
+
+        // 方法直接结束，无需等待数据库操作完成
     }
 
     // ... 其他方法保持不变 ...

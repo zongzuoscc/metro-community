@@ -26,4 +26,10 @@ public class RabbitConfig {
     public MessageConverter messageConverter() {
         return new Jackson2JsonMessageConverter();
     }
+
+    // 【新增】点赞任务队列
+    @Bean
+    public Queue likeQueue() {
+        return new Queue("like.task.queue", true);
+    }
 }
