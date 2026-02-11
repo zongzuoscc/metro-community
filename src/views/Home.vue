@@ -213,7 +213,7 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
 import request from '../utils/request'
 // 【引入 searchUsers】
@@ -222,9 +222,10 @@ import { searchUsers } from '../api/user'
 import { UserFilled } from '@element-plus/icons-vue'
 
 const router = useRouter()
+const route = useRoute() // 引入 route
 
 // 状态变量
-const activeNav = ref('recommend')
+const activeNav = ref('recommend') // 'recommend', 'hot', 'follow', 'search'
 const searchText = ref('')
 const currentSearchKeyword = ref('')
 const searchType = ref('article') // 'article' | 'user'
@@ -238,7 +239,7 @@ const draftCount = ref(0)
 const user = ref(localStorage.getItem('user') ? JSON.parse(localStorage.getItem('user')) : {})
 
 const articleList = ref([])
-const userList = ref([]) // 存储搜索到的用户
+const userList = ref([]) // 【新增】存储搜索到的用户
 const hotTopics = ref([])
 const loading = ref(false)
 const noMore = ref(false)
@@ -272,7 +273,7 @@ const switchNav = (nav) => {
   loadMore()
 }
 
-// 切换搜索类型 (文章/用户)
+// 【新增】切换搜索类型
 const switchSearchType = (type) => {
   if (searchType.value === type) return
   searchType.value = type
@@ -295,6 +296,7 @@ const clearSearch = () => {
   switchNav('recommend')
 }
 
+// 高亮关键词
 const highlightKeyword = (text) => {
   if (activeNav.value !== 'search' || !currentSearchKeyword.value || !text) return text
   const reg = new RegExp(currentSearchKeyword.value, 'gi')
@@ -332,7 +334,7 @@ const loadMore = async () => {
       res = await getFollowFeed(pageNo.value)
       if (res.code === 200) pageNo.value++
     }
-    // 【搜索逻辑分支】
+    // 【核心新增：搜索逻辑】
     else if (activeNav.value === 'search') {
       if (searchType.value === 'article') {
         res = await searchArticles(currentSearchKeyword.value, pageNo.value)
@@ -356,7 +358,7 @@ const loadMore = async () => {
           }
         }
       }
-      loading.value = false // 提前结束，因为上面自己处理了数据
+      loading.value = false // 提前结束，因为我们手动处理了数据push
       return
     }
 
@@ -461,7 +463,15 @@ const formatTime = (time) => {
 }
 
 onMounted(() => {
-  loadMore()
+  // 【核心修改】检查 URL query 是否有搜索关键词
+  const q = route.query.q
+  if (q) {
+    searchText.value = q
+    handleSearch() // 触发搜索
+  } else {
+    loadMore() // 默认加载推荐
+  }
+
   loadHotRank()
   getUnreadCount()
   getChatUnread()
@@ -482,6 +492,7 @@ onUnmounted(() => {
   font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 
+/* 顶部导航栏 */
 .navbar-wrapper {
   position: fixed; top: 0; left: 0; width: 100%; height: 52px; background: #fff; box-shadow: 0 1px 3px rgba(18, 18, 18, 0.1); z-index: 1000;
 }

@@ -13,6 +13,19 @@
         <div class="article-card">
           <h1 class="article-title">{{ article.title }}</h1>
 
+          <div class="tags-row" v-if="article.tagList && article.tagList.length > 0">
+            <el-tag
+                v-for="tag in article.tagList"
+                :key="tag"
+                class="tag-item"
+                effect="plain"
+                round
+                @click="toTagSearch(tag)"
+            >
+              # {{ tag }}
+            </el-tag>
+          </div>
+
           <div class="article-meta">
             <span class="meta-item author pointer" @click="toAuthorProfile">
               {{ article.authorName }}
@@ -260,7 +273,7 @@ import { ref, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import request from '../utils/request'
-// 引入所有需要的 API (请确保 src/api 下对应的文件已更新)
+// 引入所有需要的 API
 import { getArticleDetail } from '../api/article'
 import { getCommentList, publishComment, deleteComment } from '../api/comment'
 
@@ -323,7 +336,12 @@ const loadDetail = async () => {
   }
 }
 
-// ---------------- 评论核心逻辑 (新增删除功能) ----------------
+// 【新增】标签跳转
+const toTagSearch = (tag) => {
+  router.push({ path: '/home', query: { q: tag } })
+}
+
+// ---------------- 评论核心逻辑 ----------------
 
 const loadComments = async (articleId) => {
   try {
@@ -338,13 +356,10 @@ const submitComment = async () => {
 
   commentLoading.value = true
   try {
-    // 构造 payload
     const payload = {
       articleId: article.value.id,
       content: commentContent.value,
-      // 如果有回复对象，则取其 parentId；否则为 0
       parentId: replyTarget.value ? replyTarget.value.parentId : 0,
-      // 如果是回复某人，传 targetUserId
       targetUserId: replyTarget.value ? replyTarget.value.id : null
     }
 
@@ -353,7 +368,6 @@ const submitComment = async () => {
       ElMessage.success('发布成功')
       cancelReply()
       loadComments()
-      // 评论数 +1
       article.value.commentCount = (article.value.commentCount || 0) + 1
     } else {
       ElMessage.warning(res.msg || '发布失败')
@@ -365,13 +379,11 @@ const submitComment = async () => {
   }
 }
 
-// 【新增】删除评论逻辑
 const handleDelete = async (id) => {
   try {
     await deleteComment(id)
     ElMessage.success('删除成功')
     loadComments()
-    // 评论数 -1 (只是前端展示优化，刷新页面后会以数据库为准)
     if (article.value.commentCount > 0) {
       article.value.commentCount--
     }
@@ -380,24 +392,19 @@ const handleDelete = async (id) => {
   }
 }
 
-// 【新增】权限校验：是否可以删除
 const canDelete = (comment) => {
   const uid = currentUser.value.id
   if (!uid) return false
-  // 本人发布的 OR 文章作者本人
   return String(comment.userId) === String(uid) || String(article.value.authorId) === String(uid)
 }
 
-// 点击回复按钮
 const replyTo = (target, rootId) => {
   commentContent.value = ''
-  // 记录回复目标
   replyTarget.value = {
-    id: target.userId,        // 被回复人的ID
-    username: target.username,// 被回复人的昵称
-    parentId: rootId || target.id // 核心：如果是子评论，parentId要是根评论ID；如果是根评论，parentId就是它自己
+    id: target.userId,
+    username: target.username,
+    parentId: rootId || target.id
   }
-  // 滚动到输入框
   const inputEl = document.querySelector('.comment-input-wrapper')
   if(inputEl) inputEl.scrollIntoView({ behavior: 'smooth', block: 'center' })
 }
@@ -407,7 +414,6 @@ const cancelReply = () => {
   commentContent.value = ''
 }
 
-// 评论点赞 (暂存 Set 中)
 const handleCommentLike = async (comment) => {
   if (!currentUser.value.id) return ElMessage.warning('请先登录')
   try {
@@ -441,7 +447,6 @@ const loadFavoriteFolders = async () => {
   try {
     const res = await request.get('/api/favorite/list')
     favoriteFolders.value = res.data || []
-    // 这里可以优化：检查文章是否在这些文件夹里，标记状态
   } catch(e) {
     ElMessage.error('加载收藏夹失败')
   }
@@ -464,8 +469,7 @@ const toggleFavorite = async (folder) => {
   try {
     await request.post(`/api/favorite/toggle?articleId=${article.value.id}&folderId=${folder.id}`)
     ElMessage.success('操作成功')
-    folder.isCollected = !folder.isCollected // 简单前端反馈
-    // 刷新全剧状态
+    folder.isCollected = !folder.isCollected
     checkCollectStatus(article.value.id)
   } catch(e) {
     ElMessage.error('操作失败')
@@ -529,7 +533,6 @@ const toUserProfile = (userId) => {
 }
 const formatTime = (time) => {
   if(!time) return ''
-  // 兼容数组 [2026,1,1,12,0] 和 字符串 "2026-01-01T..."
   if(Array.isArray(time)) return `${time[0]}-${time[1]}-${time[2]} ${time[3]}:${time[4]}`
   return String(time).replace('T', ' ').substring(0, 16)
 }
@@ -561,7 +564,14 @@ onMounted(() => {
 /* 文章卡片 */
 .article-card {
   background: #fff; padding: 30px 40px; border-radius: 4px; box-shadow: 0 1px 3px rgba(18,18,18,0.1); margin-bottom: 20px; min-height: 300px;
-  .article-title { font-size: 32px; font-weight: 700; margin-bottom: 20px; line-height: 1.4; color: #121212; }
+  .article-title { font-size: 32px; font-weight: 700; margin-bottom: 15px; line-height: 1.4; color: #121212; }
+
+  /* 【新增】标签样式 */
+  .tags-row {
+    margin-bottom: 20px; display: flex; gap: 10px; flex-wrap: wrap;
+    .tag-item { cursor: pointer; border-color: transparent; background: #f2f3f5; color: #8590a6; &:hover { color: #0066ff; background: #e6f0fd; } }
+  }
+
   .article-meta {
     display: flex; align-items: center; gap: 20px; color: #8590a6; font-size: 14px; margin-bottom: 30px;
     .author { font-weight: 600; color: #444; }
@@ -570,7 +580,7 @@ onMounted(() => {
     margin-bottom: 30px; border-radius: 4px; overflow: hidden;
     img { width: 100%; max-height: 400px; object-fit: cover; display: block; }
   }
-  .article-actions { margin-top: 50px; display: flex; gap: 20px; justify-content: center; } /* 居中显示 */
+  .article-actions { margin-top: 50px; display: flex; gap: 20px; justify-content: center; }
 }
 
 /* 评论卡片 */
@@ -607,7 +617,7 @@ onMounted(() => {
             cursor: pointer; display: flex; align-items: center; gap: 4px; transition: all 0.2s;
             &:hover { color: #0066ff; }
             &.liked { color: #0066ff; font-weight: 600; }
-            &.delete-btn { color: #999; &:hover { color: #f56c6c; } } /* 删除按钮悬停变红 */
+            &.delete-btn { color: #999; &:hover { color: #f56c6c; } }
           }
         }
 

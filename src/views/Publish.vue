@@ -1,54 +1,74 @@
 <template>
-  <div class="publish-container">
+  <div class="publish-page">
     <div class="navbar-placeholder">
       <div class="nav-back" @click="$router.go(-1)">
         <el-icon><ArrowLeft /></el-icon> 返回
       </div>
-      <div class="nav-title">{{ isEdit ? '编辑文章' : '写文章' }}</div>
+      <div class="page-title">{{ isEdit ? '编辑文章' : '发布文章' }}</div>
     </div>
 
-    <div class="editor-main">
-      <el-input
-          v-model="form.title"
-          class="title-input"
-          placeholder="请输入标题..."
-          maxlength="80"
-          show-word-limit
-      />
+    <div class="main-container">
+      <div class="form-group">
+        <input
+            v-model="form.title"
+            type="text"
+            class="title-input"
+            placeholder="请输入文章标题..."
+        />
+      </div>
 
-      <div class="cover-section">
+      <div class="form-group">
         <div class="section-label">文章封面 (可选)</div>
         <el-upload
             class="cover-uploader"
             action="/api/file/upload"
             :show-file-list="false"
+            :headers="uploadHeaders"
             :on-success="handleCoverSuccess"
             :before-upload="beforeCoverUpload"
-            :headers="uploadHeaders"
         >
           <img v-if="form.cover" :src="form.cover" class="cover-img" />
-          <el-icon v-else class="cover-uploader-icon"><Plus /></el-icon>
-          <div slot="tip" class="el-upload__tip" v-if="!form.cover">支持 JPG/PNG，小于 2MB</div>
+          <el-icon v-else class="uploader-icon"><Plus /></el-icon>
         </el-upload>
-        <el-button v-if="form.cover" type="text" class="remove-cover" @click.stop="form.cover = ''">移除封面</el-button>
+        <el-button v-if="form.cover" type="danger" link size="small" @click.stop="form.cover = ''">移除封面</el-button>
       </div>
 
-      <v-md-editor
-          v-model="form.content"
-          height="600px"
-          placeholder="开始你的创作..."
-          :disabled-menus="[]"
-          @upload-image="handleUploadImage"
-      ></v-md-editor>
+      <div class="form-group tag-section">
+        <div class="section-label">添加标签</div>
+        <el-select
+            v-model="form.tags"
+            multiple
+            filterable
+            allow-create
+            default-first-option
+            :reserve-keyword="false"
+            placeholder="输入标签后按回车，如：Java, 提问"
+            class="tag-input"
+            size="large"
+        >
+          <el-option
+              v-for="item in hotTags"
+              :key="item"
+              :label="item"
+              :value="item"
+          />
+        </el-select>
+      </div>
 
-      <div class="action-bar">
-        <div class="draft-tip" v-if="lastSaveTime">上次保存: {{ lastSaveTime }}</div>
-        <div class="btns">
-          <el-button @click="handleSaveDraft" :loading="draftLoading">存草稿</el-button>
-          <el-button type="primary" @click="handlePublish" :loading="publishLoading">
-            {{ isEdit ? '更新发布' : '发布文章' }}
-          </el-button>
-        </div>
+      <div class="editor-box">
+        <v-md-editor
+            v-model="form.content"
+            height="600px"
+            :disabled-menus="[]"
+            @upload-image="handleUploadImage"
+        ></v-md-editor>
+      </div>
+
+      <div class="footer-actions">
+        <el-button size="large" @click="handleSaveDraft">存草稿</el-button>
+        <el-button type="primary" size="large" @click="handlePublish" :loading="publishing">
+          {{ isEdit ? '更新发布' : '立即发布' }}
+        </el-button>
       </div>
     </div>
   </div>
@@ -56,183 +76,169 @@
 
 <script setup>
 import { ref, reactive, onMounted, computed } from 'vue'
-import { useRouter, useRoute } from 'vue-router' // 引入 useRoute
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { publishArticle, saveDraft, getArticleForEdit } from '../api/article' // 引入新接口
 import request from '../utils/request'
+import { getArticleDetail, publishArticle } from '../api/article'
+import { getHotTags } from '../api/tag' // 引入标签接口
 
-const router = useRouter()
 const route = useRoute()
+const router = useRouter()
+const isEdit = ref(false)
+const publishing = ref(false)
 
 const form = reactive({
-  id: null, // 如果有ID，说明是修改
+  id: null,
   title: '',
   content: '',
-  cover: '' // 新增封面字段
+  cover: '',
+  tags: [] // 【新增】标签数组
 })
 
-const publishLoading = ref(false)
-const draftLoading = ref(false)
-const lastSaveTime = ref('')
+const hotTags = ref([]) // 热门标签备选
 
-const isEdit = computed(() => !!form.id) // 是否处于编辑模式
+const uploadHeaders = computed(() => ({ token: localStorage.getItem('token') }))
 
-// 上传请求头 (如果有Token验证)
-const uploadHeaders = computed(() => {
-  return { token: localStorage.getItem('token') }
-})
-
-// 1. 初始化：检查是否是编辑模式
+// 初始化
 onMounted(async () => {
-  const editId = route.query.id
-  if (editId) {
-    loadArticleForEdit(editId)
+  loadHotTags() // 加载推荐标签
+  const id = route.query.id
+  if (id) {
+    isEdit.value = true
+    loadArticle(id)
   }
 })
 
-// 2. 加载旧数据
-const loadArticleForEdit = async (id) => {
+// 加载热门标签
+const loadHotTags = async () => {
   try {
-    const res = await getArticleForEdit(id)
+    const res = await getHotTags()
+    hotTags.value = res.data || []
+  } catch(e) {}
+}
+
+// 加载文章详情 (回显)
+const loadArticle = async (id) => {
+  try {
+    const res = await getArticleDetail(id)
     const data = res.data
     form.id = data.id
     form.title = data.title
     form.content = data.content
     form.cover = data.cover
-  } catch(e) {
-    ElMessage.error('加载文章失败，可能已被删除')
+    form.tags = data.tagList || [] // 回显标签
+  } catch (e) {
+    ElMessage.error('加载文章失败')
+  }
+}
+
+// 存草稿
+const handleSaveDraft = () => submit(false)
+// 发布
+const handlePublish = () => submit(true)
+
+const submit = async (isPublish) => {
+  if (!form.title.trim()) return ElMessage.warning('请输入标题')
+  if (!form.content.trim()) return ElMessage.warning('请输入内容')
+
+  publishing.value = true
+  try {
+    // 构造 payload
+    const payload = {
+      id: form.id,
+      title: form.title,
+      content: form.content,
+      cover: form.cover,
+      tags: form.tags, // 传给后端
+      isPublish: isPublish // 这个字段用于后端判断状态(如果有这个字段的话，或者通过 URL 区分)
+    }
+
+    // 注意：之前的 publishArticle 接口可能没传 isPublish 参数
+    // 我们通常约定：status=1 发布, status=0 草稿。
+    // 这里为了兼容你的后端 publishOrSave 逻辑，我们需要确认一下 API 定义。
+    // 假设我们复用 publishArticle，但在 payload 里带上 isPublish 标记
+
+    await publishArticle(payload, isPublish) // 修改 api/article.js 支持第二个参数，或者直接把 isPublish 放到 payload 里
+
+    ElMessage.success(isPublish ? '发布成功' : '已存入草稿')
     router.push('/home')
-  }
-}
-
-// 3. 发布
-const handlePublish = async () => {
-  if(!validate()) return
-  publishLoading.value = true
-  try {
-    const res = await publishArticle(form)
-    if(res.code === 200) {
-      ElMessage.success(isEdit.value ? '更新成功' : '发布成功')
-      router.push(`/article/${res.data}`)
-    } else {
-      ElMessage.error(res.msg || '发布失败')
-    }
   } catch(e) {
-    console.error(e)
+    ElMessage.error(e.msg || '操作失败')
   } finally {
-    publishLoading.value = false
+    publishing.value = false
   }
 }
 
-// 4. 存草稿
-const handleSaveDraft = async () => {
-  if(!form.title) return ElMessage.warning('至少写个标题吧')
-  draftLoading.value = true
-  try {
-    const res = await saveDraft(form)
-    if(res.code === 200) {
-      ElMessage.success('草稿保存成功')
-      // 如果是新增保存的草稿，要把返回的ID赋给form，防止下次保存变成新增
-      if (!form.id) {
-        form.id = res.data
-      }
-      lastSaveTime.value = new Date().toLocaleTimeString()
-    }
-  } catch(e) {
-    console.error(e)
-  } finally {
-    draftLoading.value = false
-  }
+// 封面上传相关
+const handleCoverSuccess = (res) => {
+  if(res.code === 200) form.cover = res.data
 }
-
-// 校验
-const validate = () => {
-  if(!form.title.trim()) {
-    ElMessage.warning('标题不能为空')
-    return false
-  }
-  if(!form.content.trim()) {
-    ElMessage.warning('内容不能为空')
+const beforeCoverUpload = (file) => {
+  if (file.size / 1024 / 1024 > 5) {
+    ElMessage.error('图片最大 5MB')
     return false
   }
   return true
 }
 
-// 编辑器上传图片处理
+// 编辑器上传图片
 const handleUploadImage = async (event, insertImage, files) => {
-  // 这里需要你自己实现图片上传逻辑，复用 file/upload 接口
-  // 简单示例:
+  const file = files[0]
   const formData = new FormData()
-  formData.append('file', files[0])
+  formData.append('file', file)
   try {
     const res = await request.post('/api/file/upload', formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     })
-    if(res.code === 200) {
-      insertImage({
-        url: res.data,
-        desc: '图片'
-      })
+    if (res.code === 200) {
+      insertImage({ url: res.data, desc: 'image' })
     }
-  } catch(e) {
+  } catch (e) {
     ElMessage.error('图片上传失败')
   }
-}
-
-// 封面上传成功
-const handleCoverSuccess = (res) => {
-  if(res.code === 200) {
-    form.cover = res.data
-    ElMessage.success('封面上传成功')
-  } else {
-    ElMessage.error('上传失败')
-  }
-}
-const beforeCoverUpload = (file) => {
-  const isLt2M = file.size / 1024 / 1024 < 2
-  if (!isLt2M) {
-    ElMessage.error('封面图大小不能超过 2MB!')
-  }
-  return isLt2M
 }
 </script>
 
 <style scoped lang="scss">
-.publish-container {
+.publish-page {
   min-height: 100vh; background: #fff;
 }
 .navbar-placeholder {
-  height: 60px; border-bottom: 1px solid #eee; display: flex; align-items: center; justify-content: space-between; padding: 0 30px;
-  position: sticky; top: 0; background: #fff; z-index: 100;
-  .nav-back { cursor: pointer; display: flex; align-items: center; gap: 5px; color: #666; font-size: 16px; &:hover { color: #0066ff; } }
-  .nav-title { font-size: 18px; font-weight: 600; color: #333; position: absolute; left: 50%; transform: translateX(-50%); }
+  height: 60px; border-bottom: 1px solid #eee; display: flex; align-items: center; padding: 0 40px; justify-content: space-between;
+  .nav-back { cursor: pointer; display: flex; align-items: center; gap: 5px; color: #666; &:hover { color: #0066ff; } }
+  .page-title { font-size: 18px; font-weight: 600; color: #333; }
 }
 
-.editor-main {
-  width: 1000px; margin: 30px auto;
+.main-container {
+  width: 900px; margin: 30px auto;
+}
 
+.form-group {
+  margin-bottom: 25px;
   .title-input {
-    margin-bottom: 20px;
-    :deep(.el-input__wrapper) { box-shadow: none; border-bottom: 1px solid #eee; padding: 10px 0; border-radius: 0; }
-    :deep(.el-input__inner) { font-size: 32px; font-weight: 600; color: #333; height: 60px; line-height: 60px; }
+    width: 100%; border: none; outline: none; font-size: 32px; font-weight: 600; color: #121212;
+    &::placeholder { color: #ccc; }
   }
-
-  .cover-section {
-    margin-bottom: 20px; display: flex; align-items: flex-start; gap: 20px;
-    .section-label { font-size: 14px; color: #666; margin-top: 10px; width: 80px; }
-    .cover-uploader {
-      .cover-img { width: 160px; height: 90px; object-fit: cover; border-radius: 4px; border: 1px solid #eee; }
-      .cover-uploader-icon {
-        font-size: 28px; color: #8c939d; width: 160px; height: 90px; line-height: 90px; text-align: center; border: 1px dashed #d9d9d9; border-radius: 4px; cursor: pointer;
-        &:hover { border-color: #409EFF; }
-      }
-    }
-    .remove-cover { margin-left: 10px; color: #f56c6c; font-size: 13px; margin-top: 5px; }
-  }
+  .section-label { font-size: 14px; color: #666; margin-bottom: 10px; }
 }
 
-.action-bar {
-  margin-top: 30px; display: flex; justify-content: flex-end; align-items: center; gap: 20px; padding-bottom: 50px;
-  .draft-tip { color: #999; font-size: 13px; }
+/* 标签选择器样式 */
+.tag-section {
+  .tag-input { width: 100%; }
+}
+
+.cover-uploader {
+  width: 200px; height: 112px; border: 1px dashed #d9d9d9; border-radius: 6px; cursor: pointer; position: relative; overflow: hidden; background: #fafafa;
+  &:hover { border-color: #0066ff; }
+  .uploader-icon { font-size: 28px; color: #8c939d; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); }
+  .cover-img { width: 100%; height: 100%; object-fit: cover; }
+}
+
+.editor-box {
+  margin-bottom: 80px;
+}
+
+.footer-actions {
+  position: fixed; bottom: 0; left: 0; width: 100%; height: 70px; background: #fff; border-top: 1px solid #eee; display: flex; align-items: center; justify-content: flex-end; padding: 0 100px; gap: 20px; z-index: 100; box-shadow: 0 -2px 10px rgba(0,0,0,0.05);
 }
 </style>

@@ -13,10 +13,9 @@ export const getArticleDetail = (id) => {
 // ---------------- 新增接口 ----------------
 
 // 发布文章 (新增或修改，status=1)
-export const publishArticle = (data) => {
-    return request.post('/api/article/publish', data)
+export const publishArticle = (data, isPublish) => {
+    return request.post(`/api/article/publish?isPublish=${isPublish}`, data)
 }
-
 // 存为草稿 (新增或修改，status=0)
 export const saveDraft = (data) => {
     return request.post('/api/article/draft', data)
