@@ -168,4 +168,17 @@ public class ArticleController {
         // 默认每页 10 条
         return Result.success(articleService.searchArticles(keyword, page, 10));
     }
+
+    /**
+     * 【个人中心】获取我的文章列表（包含待审核等所有状态）
+     */
+    @GetMapping("/my/list")
+    public Result<Page<Article>> getMyList(
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "10") int size,
+            @RequestHeader("token") String token) {
+
+        Long userId = JwtUtils.getUserId(token);
+        return Result.success(articleService.getMyAllArticles(userId, page, size));
+    }
 }

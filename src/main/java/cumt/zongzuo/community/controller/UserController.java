@@ -9,6 +9,8 @@ import cumt.zongzuo.community.utils.JwtUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.Map;
+
 @RestController
 @RequestMapping("/api/user")
 public class UserController {
@@ -76,5 +78,56 @@ public class UserController {
     public Result<Page<User>> search(@RequestParam String keyword,
                                      @RequestParam(defaultValue = "1") int page) {
         return Result.success(userService.searchUsers(keyword, page, 10));
+    }
+
+    /**
+     * 【管理员】获取用户列表
+     */
+    @GetMapping("/admin/list")
+    public Result<Page<User>> getUserList(
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "10") int size,
+            @RequestParam(required = false) String keyword,
+            @RequestHeader("token") String token) {
+
+        // 1. 鉴权 (校验是否管理员)
+        checkAdminRole(token);
+
+        // 2. 调用 Service
+        return Result.success(userService.getUserList(page, size, keyword));
+    }
+
+    /**
+     * 【管理员】封禁/解封用户
+     */
+    @PostMapping("/admin/status")
+    public Result<String> updateUserStatus(
+            @RequestBody Map<String, Object> params,
+            @RequestHeader("token") String token) {
+
+        // 1. 鉴权
+        checkAdminRole(token);
+
+        // 2. 解析参数
+        Long userId = Long.valueOf(params.get("userId").toString());
+        Integer status = Integer.valueOf(params.get("status").toString());
+
+        // 3. 调用 Service
+        userService.updateUserStatus(userId, status);
+
+        return Result.success("操作成功");
+    }
+
+    // --- 提取公共鉴权方法 (私有) ---
+    private void checkAdminRole(String token) {
+        Long currentUserId = JwtUtils.getUserId(token);
+        // 这里可以直接查库，也可以查缓存
+        // User currentUser = userService.getById(currentUserId);
+        // 为了性能最好是用 getUserCached，但因为是管理后台，查库也无所谓
+        User currentUser = userService.getUserCached(currentUserId);
+
+        if (currentUser == null || currentUser.getRole() != 1) {
+            throw new RuntimeException("无权访问"); // 全局异常处理会捕获
+        }
     }
 }

@@ -31,10 +31,12 @@ public class Article {
     private Integer likeCount;
     // 【新增】
     private Integer commentCount;
+    private Integer collectCount;
 
     private LocalDateTime createTime;
     private LocalDateTime updateTime;
     private Integer status;
+
 
     /**
      * 是否软删除: 0-否, 1-是

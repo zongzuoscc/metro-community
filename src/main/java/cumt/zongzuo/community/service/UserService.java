@@ -56,4 +56,10 @@ public interface UserService extends IService<User> {
      * 清除用户缓存 (更新资料时调用)
      */
     void clearUserCache(Long userId);
+
+    // 【新增】管理员：搜索用户列表
+    Page<User> getUserList(int page, int size, String keyword);
+
+    // 【新增】管理员：封禁/解封用户
+    void updateUserStatus(Long userId, Integer status);
 }

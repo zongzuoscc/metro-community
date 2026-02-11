@@ -21,6 +21,10 @@ public class User implements Serializable {
 
     private String intro;
 
+    private Integer role;
+    private Integer status; // 0正常 1封禁
+
+
     private LocalDateTime createTime;
 
     private LocalDateTime updateTime;

@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import cumt.zongzuo.community.dto.CommentDTO;
+import cumt.zongzuo.community.dto.CommentTaskDTO;
 import cumt.zongzuo.community.dto.NotificationMsgDTO;
 import cumt.zongzuo.community.entity.Article;
 import cumt.zongzuo.community.entity.Comment;
@@ -38,6 +39,7 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
     @Autowired
     private MessageService messageService;
 
+
     @Autowired
     private UserService userService;
 
@@ -65,10 +67,11 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
         save(comment);
 
         // 5. 【核心修复】更新文章评论数 +1
-        UpdateWrapper<Article> updateWrapper = new UpdateWrapper<>();
-        updateWrapper.setSql("comment_count = comment_count + 1");
-        updateWrapper.eq("id", dto.getArticleId());
-        articleMapper.update(null, updateWrapper);
+        CommentTaskDTO task = new CommentTaskDTO();
+        task.setArticleId(dto.getArticleId());
+        task.setAdd(true);
+        task.setCount(1);
+        rabbitTemplate.convertAndSend("comment.task.queue", task);
 
         // 6. 【修改】异步发送通知
         Long receiverId;
@@ -173,10 +176,10 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
         // 2. 查询所属文章 (用于校验文章作者权限)
         Article article = articleMapper.selectById(comment.getArticleId());
         if (article == null) {
-            throw new RuntimeException("关联文章不存在");
+            throw new RuntimeException("关联文章不存在"); // 严谨一点
         }
 
-        // 3. 权限校验
+        // 3. 权限校验 (与原逻辑保持一致：自己删自己的 OR 文章作者删评论)
         boolean isSelf = comment.getUserId().equals(userId);
         boolean isAuthor = article.getAuthorId().equals(userId);
 
@@ -188,9 +191,9 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
         List<Long> deleteIds = new ArrayList<>();
         deleteIds.add(commentId);
 
-        // 5. 判断是否是根评论 (parentId == 0)
-        // 如果是根评论，需要删除该楼层下的所有子评论
+        // 5. 判断是否是根评论 (级联删除逻辑)
         if (comment.getParentId() == null || comment.getParentId() == 0) {
+            // 查出所有子评论
             List<Comment> children = list(new QueryWrapper<Comment>().eq("parent_id", commentId));
             if (children != null && !children.isEmpty()) {
                 List<Long> childIds = children.stream().map(Comment::getId).collect(Collectors.toList());
@@ -198,17 +201,19 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
             }
         }
 
-        // 6. 批量删除
+        // 6. 批量逻辑删除 (DB操作)
+        // 这里的 removeBatchByIds 会把 ID 列表里的所有评论 is_deleted 设为 1
         removeBatchByIds(deleteIds);
 
-        // 7. 更新文章评论数 (减去实际删除的数量)
-        int deleteCount = deleteIds.size();
+        // 7. 【MQ 异步更新文章评论数】
+        int deleteCount = deleteIds.size(); // 计算总共删了多少条
         if (deleteCount > 0) {
-            UpdateWrapper<Article> updateWrapper = new UpdateWrapper<>();
-            // 使用 SQL 原子减，并防止减为负数
-            updateWrapper.setSql("comment_count = GREATEST(comment_count - " + deleteCount + ", 0)");
-            updateWrapper.eq("id", article.getId());
-            articleMapper.update(null, updateWrapper);
+            CommentTaskDTO task = new CommentTaskDTO();
+            task.setArticleId(comment.getArticleId());
+            task.setAdd(false); // 减少
+            task.setCount(deleteCount); // 【关键】告诉 MQ 减去多少
+
+            rabbitTemplate.convertAndSend("comment.task.queue", task);
         }
     }
 }

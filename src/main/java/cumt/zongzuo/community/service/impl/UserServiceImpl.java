@@ -333,4 +333,29 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         return page(pageInfo, query);
     }
 
+    @Override
+    public Page<User> getUserList(int page, int size, String keyword) {
+        Page<User> pageInfo = new Page<>(page, size);
+        QueryWrapper<User> wrapper = new QueryWrapper<>();
+        if (StrUtil.isNotBlank(keyword)) {
+            wrapper.like("username", keyword);
+        }
+        wrapper.orderByDesc("create_time");
+        return page(pageInfo, wrapper);
+    }
+
+    @Override
+    public void updateUserStatus(Long userId, Integer status) {
+        User user = getById(userId);
+        if (user == null) {
+            throw new RuntimeException("用户不存在");
+        }
+
+        user.setStatus(status); // 1封禁 0正常
+        updateById(user);
+
+        // 【关键】清除该用户的缓存，强制其 Token 下次验证时（如果配合 Redis 校验）或查询时失效
+        // 或者是为了让前台立刻看到状态变化
+        clearUserCache(userId);
+    }
 }

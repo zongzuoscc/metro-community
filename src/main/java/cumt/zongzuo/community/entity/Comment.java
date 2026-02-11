@@ -36,6 +36,9 @@ public class Comment {
      */
     private Long parentId;
 
+    // 【新增】逻辑删除字段
+    private Integer isDeleted;
+
     /**
      * 被回复的人的ID (仅子评论有效，如果是回复某人，这里存那个人ID)
      */

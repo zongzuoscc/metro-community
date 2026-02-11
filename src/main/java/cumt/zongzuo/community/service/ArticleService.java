@@ -75,4 +75,13 @@ public interface ArticleService extends IService<Article> {
     Page<Article> searchArticles(String keyword, int page, int size);
     // 【新增】更新热榜缓存 (供定时任务调用)
     void updateHotRankCache();
+
+    // 【新增】管理员：获取待审核文章列表
+    Page<Article> getPendingArticles(int page, int size);
+
+    // 【新增】管理员：审核文章 (pass=true通过, false=拒绝)
+    void auditArticle(Long articleId, boolean pass, String reason);
+
+    // 【新增】获取我的所有文章（包括审核中、已发布、草稿、拒绝）
+    Page<Article> getMyAllArticles(Long userId, int page, int size);
 }
