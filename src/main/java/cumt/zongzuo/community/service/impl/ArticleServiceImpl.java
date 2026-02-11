@@ -12,7 +12,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -28,6 +29,9 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
     private UserMapper userMapper;
 
     @Autowired
+    private ObjectMapper objectMapper;
+
+    @Autowired
     private StringRedisTemplate stringRedisTemplate;
 
     @Autowired
@@ -41,6 +45,9 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
     // 定义常量
     private static final String ARTICLE_VIEW_COUNT_KEY = "article:view:count:";
     public static final String ARTICLE_VIEW_DIRTY_SET = "article:view:dirty:ids";
+
+    // 定义 Redis Key
+    private static final String HOT_RANK_CACHE_KEY = "hot:article:rank:7days";
 
     /**
      * 获取全站热榜 (status=1 已发布 AND is_deleted=0 未删除)
@@ -411,17 +418,52 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
      */
     @Override
     public List<Article> getHotArticles7Days() {
-        // 计算7天前的时间
-        LocalDateTime sevenDaysAgo = LocalDateTime.now().minusDays(7);
+        // 1. 尝试从 Redis 获取
+        String json = stringRedisTemplate.opsForValue().get(HOT_RANK_CACHE_KEY);
+        if (StrUtil.isNotBlank(json)) {
+            try {
+                // 反序列化：JSON String -> List<Article>
+                return objectMapper.readValue(json, new TypeReference<List<Article>>() {});
+            } catch (Exception e) {
+                log.error("热榜缓存解析失败", e);
+            }
+        }
 
+        // 2. Redis 没有，查数据库 (兜底方案)
+        return queryHotArticlesFromDB();
+    }
+
+    @Override
+    public void updateHotRankCache() {
+        // 1. 查数据库最新数据
+        List<Article> hotArticles = queryHotArticlesFromDB();
+
+        // 2. 写入 Redis
+        try {
+            String json = objectMapper.writeValueAsString(hotArticles);
+            // 存入 Redis，不设置过期时间(依靠定时任务覆盖)，或者设置稍微长一点防止任务挂了
+            stringRedisTemplate.opsForValue().set(HOT_RANK_CACHE_KEY, json);
+        } catch (Exception e) {
+            log.error("热榜缓存写入失败", e);
+        }
+    }
+
+    /**
+     * 提取出来的原始 DB 查询逻辑 (私有方法)
+     */
+    private List<Article> queryHotArticlesFromDB() {
+        LocalDateTime sevenDaysAgo = LocalDateTime.now().minusDays(7);
         QueryWrapper<Article> query = new QueryWrapper<>();
-        query.eq("status", 1).eq("is_deleted", 0); // 必须是已发布且未删除
-        query.ge("create_time", sevenDaysAgo);     // create_time >= 7天前
-        query.orderByDesc("view_count");           // 按浏览量倒序 (也可以改成 (view*1 + like*5))
-        query.last("limit 10");                    // 只取前10
+        query.eq("status", 1).eq("is_deleted", 0);
+        query.ge("create_time", sevenDaysAgo);
+        query.orderByDesc("view_count");
+        query.last("limit 10");
 
         List<Article> list = list(query);
-        fillArticleAuthors(list); // 填充作者信息
+        fillArticleAuthors(list);
+        // 填充标签 (如果之前做了标签功能)
+        list.forEach(this::fillArticleTags);
+
         return list;
     }
 
@@ -501,4 +543,6 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
 
         return result;
     }
+
+
 }

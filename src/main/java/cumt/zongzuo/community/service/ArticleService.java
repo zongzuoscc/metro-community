@@ -73,4 +73,6 @@ public interface ArticleService extends IService<Article> {
 
     // 【新增】搜索文章
     Page<Article> searchArticles(String keyword, int page, int size);
+    // 【新增】更新热榜缓存 (供定时任务调用)
+    void updateHotRankCache();
 }

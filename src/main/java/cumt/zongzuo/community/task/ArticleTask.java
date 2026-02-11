@@ -20,4 +20,19 @@ public class ArticleTask {
         articleService.cleanExpiredArticles();
         log.info("回收站清理完成");
     }
+
+    /**
+     * 【新增】定时刷新热榜缓存
+     * 策略：每 10 分钟执行一次
+     */
+    @Scheduled(cron = "0 0/10 * * * ?")
+    public void refreshHotRank() {
+        log.info("开始刷新热榜缓存...");
+        long start = System.currentTimeMillis();
+
+        articleService.updateHotRankCache();
+
+        long end = System.currentTimeMillis();
+        log.info("热榜缓存刷新完成，耗时: {}ms", (end - start));
+    }
 }
