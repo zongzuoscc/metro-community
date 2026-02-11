@@ -71,9 +71,12 @@ public class ArticleController {
     @PostMapping("/publish")
     public Result<Long> publish(@RequestBody ArticleDTO dto, @RequestHeader("token") String token) {
         Long userId = JwtUtils.getUserId(token);
-        // true 表示直接发布
-        Long articleId = articleService.publishOrSave(dto, true, userId);
-        return Result.success(articleId);
+
+        // 【核心修复】
+        // 从 DTO 获取状态，如果没传(null)则默认为 true(发布)
+        boolean isPublish = dto.getIsPublish() != null ? dto.getIsPublish() : true;
+
+        return Result.success(articleService.publishOrSave(dto, isPublish, userId));
     }
 
     // 2. 存为草稿 (新增或修改)
