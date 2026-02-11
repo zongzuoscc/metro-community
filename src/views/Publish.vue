@@ -63,12 +63,17 @@
             @upload-image="handleUploadImage"
         ></v-md-editor>
       </div>
+    </div>
 
-      <div class="footer-actions">
-        <el-button size="large" @click="handleSaveDraft">存草稿</el-button>
-        <el-button type="primary" size="large" @click="handlePublish" :loading="publishing">
-          {{ isEdit ? '更新发布' : '立即发布' }}
-        </el-button>
+    <div class="footer-actions">
+      <div class="footer-content">
+        <span class="tip" v-if="isEdit">当前为编辑模式</span>
+        <div class="btns">
+          <el-button size="large" @click="handleSaveDraft">存草稿</el-button>
+          <el-button type="primary" size="large" @click="handlePublish" :loading="publishing">
+            {{ isEdit ? '更新发布' : '立即发布' }}
+          </el-button>
+        </div>
       </div>
     </div>
   </div>
@@ -80,7 +85,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import request from '../utils/request'
 import { getArticleDetail, publishArticle } from '../api/article'
-import { getHotTags } from '../api/tag' // 引入标签接口
+import { getHotTags } from '../api/tag'
 
 const route = useRoute()
 const router = useRouter()
@@ -92,16 +97,15 @@ const form = reactive({
   title: '',
   content: '',
   cover: '',
-  tags: [] // 【新增】标签数组
+  tags: []
 })
 
-const hotTags = ref([]) // 热门标签备选
+const hotTags = ref([])
 
 const uploadHeaders = computed(() => ({ token: localStorage.getItem('token') }))
 
-// 初始化
 onMounted(async () => {
-  loadHotTags() // 加载推荐标签
+  loadHotTags()
   const id = route.query.id
   if (id) {
     isEdit.value = true
@@ -109,7 +113,6 @@ onMounted(async () => {
   }
 })
 
-// 加载热门标签
 const loadHotTags = async () => {
   try {
     const res = await getHotTags()
@@ -117,7 +120,6 @@ const loadHotTags = async () => {
   } catch(e) {}
 }
 
-// 加载文章详情 (回显)
 const loadArticle = async (id) => {
   try {
     const res = await getArticleDetail(id)
@@ -126,15 +128,13 @@ const loadArticle = async (id) => {
     form.title = data.title
     form.content = data.content
     form.cover = data.cover
-    form.tags = data.tagList || [] // 回显标签
+    form.tags = data.tagList || []
   } catch (e) {
     ElMessage.error('加载文章失败')
   }
 }
 
-// 存草稿
 const handleSaveDraft = () => submit(false)
-// 发布
 const handlePublish = () => submit(true)
 
 const submit = async (isPublish) => {
@@ -143,22 +143,16 @@ const submit = async (isPublish) => {
 
   publishing.value = true
   try {
-    // 构造 payload
     const payload = {
       id: form.id,
       title: form.title,
       content: form.content,
       cover: form.cover,
-      tags: form.tags, // 传给后端
-      isPublish: isPublish // 这个字段用于后端判断状态(如果有这个字段的话，或者通过 URL 区分)
+      tags: form.tags,
+      isPublish: isPublish // 传给后端状态
     }
 
-    // 注意：之前的 publishArticle 接口可能没传 isPublish 参数
-    // 我们通常约定：status=1 发布, status=0 草稿。
-    // 这里为了兼容你的后端 publishOrSave 逻辑，我们需要确认一下 API 定义。
-    // 假设我们复用 publishArticle，但在 payload 里带上 isPublish 标记
-
-    await publishArticle(payload, isPublish) // 修改 api/article.js 支持第二个参数，或者直接把 isPublish 放到 payload 里
+    await publishArticle(payload)
 
     ElMessage.success(isPublish ? '发布成功' : '已存入草稿')
     router.push('/home')
@@ -169,7 +163,6 @@ const submit = async (isPublish) => {
   }
 }
 
-// 封面上传相关
 const handleCoverSuccess = (res) => {
   if(res.code === 200) form.cover = res.data
 }
@@ -181,7 +174,6 @@ const beforeCoverUpload = (file) => {
   return true
 }
 
-// 编辑器上传图片
 const handleUploadImage = async (event, insertImage, files) => {
   const file = files[0]
   const formData = new FormData()
@@ -201,7 +193,7 @@ const handleUploadImage = async (event, insertImage, files) => {
 
 <style scoped lang="scss">
 .publish-page {
-  min-height: 100vh; background: #fff;
+  min-height: 100vh; background: #fff; padding-bottom: 80px; /* 防止内容被底部遮挡 */
 }
 .navbar-placeholder {
   height: 60px; border-bottom: 1px solid #eee; display: flex; align-items: center; padding: 0 40px; justify-content: space-between;
@@ -222,10 +214,7 @@ const handleUploadImage = async (event, insertImage, files) => {
   .section-label { font-size: 14px; color: #666; margin-bottom: 10px; }
 }
 
-/* 标签选择器样式 */
-.tag-section {
-  .tag-input { width: 100%; }
-}
+.tag-section .tag-input { width: 100%; }
 
 .cover-uploader {
   width: 200px; height: 112px; border: 1px dashed #d9d9d9; border-radius: 6px; cursor: pointer; position: relative; overflow: hidden; background: #fafafa;
@@ -235,10 +224,21 @@ const handleUploadImage = async (event, insertImage, files) => {
 }
 
 .editor-box {
-  margin-bottom: 80px;
+  margin-bottom: 20px;
 }
 
+/* 底部操作栏增强样式 */
 .footer-actions {
-  position: fixed; bottom: 0; left: 0; width: 100%; height: 70px; background: #fff; border-top: 1px solid #eee; display: flex; align-items: center; justify-content: flex-end; padding: 0 100px; gap: 20px; z-index: 100; box-shadow: 0 -2px 10px rgba(0,0,0,0.05);
+  position: fixed; bottom: 0; left: 0; width: 100%; height: 72px;
+  background: #fff; border-top: 1px solid #e0e0e0;
+  z-index: 999; /* 确保层级最高 */
+  box-shadow: 0 -4px 12px rgba(0,0,0,0.05);
+  display: flex; justify-content: center; align-items: center;
+}
+
+.footer-content {
+  width: 900px; display: flex; justify-content: space-between; align-items: center;
+  .tip { font-size: 13px; color: #999; }
+  .btns { display: flex; gap: 15px; margin-left: auto; } /* 强制靠右 */
 }
 </style>
