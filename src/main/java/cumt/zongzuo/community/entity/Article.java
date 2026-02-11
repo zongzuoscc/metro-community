@@ -7,6 +7,7 @@ import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 @Data
 @TableName("article")
@@ -57,4 +58,9 @@ public class Article {
     private Long authorTotalLikes;
     @TableField(exist = false)
     private Boolean isLiked;
+    /**
+     * 文章标签列表 (展示用)
+     */
+    @TableField(exist = false)
+    private List<String> tagList;
 }

@@ -2,6 +2,8 @@ package cumt.zongzuo.community.dto;
 
 import lombok.Data;
 
+import java.util.List;
+
 @Data
 public class ArticleDTO {
     private Long id; // 【新增】如果有值，说明是修改；没值说明是新增
@@ -9,4 +11,9 @@ public class ArticleDTO {
     private String content;
     private String summary; // 可选，后端也可自动生成
     private String cover;   // 封面图(可选)
+
+    /**
+     * 标签列表 (前端传来的标签名数组)
+     */
+    private List<String> tags;
 }
