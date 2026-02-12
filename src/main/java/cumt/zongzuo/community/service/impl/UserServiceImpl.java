@@ -26,6 +26,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import cumt.zongzuo.community.service.FavoriteService;
 
+import java.time.LocalDateTime;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
@@ -204,26 +205,35 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         // 1. 查询用户
         User user = getOne(new QueryWrapper<User>().eq("email", dto.getEmail()));
 
-        if (user == null) return Result.error("用户不存在");
+        if (user == null) {
+            return Result.error("用户不存在");
+        }
 
-        // 2. 校验密码
+        // 2. 【新增】检查封禁状态 (核心拦截逻辑)
+        // 如果 status 为 1，直接阻断，不进行密码校验也不发放 Token
+        if (user.getStatus() != null && user.getStatus() == 1) {
+            return Result.error("该账号已被封禁，无法登录");
+        }
+
+        // 3. 校验密码
         if (!BCrypt.checkpw(dto.getPassword(), user.getPassword())) {
             return Result.error("密码错误");
         }
 
-        // 3. 生成 Token
+        // 4. 生成 Token
         String token = JwtUtils.generateToken(user.getId());
 
-        // 4. 返回数据
+        // 5. 返回数据
         Map<String, Object> map = new HashMap<>();
         map.put("token", token);
 
-        // 【核心修复】必须把 ID 返回给前端！
+        // 核心字段，前端用于判断“是否是我自己”
         map.put("id", user.getId());
 
         map.put("username", user.getUsername());
         map.put("avatar", user.getAvatar());
-        // 【核心修复】必须把 role 放进去！
+
+        // 核心字段，前端用于判断“是否有管理权限”
         map.put("role", user.getRole());
 
         return Result.success(map);
@@ -347,17 +357,23 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
     }
 
     @Override
-    public void updateUserStatus(Long userId, Integer status) {
+    public void updateUserStatus(Long userId, Integer status, LocalDateTime banTime) { // 【修改参数】增加 banTime
         User user = getById(userId);
-        if (user == null) {
-            throw new RuntimeException("用户不存在");
+        if (user == null) throw new RuntimeException("用户不存在");
+
+        user.setStatus(status);
+
+        if (status == 1) {
+            // 如果是封禁，设置时间
+            user.setBanTime(banTime); // banTime 为 null 代表永久
+        } else {
+            // 如果是解封，清空时间
+            user.setBanTime(null);
         }
 
-        user.setStatus(status); // 1封禁 0正常
         updateById(user);
 
-        // 【关键】清除该用户的缓存，强制其 Token 下次验证时（如果配合 Redis 校验）或查询时失效
-        // 或者是为了让前台立刻看到状态变化
+        // 【关键】必须清除缓存，否则拦截器查到的还是旧状态，用户依然能发文章！
         clearUserCache(userId);
     }
 }

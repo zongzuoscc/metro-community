@@ -29,6 +29,11 @@ public class User implements Serializable {
 
     private LocalDateTime updateTime;
 
+    /**
+     * 封禁截止时间 (null 表示未封禁或永久封禁，需配合 status 判断)
+     */
+    private LocalDateTime banTime;
+
     @TableLogic // 逻辑删除注解
     private Integer deleted;
 

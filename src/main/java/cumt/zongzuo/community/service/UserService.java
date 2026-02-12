@@ -9,6 +9,7 @@ import cumt.zongzuo.community.dto.ResetPasswordDTO;
 import cumt.zongzuo.community.dto.UpdatePasswordDTO;
 import cumt.zongzuo.community.entity.User;
 
+import java.time.LocalDateTime;
 import java.util.Map;
 import java.util.Set;
 
@@ -61,5 +62,5 @@ public interface UserService extends IService<User> {
     Page<User> getUserList(int page, int size, String keyword);
 
     // 【新增】管理员：封禁/解封用户
-    void updateUserStatus(Long userId, Integer status);
+    void updateUserStatus(Long userId, Integer status, LocalDateTime banTime);
 }

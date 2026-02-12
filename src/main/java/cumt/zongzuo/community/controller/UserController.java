@@ -9,6 +9,7 @@ import cumt.zongzuo.community.utils.JwtUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.LocalDateTime;
 import java.util.Map;
 
 @RestController
@@ -101,20 +102,24 @@ public class UserController {
      * 【管理员】封禁/解封用户
      */
     @PostMapping("/admin/status")
-    public Result<String> updateUserStatus(
-            @RequestBody Map<String, Object> params,
-            @RequestHeader("token") String token) {
-
-        // 1. 鉴权
+    public Result<String> updateUserStatus(@RequestBody Map<String, Object> params, @RequestHeader("token") String token) {
         checkAdminRole(token);
 
-        // 2. 解析参数
         Long userId = Long.valueOf(params.get("userId").toString());
         Integer status = Integer.valueOf(params.get("status").toString());
 
-        // 3. 调用 Service
-        userService.updateUserStatus(userId, status);
+        // 解析封禁时长 (单位：天，-1代表永久)
+        LocalDateTime banTime = null;
+        if (status == 1 && params.get("days") != null) {
+            int days = Integer.parseInt(params.get("days").toString());
+            if (days > 0) {
+                banTime = LocalDateTime.now().plusDays(days);
+            }
+            // days == -1 则 banTime 保持 null，代表永久
+        }
 
+        // 此时 Service 接口也需要同步修改参数签名
+        userService.updateUserStatus(userId, status, banTime);
         return Result.success("操作成功");
     }
 

@@ -27,4 +27,12 @@ public class Result<T> implements Serializable {
         r.setMsg(msg);
         return r;
     }
+
+    // 【新增】支持自定义 code 的 error 方法
+    public static <T> Result<T> error(Integer code, String msg) {
+        Result<T> r = new Result<>();
+        r.setCode(code);
+        r.setMsg(msg);
+        return r;
+    }
 }

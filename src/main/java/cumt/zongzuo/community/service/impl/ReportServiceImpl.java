@@ -84,35 +84,44 @@ public class ReportServiceImpl extends ServiceImpl<ReportMapper, Report> impleme
         Report report = getById(reportId);
         if (report == null) throw new RuntimeException("举报记录不存在");
 
+        String feedbackContent; // 定义通知内容
+
         if (isViolation) {
             report.setStatus(1); // 确认违规
             // 执行惩罚逻辑
             punishTarget(report.getTargetId(), report.getTargetType());
+            // 【核心修改】针对文章，文案改为“退回修改”；针对评论，文案保持“删除”
+            if (report.getTargetType() == 1) {
+                feedbackContent = "【文章退回通知】您发布的文章被举报并经核实存在违规内容，现已被退回。请前往“个人中心”查看并修改，修改完成后可重新提交审核。处理备注：" + (result == null ? "无" : result);
+            } else {
+                feedbackContent = "【违规处理通知】您发布的评论因违反社区规范已被删除。请注意言行，共同维护社区环境。处理备注：" + (result == null ? "无" : result);
+            }
         } else {
             report.setStatus(2); // 驳回
+            feedbackContent = "【举报处理结果】您好，您举报的内容经核实未发现明显违规，暂不处理。如有疑问请联系管理员。处理备注：" + (result == null ? "无" : result);
         }
 
         report.setHandlerId(adminId);
         report.setHandleTime(LocalDateTime.now());
         report.setResult(result);
         updateById(report);
+
+        sendSystemNotification(report.getReporterId(), report.getTargetId(), feedbackContent);
     }
 
     // 发送系统通知
     private void sendSystemNotification(Long toUserId, Long targetId, String content) {
         try {
             NotificationMsgDTO msg = new NotificationMsgDTO();
-            msg.setFromId(1L); // 1L 默认为管理员ID/系统ID，确保你的数据库里 ID=1 的用户存在
+            // 确保数据库中有一个 ID=1 的管理员用户，或者改成其他存在的系统账号ID
+            msg.setFromId(1L);
             msg.setToId(toUserId);
-            msg.setType(0); // 0 代表系统通知 (需要在前端 Message.vue 适配显示，或复用 type=2)
-            // 为了兼容前端逻辑，我们也可以临时用 type=2 (评论类型)，但最好是 type=0
-
+            msg.setType(0); // 0 代表系统通知
             msg.setTargetId(targetId);
             msg.setContent(content);
 
             rabbitTemplate.convertAndSend("message.notify.queue", msg);
         } catch (Exception e) {
-            // 发送通知失败不应回滚事务，记录日志即可
             e.printStackTrace();
         }
     }
@@ -127,6 +136,9 @@ public class ReportServiceImpl extends ServiceImpl<ReportMapper, Report> impleme
                 r.setTargetSnapshot("[文章已删除]");
             }
         } else if (r.getTargetType() == 2) { // 评论
+            // 即使评论被删除了，如果是逻辑删除，selectById 默认查不到
+            // 如果需要展示已删除评论的内容，需要在 XML 手写 SQL 忽略 deleted 字段
+            // 这里暂且保持现状，查不到就显示已删除
             Comment comment = commentMapper.selectById(r.getTargetId());
             if (comment != null) {
                 String content = comment.getContent();
@@ -142,19 +154,17 @@ public class ReportServiceImpl extends ServiceImpl<ReportMapper, Report> impleme
 
     // 辅助：执行惩罚
     private void punishTarget(Long targetId, Integer targetType) {
-        if (targetType == 1) { // 违规文章 -> 设为拒绝/删除
+        if (targetType == 1) { // 违规文章 -> 设为拒绝/违规下架
             Article article = articleMapper.selectById(targetId);
             if (article != null) {
-                article.setStatus(3); // 3=拒绝/违规下架
+                article.setStatus(3); // 状态 3 表示违规/未通过
                 articleMapper.updateById(article);
             }
         } else if (targetType == 2) { // 违规评论 -> 逻辑删除
-            Comment comment = commentMapper.selectById(targetId);
-            if (comment != null) {
-                comment.setIsDeleted(1);
-                commentMapper.updateById(comment);
-            }
+            // 【核心修复】对于 @TableLogic 注解的实体，必须使用 deleteById 才能触发逻辑删除更新
+            // 之前的 updateById + setIsDeleted(1) 会被 MP 忽略
+            commentMapper.deleteById(targetId);
         }
-        // 违规用户暂不自动封号，由管理员在用户管理界面手动操作
+        // 违规用户暂不自动封号
     }
 }
