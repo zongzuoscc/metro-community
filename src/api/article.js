@@ -83,5 +83,5 @@ export const searchArticles = (keyword, page) => {
 
 // 【修改后】调用新的查询“我的全部文章”接口
 export const getMyArticles = (page) => {
-    return request.get('/article/my/list', { params: page })
+    return request.get('/api/article/my/list', { params: page })
 }

@@ -64,13 +64,17 @@
                 <div class="content-main" @click="$router.push(`/article/${article.id}`)">
                   <div class="a-title">
                     {{ article.title }}
-                    <el-tag v-if="article.status === 0" size="small" type="info">草稿</el-tag>
+                    <el-tag v-if="article.status === 2" size="small" type="warning" effect="dark" style="margin-left: 8px;">审核中</el-tag>
+                    <el-tag v-else-if="article.status === 3" size="small" type="danger" effect="dark" style="margin-left: 8px;">未通过</el-tag>
+                    <el-tag v-else-if="article.status === 0" size="small" type="info" effect="plain" style="margin-left: 8px;">草稿</el-tag>
+                    <el-tag v-else-if="article.status === 1 && isMe" size="small" type="success" effect="plain" style="margin-left: 8px;">已发布</el-tag>
                   </div>
                   <div class="a-summary">{{ article.summary }}</div>
                   <div class="a-meta">
                     <span>{{ formatTime(article.createTime) }}</span>
                     <span><el-icon><View /></el-icon> {{ article.viewCount }}</span>
                     <span><el-icon><CaretTop /></el-icon> {{ article.likeCount }}</span>
+                    <span v-if="isMe && article.status === 3" style="color: #f56c6c; margin-left: 10px;">(请编辑修改后重新发布)</span>
                   </div>
                 </div>
 
@@ -128,7 +132,10 @@
             <div class="article-list" v-loading="loading">
               <div v-for="draft in draftList" :key="draft.id" class="article-item draft-item">
                 <div class="content-main" @click="toEdit(draft.id)">
-                  <div class="a-title">{{ draft.title || '无标题草稿' }}</div>
+                  <div class="a-title">
+                    {{ draft.title || '无标题草稿' }}
+                    <el-tag size="small" type="info" style="margin-left: 8px;">草稿</el-tag>
+                  </div>
                   <div class="a-summary">{{ draft.summary || '暂无内容...' }}</div>
                   <div class="a-meta">
                     <span>上次编辑: {{ formatTime(draft.updateTime || draft.createTime) }}</span>
@@ -181,8 +188,15 @@ import { ref, onMounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import request from '../utils/request'
-// 引入所有需要的 API
-import { deleteArticle, getDrafts, getRecycleBin, restoreArticle, hardDeleteArticle } from '../api/article'
+// 引入所有需要的 API，包括新加入的 getMyArticles
+import {
+  deleteArticle,
+  getDrafts,
+  getRecycleBin,
+  restoreArticle,
+  hardDeleteArticle,
+  getMyArticles // 【核心引入】
+} from '../api/article'
 
 const route = useRoute()
 const router = useRouter()
@@ -194,8 +208,8 @@ const loading = ref(false)
 const articleList = ref([])
 const userList = ref([])
 const favList = ref([])
-const draftList = ref([]) // 草稿列表
-const recycleList = ref([]) // 回收站列表
+const draftList = ref([])
+const recycleList = ref([])
 
 const currentUser = computed(() => {
   const str = localStorage.getItem('user')
@@ -223,7 +237,7 @@ const loadTabData = async () => {
   loading.value = true
   const id = targetUserId.value
 
-  // 清空当前列表，防止闪烁旧数据
+  // 清空当前列表
   if (activeTab.value === 'articles') articleList.value = []
   if (activeTab.value === 'following' || activeTab.value === 'fans') userList.value = []
   if (activeTab.value === 'favorites') favList.value = []
@@ -232,8 +246,15 @@ const loadTabData = async () => {
 
   try {
     if (activeTab.value === 'articles') {
-      const res = await request.get(`/api/article/user/${id}?page=1&size=20`)
-      articleList.value = res.data.records || []
+      if (isMe.value) {
+        // 【修改点】如果是看自己的主页，调用 getMyArticles 获取全部状态的文章
+        const res = await getMyArticles({ page: 1, size: 20 })
+        articleList.value = res.data.records || []
+      } else {
+        // 如果是看别人主页，调用旧接口（只看已发布）
+        const res = await request.get(`/api/article/user/${id}?page=1&size=20`)
+        articleList.value = res.data.records || []
+      }
     }
     else if (activeTab.value === 'following') {
       const res = await request.get(`/api/follow/following/${id}?page=1&size=50`)
@@ -247,12 +268,10 @@ const loadTabData = async () => {
       const res = await request.get(`/api/favorite/list`)
       favList.value = res.data || []
     }
-    // 【新增】加载草稿
     else if (activeTab.value === 'drafts' && isMe.value) {
       const res = await getDrafts()
       draftList.value = res.data || []
     }
-    // 【新增】加载回收站
     else if (activeTab.value === 'recycle' && isMe.value) {
       const res = await getRecycleBin()
       recycleList.value = res.data || []
@@ -267,29 +286,25 @@ const loadTabData = async () => {
 // 监听 Tab 切换
 watch(activeTab, () => { loadTabData() })
 
-// 👇 添加监听: 如果路由参数变化，自动切换 Tab (支持深度链接)
 watch(() => route.query.tab, (newTab) => {
   if (newTab) activeTab.value = newTab
 })
 
-// 跳转编辑
 const toEdit = (id) => {
   router.push(`/publish?id=${id}`)
 }
 
-// 删除文章 (移入回收站)
 const handleDelete = async (id) => {
   try {
     await deleteArticle(id)
     ElMessage.success('已移入回收站')
-    loadTabData() // 刷新列表
-    loadProfile() // 刷新统计数据
+    loadTabData()
+    loadProfile()
   } catch(e) {
     ElMessage.error('删除失败')
   }
 }
 
-// 恢复文章
 const handleRestore = async (id) => {
   try {
     await restoreArticle(id)
@@ -301,7 +316,6 @@ const handleRestore = async (id) => {
   }
 }
 
-// 彻底删除
 const handleHardDelete = async (id) => {
   try {
     await hardDeleteArticle(id)
@@ -312,18 +326,15 @@ const handleHardDelete = async (id) => {
   }
 }
 
-// 计算过期天数
 const getExpireDays = (deleteTime) => {
   if(!deleteTime) return 7
   const delDate = new Date(deleteTime)
-  // 假设过期时间是删除时间 + 7天
   const expireDate = new Date(delDate.getTime() + 7 * 24 * 60 * 60 * 1000)
   const diff = expireDate - new Date()
   const days = Math.ceil(diff / (1000 * 60 * 60 * 24))
   return days > 0 ? days : 0
 }
 
-// 关注操作
 const handleFollow = async () => {
   if(!currentUser.value.id) return ElMessage.warning('请先登录')
   try {
@@ -347,7 +358,6 @@ const formatTime = (time) => {
   return String(time).replace('T', ' ').substring(0, 10)
 }
 
-// 监听路由参数变化 (查看他人主页 -> 我的主页)
 watch(() => route.params.id, () => {
   loadProfile()
   loadTabData()

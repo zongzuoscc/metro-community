@@ -62,6 +62,9 @@
                       <el-dropdown-item command="settings">
                         <el-icon><Setting /></el-icon> 个人设置
                       </el-dropdown-item>
+                      <el-dropdown-item v-if="user.role === 1" @click="router.push('/admin')" divided>
+                        <el-icon><Monitor /></el-icon> 管理后台
+                      </el-dropdown-item>
                       <el-dropdown-item divided command="logout">
                         <el-icon><SwitchButton /></el-icon> 退出登录
                       </el-dropdown-item>
@@ -219,7 +222,7 @@ import request from '../utils/request'
 // 【引入 searchUsers】
 import { getHotRank, getDraftCount, getHotFeed, getFollowFeed, searchArticles } from '../api/article'
 import { searchUsers } from '../api/user'
-import { UserFilled } from '@element-plus/icons-vue'
+import {Monitor, Setting, SwitchButton, UserFilled} from '@element-plus/icons-vue'
 
 const router = useRouter()
 const route = useRoute() // 引入 route

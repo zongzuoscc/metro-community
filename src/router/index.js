@@ -1,5 +1,11 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
+const AdminLayout = () => import('../views/admin/AdminLayout.vue')
+const ArticleAudit = () => import('../views/admin/ArticleAudit.vue')
+const ReportManage = () => import('../views/admin/ReportManage.vue')
+const UserManage = () => import('../views/admin/UserManage.vue')
+
+
 const routes = [
     // 根路径重定向到登录页
     { path: '/', redirect: '/login' },
@@ -72,6 +78,17 @@ const routes = [
         name: 'Chat',
         component: () => import('../views/Chat.vue')
     },
+    {
+        path: '/admin',
+        component: AdminLayout,
+        redirect: '/admin/audit',
+        meta: { requiresAuth: true, requiresAdmin: true }, // 标记需要管理员权限
+        children: [
+            { path: 'audit', component: ArticleAudit, meta: { title: '文章审核' } },
+            { path: 'report', component: ReportManage, meta: { title: '举报处理' } },
+            { path: 'user', component: UserManage, meta: { title: '用户管理' } }
+        ]
+    },
 ]
 
 const router = createRouter({
@@ -80,3 +97,26 @@ const router = createRouter({
 })
 
 export default router
+
+// 【修改】路由守卫
+router.beforeEach((to, from, next) => {
+    const token = localStorage.getItem('token')
+    const userStr = localStorage.getItem('user')
+    const user = userStr ? JSON.parse(userStr) : {}
+
+    // 1. 检查登录
+    if (to.meta.requiresAuth && !token) {
+        return next('/login')
+    }
+
+    // 2. 检查管理员权限
+    if (to.meta.requiresAdmin) {
+        // 假设 role=1 是管理员
+        if (user.role !== 1) {
+            alert('无权访问管理后台')
+            return next('/home')
+        }
+    }
+
+    next()
+})

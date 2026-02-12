@@ -11,7 +11,22 @@
       <div class="left-column">
 
         <div class="article-card">
-          <h1 class="article-title">{{ article.title }}</h1>
+          <div class="article-header-row">
+            <h1 class="article-title">{{ article.title }}</h1>
+
+            <div class="more-actions">
+              <el-dropdown trigger="click" @command="handleArticleCommand">
+                <el-icon class="action-icon"><MoreFilled /></el-icon>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item command="report" v-if="!isMe">举报文章</el-dropdown-item>
+                    <el-dropdown-item command="edit" v-if="isMe">编辑文章</el-dropdown-item>
+                    <el-dropdown-item command="delete" v-if="isMe" divided style="color: #f56c6c;">删除文章</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+            </div>
+          </div>
 
           <div class="tags-row" v-if="article.tagList && article.tagList.length > 0">
             <el-tag
@@ -128,6 +143,14 @@
                       <el-icon><ChatDotRound /></el-icon> 回复
                   </span>
 
+                  <span
+                      class="action-btn report-btn"
+                      v-if="currentUser.id && String(currentUser.id) !== String(item.userId)"
+                      @click="openReport('comment', item.id)"
+                  >
+                      <el-icon><Warning /></el-icon> 举报
+                  </span>
+
                   <el-popconfirm
                       v-if="canDelete(item)"
                       title="确定删除这条评论吗？"
@@ -172,6 +195,14 @@
 
                       <span class="action-btn" @click="replyTo(child, item.id)">
                           <el-icon><ChatDotRound /></el-icon> 回复
+                      </span>
+
+                      <span
+                          class="action-btn report-btn"
+                          v-if="currentUser.id && String(currentUser.id) !== String(child.userId)"
+                          @click="openReport('comment', child.id)"
+                      >
+                          <el-icon><Warning /></el-icon> 举报
                       </span>
 
                       <el-popconfirm
@@ -265,17 +296,36 @@
         </div>
       </div>
     </el-dialog>
+
+    <el-dialog title="举报内容" v-model="reportVisible" width="400px" align-center>
+      <el-form label-position="top">
+        <el-form-item label="请选择举报理由">
+          <el-radio-group v-model="reportReason" class="report-radio">
+            <el-radio label="垃圾广告">垃圾广告</el-radio>
+            <el-radio label="违规内容">违规内容 (色情/暴力/政治)</el-radio>
+            <el-radio label="恶意攻击">恶意攻击/谩骂</el-radio>
+            <el-radio label="其他原因">其他原因</el-radio>
+          </el-radio-group>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="reportVisible = false">取消</el-button>
+        <el-button type="primary" @click="confirmReport">提交</el-button>
+      </template>
+    </el-dialog>
+
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '../utils/request'
 // 引入所有需要的 API
-import { getArticleDetail } from '../api/article'
+import { getArticleDetail, deleteArticle } from '../api/article' // 【新增引入 deleteArticle】
 import { getCommentList, publishComment, deleteComment } from '../api/comment'
+import { submitReport } from '../api/report' // 【新增引入 submitReport】
 
 const route = useRoute()
 const router = useRouter()
@@ -298,8 +348,13 @@ const newFolderName = ref('')
 const commentList = ref([])
 const commentContent = ref('')
 const commentLoading = ref(false)
-const replyTarget = ref(null) // { id, username, parentId }
+const replyTarget = ref(null)
 const commentLikedSet = ref(new Set())
+
+// 举报相关
+const reportVisible = ref(false)
+const reportReason = ref('')
+const reportTarget = ref({ id: null, type: 1 }) // type: 1文章, 2评论
 
 // 用户信息
 const currentUser = computed(() => {
@@ -336,10 +391,54 @@ const loadDetail = async () => {
   }
 }
 
-// 【新增】标签跳转
+// 标签跳转
 const toTagSearch = (tag) => {
   router.push({ path: '/home', query: { q: tag } })
 }
+
+// ---------------- 文章操作下拉菜单 ----------------
+const handleArticleCommand = (cmd) => {
+  if (cmd === 'report') {
+    openReport('article', article.value.id)
+  } else if (cmd === 'edit') {
+    router.push(`/publish?id=${article.value.id}`)
+  } else if (cmd === 'delete') {
+    ElMessageBox.confirm('确定删除文章吗？删除后将移入回收站。', '提示', { type: 'warning' }).then(async () => {
+      try {
+        await deleteArticle(article.value.id)
+        ElMessage.success('已移入回收站')
+        router.push('/home')
+      } catch(e) {
+        ElMessage.error('删除失败')
+      }
+    })
+  }
+}
+
+// ---------------- 举报逻辑 ----------------
+const openReport = (typeStr, id) => {
+  if (!currentUser.value.id) return ElMessage.warning('请先登录')
+  reportTarget.value.id = id
+  reportTarget.value.type = typeStr === 'article' ? 1 : 2
+  reportReason.value = ''
+  reportVisible.value = true
+}
+
+const confirmReport = async () => {
+  if (!reportReason.value) return ElMessage.warning('请选择举报理由')
+  try {
+    await submitReport({
+      targetId: reportTarget.value.id,
+      targetType: reportTarget.value.type,
+      reason: reportReason.value
+    })
+    ElMessage.success('举报已提交，我们会尽快处理')
+    reportVisible.value = false
+  } catch(e) {
+    // 错误处理交由 request.js 或显示默认错误
+  }
+}
+
 
 // ---------------- 评论核心逻辑 ----------------
 
@@ -564,9 +663,17 @@ onMounted(() => {
 /* 文章卡片 */
 .article-card {
   background: #fff; padding: 30px 40px; border-radius: 4px; box-shadow: 0 1px 3px rgba(18,18,18,0.1); margin-bottom: 20px; min-height: 300px;
-  .article-title { font-size: 32px; font-weight: 700; margin-bottom: 15px; line-height: 1.4; color: #121212; }
 
-  /* 【新增】标签样式 */
+  /* 【修改】标题头布局 */
+  .article-header-row {
+    display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 15px;
+    .article-title { font-size: 32px; font-weight: 700; line-height: 1.4; color: #121212; flex: 1; }
+    .more-actions {
+      margin-left: 10px; margin-top: 5px;
+      .action-icon { font-size: 20px; cursor: pointer; color: #999; transform: rotate(90deg); &:hover { color: #333; } }
+    }
+  }
+
   .tags-row {
     margin-bottom: 20px; display: flex; gap: 10px; flex-wrap: wrap;
     .tag-item { cursor: pointer; border-color: transparent; background: #f2f3f5; color: #8590a6; &:hover { color: #0066ff; background: #e6f0fd; } }
@@ -618,6 +725,9 @@ onMounted(() => {
             &:hover { color: #0066ff; }
             &.liked { color: #0066ff; font-weight: 600; }
             &.delete-btn { color: #999; &:hover { color: #f56c6c; } }
+
+            /* 【新增】举报按钮样式 */
+            &.report-btn { &:hover { color: #e6a23c; } }
           }
         }
 
@@ -674,6 +784,11 @@ onMounted(() => {
 .author-tag {
   background: #0066ff; color: #fff; font-size: 12px; padding: 1px 4px; border-radius: 2px; margin-left: 4px; font-weight: normal; transform: scale(0.9); display: inline-block;
   &.mini { transform: scale(0.85); }
+}
+
+/* 举报理由单选 */
+.report-radio {
+  display: flex; flex-direction: column; gap: 10px; align-items: flex-start;
 }
 
 /* Markdown 图片修正 */
