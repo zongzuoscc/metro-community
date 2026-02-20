@@ -1,5 +1,6 @@
 package cumt.zongzuo.community.controller;
 
+import cumt.zongzuo.community.annotation.RateLimit;
 import cumt.zongzuo.community.common.Result;
 import cumt.zongzuo.community.service.LikeService;
 import cumt.zongzuo.community.utils.JwtUtils;
@@ -19,6 +20,7 @@ public class LikeController {
     // 点赞 / 取消点赞
     // POST /api/like?targetId=1&targetType=1
     @PostMapping
+    @RateLimit(name = "do_like", time = 1, count = 5)
     public Result<String> like(@RequestParam Long targetId,
                                @RequestParam Integer targetType,
                                @RequestHeader("token") String token) {

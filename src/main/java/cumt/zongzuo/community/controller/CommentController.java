@@ -7,7 +7,7 @@ import cumt.zongzuo.community.service.CommentService;
 import cumt.zongzuo.community.utils.JwtUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
-
+import cumt.zongzuo.community.annotation.RateLimit; // 记得导包
 import java.util.List;
 
 @RestController
@@ -26,6 +26,7 @@ public class CommentController {
 
     // 发表评论 (支持根评论和子回复)
     @PostMapping("/publish")
+    @RateLimit(name = "publish_comment", time = 5, count = 1)
     public Result<String> publish(@RequestBody CommentDTO dto, @RequestHeader("token") String token) {
         Long userId = JwtUtils.getUserId(token);
         // 简单的校验

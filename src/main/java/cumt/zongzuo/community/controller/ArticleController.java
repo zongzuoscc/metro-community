@@ -16,6 +16,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+import cumt.zongzuo.community.annotation.RateLimit; // 记得导包
 
 @RestController
 @RequestMapping("/api/article")
@@ -75,6 +76,7 @@ public class ArticleController {
 
     // 1. 发布文章 (新增或修改)
     @PostMapping("/publish")
+    @RateLimit(name = "publish_article", time = 20, count = 1)
     public Result<Long> publish(@RequestBody ArticleDTO dto, @RequestHeader("token") String token) {
         Long userId = JwtUtils.getUserId(token);
 
