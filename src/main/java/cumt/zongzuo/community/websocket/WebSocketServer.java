@@ -79,6 +79,16 @@ public class WebSocketServer {
             Long toId = msgObj.get("toId").asLong();
             String content = msgObj.get("content").asText();
 
+            if (toId == 9999L) {
+                // 1. 用户的提问先正常入库保存
+                ChatUtils.saveMessageAsync(this.userId, toId, content);
+
+                // 2. 唤醒 AI 异步思考并回复
+                ChatUtils.handleAiChatAsync(this.userId, content, session, objectMapper);
+
+                return; // 直接结束，不需要走后续普通用户的发送逻辑
+            }
+
             // 1. 发送给接收者 (如果在线)
             Session toSession = sessionMap.get(toId);
             if (toSession != null && toSession.isOpen()) {

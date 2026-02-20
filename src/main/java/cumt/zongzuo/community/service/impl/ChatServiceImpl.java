@@ -27,16 +27,15 @@ public class ChatServiceImpl extends ServiceImpl<ChatMsgMapper, ChatMsg> impleme
 
     @Override
     public void sendChat(Long fromId, Long toId, String content) {
-        // 1. 检查是否互相关注 (好友关系)
-        // A关注B ?
-        Long count1 = followMapper.selectCount(new QueryWrapper<Follow>()
-                .eq("follower_id", fromId).eq("followed_id", toId));
-        // B关注A ?
-        Long count2 = followMapper.selectCount(new QueryWrapper<Follow>()
-                .eq("follower_id", toId).eq("followed_id", fromId));
+        if (toId != 9999L && fromId != 9999L) {
+            Long count1 = followMapper.selectCount(new QueryWrapper<Follow>()
+                    .eq("follower_id", fromId).eq("followed_id", toId));
+            Long count2 = followMapper.selectCount(new QueryWrapper<Follow>()
+                    .eq("follower_id", toId).eq("followed_id", fromId));
 
-        if (count1 == 0 || count2 == 0) {
-            throw new RuntimeException("必须互相关注才能发送私信");
+            if (count1 == 0 || count2 == 0) {
+                throw new RuntimeException("必须互相关注才能发送私信");
+            }
         }
 
         // 2. 存入数据库 (持久化)
@@ -86,6 +85,9 @@ public class ChatServiceImpl extends ServiceImpl<ChatMsgMapper, ChatMsg> impleme
         }
         contactIds.remove(userId); // 排除自己
 
+        // 【核心新增】强制把 AI (9999) 加入所有人的联系人列表！
+        contactIds.add(9999L);
+
         // 2. 获取我的关注列表 (为了拿备注)
         List<Follow> myFollowings = followMapper.selectList(new QueryWrapper<Follow>().eq("follower_id", userId));
         Map<Long, Follow> followingMap = myFollowings.stream()
@@ -110,16 +112,20 @@ public class ChatServiceImpl extends ServiceImpl<ChatMsgMapper, ChatMsg> impleme
         for (User u : users) {
             u.setPassword(null);
 
-            // 判断是否是好友 (互关)
-            boolean isFollowing = followingMap.containsKey(u.getId());
-            boolean isFan = fanIds.contains(u.getId());
-            u.setIsFriend(isFollowing && isFan);
+            if (u.getId() == 9999L) {
+                u.setIsFriend(true);           // 强行设为好友，允许发送消息
+                u.setRemark("智能助手小M");     // 强行给个备注
+            } else {
+                // 原有的普通用户判断逻辑
+                boolean isFollowing = followingMap.containsKey(u.getId());
+                boolean isFan = fanIds.contains(u.getId());
+                u.setIsFriend(isFollowing && isFan);
 
-            // 填充备注
-            if (isFollowing) {
-                Follow f = followingMap.get(u.getId());
-                u.setRemark(f.getRemark());
-                u.setDescription(f.getDescription());
+                if (isFollowing) {
+                    Follow f = followingMap.get(u.getId());
+                    u.setRemark(f.getRemark());
+                    u.setDescription(f.getDescription());
+                }
             }
         }
 
