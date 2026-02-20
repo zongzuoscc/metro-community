@@ -43,7 +43,8 @@ public class WebMvcConfig implements WebMvcConfigurer {
                         "/swagger-ui.html",  // 如果以后加 Swagger 文档需放行
                         "/swagger-resources/**",
                         "/webjars/**",
-                        "/api/article/**"
+                        "/api/article/**",
+                        "/api/ai/**"
                 );
     }
 }
