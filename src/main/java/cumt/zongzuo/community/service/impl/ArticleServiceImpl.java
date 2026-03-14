@@ -167,8 +167,15 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
             stringRedisTemplate.delete(ARTICLE_DETAIL_CACHE_PREFIX + dto.getId());
         }
 
-        // 【新增】发送同步消息到 ES
-        rabbitTemplate.convertAndSend("es.sync.queue", article.getId());
+        // 8. 【新增】基于状态驱动的 MQ 异步投递
+        if (isPublish) {
+            // 文章发布，状态变为了 2 (审核中)，投递给 AI 审核队列
+            log.info("文章 ID: {} 已提交发布，投递至 AI 异步审核队列", article.getId());
+            rabbitTemplate.convertAndSend("article.audit.queue", article.getId());
+        } else {
+            // 存为草稿，状态变为了 0，同步通知 ES 更新/移除
+            rabbitTemplate.convertAndSend("es.sync.queue", article.getId());
+        }
 
         return article.getId();
     }

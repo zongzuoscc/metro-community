@@ -42,4 +42,10 @@ public class RabbitConfig {
     public Queue esSyncQueue() {
         return new Queue("es.sync.queue", true);
     }
+
+    // 【本次新增】AI 文章审核队列
+    @Bean
+    public Queue articleAuditQueue() {
+        return new Queue("article.audit.queue", true);
+    }
 }
