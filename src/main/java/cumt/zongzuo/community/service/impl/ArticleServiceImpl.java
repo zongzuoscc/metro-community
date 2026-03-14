@@ -14,13 +14,25 @@ import cumt.zongzuo.community.service.UserService;
 import cumt.zongzuo.community.utils.JwtUtils;
 import cumt.zongzuo.community.utils.SensitiveUtils;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.elasticsearch.core.ElasticsearchOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
-
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.elasticsearch.core.SearchHit;
+import org.springframework.data.elasticsearch.core.SearchHits;
+import org.springframework.data.elasticsearch.core.query.Criteria;
+import org.springframework.data.elasticsearch.core.query.CriteriaQuery;
+import org.springframework.data.elasticsearch.core.query.HighlightQuery;
+import org.springframework.data.elasticsearch.core.query.highlight.Highlight;
+import org.springframework.data.elasticsearch.core.query.highlight.HighlightField;
+import org.springframework.data.elasticsearch.core.query.highlight.HighlightParameters;
+import cumt.zongzuo.community.document.ArticleDoc;
+import java.util.Arrays;
 import jakarta.servlet.http.HttpServletRequest;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -54,6 +66,13 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
 
     @Autowired
     private FollowMapper followMapper;
+
+    @Autowired
+    private RabbitTemplate rabbitTemplate;
+
+    // 【新增】注入 Elasticsearch 高级操作模板
+    @Autowired
+    private ElasticsearchOperations elasticsearchOperations;
 
     // Redis Key 定义
     private static final String ARTICLE_DETAIL_CACHE_PREFIX = "article:detail:";
@@ -141,6 +160,9 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         if (dto.getId() != null) {
             stringRedisTemplate.delete(ARTICLE_DETAIL_CACHE_PREFIX + dto.getId());
         }
+
+        // 【新增】发送同步消息到 ES
+        rabbitTemplate.convertAndSend("es.sync.queue", article.getId());
 
         return article.getId();
     }
@@ -296,28 +318,86 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
 
     @Override
     public Page<Article> searchArticles(String keyword, int page, int size) {
-        Page<Article> pageInfo = new Page<>(page, size);
-        QueryWrapper<Article> query = new QueryWrapper<>();
-        query.eq("status", 1).eq("is_deleted", 0);
-
-        if (StrUtil.isNotBlank(keyword)) {
-            // 使用 apply 子查询：查出 tag.name 包含 keyword 的所有 article_id
-            String tagSubQuery = "id IN (SELECT at.article_id FROM article_tag at " +
-                    "LEFT JOIN tag t ON at.tag_id = t.id " +
-                    "WHERE t.name LIKE {0})";
-
-            query.and(w -> w.like("title", keyword)
-                    .or().like("summary", keyword)
-                    .or().like("content", keyword)
-                    .or().apply(tagSubQuery, "%" + keyword + "%")
-            );
+        // 1. 如果搜索关键字为空，降级走普通的 MySQL 查询最新文章
+        if (StrUtil.isBlank(keyword)) {
+            Page<Article> pageInfo = new Page<>(page, size);
+            QueryWrapper<Article> query = new QueryWrapper<>();
+            query.eq("status", 1).eq("is_deleted", 0);
+            query.orderByDesc("create_time");
+            Page<Article> result = page(pageInfo, query);
+            fillArticleAuthors(result.getRecords());
+            result.getRecords().forEach(this::fillArticleTags);
+            return result;
         }
 
-        query.orderByDesc("create_time");
-        Page<Article> result = page(pageInfo, query);
-        fillArticleAuthors(result.getRecords());
-        result.getRecords().forEach(this::fillArticleTags);
-        return result;
+        // ================= 【核心：Elasticsearch 高亮搜索】 =================
+
+        // 2. 构建查询条件：匹配标题、摘要或正文 (只要有一个字段包含关键字即可)
+        Criteria criteria = new Criteria("title").matches(keyword)
+                .or(new Criteria("summary").matches(keyword))
+                .or(new Criteria("content").matches(keyword));
+
+        // 3. 构建高亮配置：给匹配到的关键字加上前端红色的标签
+        HighlightParameters parameters = HighlightParameters.builder()
+                .withPreTags("<span style='color:red; font-weight:bold;'>")
+                .withPostTags("</span>")
+                .build();
+
+        Highlight highlight = new Highlight(parameters, Arrays.asList(
+                new HighlightField("title"),
+                new HighlightField("summary"),
+                new HighlightField("content")
+        ));
+        HighlightQuery highlightQuery = new HighlightQuery(highlight, ArticleDoc.class);
+
+        // 4. 组装完整查询请求
+        CriteriaQuery query = new CriteriaQuery(criteria);
+        // 注意：ES 的分页是从 0 开始的，而前端传过来是从 1 开始的，所以要 -1
+        query.setPageable(PageRequest.of(page - 1, size));
+        query.setHighlightQuery(highlightQuery);
+
+        // 5. 执行搜索
+        SearchHits<ArticleDoc> searchHits = elasticsearchOperations.search(query, ArticleDoc.class);
+
+        // 6. 将 ES 返回的文档，转换为前端需要的 Article 对象
+        List<Article> articleList = new ArrayList<>();
+        for (SearchHit<ArticleDoc> hit : searchHits) {
+            ArticleDoc doc = hit.getContent();
+            Article article = new Article();
+
+            // 拷贝基础属性
+            article.setId(doc.getId());
+            article.setAuthorId(doc.getAuthorId());
+            article.setViewCount(doc.getViewCount());
+            article.setLikeCount(doc.getLikeCount());
+            article.setCommentCount(doc.getCommentCount());
+            article.setCollectCount(doc.getCollectCount());
+            article.setCreateTime(doc.getCreateTime());
+            article.setCover(doc.getCover());
+
+            // 【关键】替换高亮文本：如果高亮结果中有值，就用带红色标签的文本，否则用原文本
+            List<String> titleHighlights = hit.getHighlightField("title");
+            article.setTitle(titleHighlights.isEmpty() ? doc.getTitle() : titleHighlights.get(0));
+
+            List<String> summaryHighlights = hit.getHighlightField("summary");
+            article.setSummary(summaryHighlights.isEmpty() ? doc.getSummary() : summaryHighlights.get(0));
+
+            List<String> contentHighlights = hit.getHighlightField("content");
+            article.setContent(contentHighlights.isEmpty() ? doc.getContent() : contentHighlights.get(0));
+
+            articleList.add(article);
+        }
+
+        // 7. 填充作者信息和标签 (复用你原本写好的现成方法！)
+        fillArticleAuthors(articleList);
+        articleList.forEach(this::fillArticleTags);
+
+        // 8. 重新包装成 MyBatis-Plus 的 Page 对象返回给 Controller
+        Page<Article> resultPage = new Page<>(page, size);
+        resultPage.setRecords(articleList);
+        resultPage.setTotal(searchHits.getTotalHits()); // 填入 ES 查出的总记录数
+
+        return resultPage;
     }
 
     // --------------------------------------------------------------------------------
@@ -350,6 +430,8 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         }
         updateById(article);
         stringRedisTemplate.delete(ARTICLE_DETAIL_CACHE_PREFIX + articleId);
+        // 【新增】发送同步消息
+        rabbitTemplate.convertAndSend("es.sync.queue", articleId);
     }
 
     @Override
@@ -361,6 +443,8 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         article.setDeleteTime(LocalDateTime.now());
         updateById(article);
         stringRedisTemplate.delete(ARTICLE_DETAIL_CACHE_PREFIX + articleId);
+        // 【新增】发送同步消息 (通知 ES 删除)
+        rabbitTemplate.convertAndSend("es.sync.queue", articleId);
     }
 
     @Override
@@ -377,6 +461,8 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         article.setDeleteTime(null);
         updateById(article);
         stringRedisTemplate.delete(ARTICLE_DETAIL_CACHE_PREFIX + articleId);
+        // 【新增】发送同步消息 (通知 ES 重新建立索引)
+        rabbitTemplate.convertAndSend("es.sync.queue", articleId);
     }
 
     @Override
@@ -385,6 +471,8 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         if (article == null) return;
         if (!article.getAuthorId().equals(userId)) throw new RuntimeException("无权操作");
         removeById(articleId);
+        // 【新增】发送同步消息
+        rabbitTemplate.convertAndSend("es.sync.queue", articleId);
     }
 
     @Override

@@ -36,4 +36,10 @@ public class RabbitConfig {
     public Queue likeQueue() {
         return new Queue("like.task.queue", true);
     }
+
+    // 【新增】ES 文章数据同步队列
+    @Bean
+    public Queue esSyncQueue() {
+        return new Queue("es.sync.queue", true);
+    }
 }
