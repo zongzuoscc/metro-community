@@ -86,12 +86,12 @@
       <div class="feed-column">
         <el-card class="creation-card" shadow="never" v-if="activeNav === 'recommend'">
           <div class="creation-actions">
-            <div class="action-item"><el-icon :size="20" color="#e6a23c"><Edit /></el-icon><span>写回答</span></div>
+
             <div class="action-item" @click="$router.push('/publish')">
               <el-icon :size="20" color="#409eff"><DocumentAdd /></el-icon>
               <span>写文章</span>
             </div>
-            <div class="action-item"><el-icon :size="20" color="#67c23a"><Promotion /></el-icon><span>写想法</span></div>
+
           </div>
         </el-card>
 
