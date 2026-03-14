@@ -264,6 +264,22 @@
             私信作者
           </el-button>
         </div>
+
+        <div class="similar-card" v-if="similarArticles.length > 0">
+          <div class="similar-header">相关推荐</div>
+          <div class="similar-list">
+            <div
+                v-for="sim in similarArticles"
+                :key="sim.id"
+                class="similar-item pointer"
+                @click="toSimilarArticle(sim.id)"
+            >
+              <div class="sim-title" :title="sim.title">{{ sim.title }}</div>
+              <div class="sim-meta">{{ sim.viewCount || 0 }} 阅读 · {{ formatTimeShort(sim.createTime) }}</div>
+            </div>
+          </div>
+        </div>
+
       </div>
     </div>
 
@@ -318,14 +334,16 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+// 【新增引入 watch】
+import { ref, onMounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '../utils/request'
-// 引入所有需要的 API
-import { getArticleDetail, deleteArticle } from '../api/article' // 【新增引入 deleteArticle】
+
+// 引入所有需要的 API (增加 getSimilarArticles)
+import { getArticleDetail, deleteArticle, getSimilarArticles } from '../api/article'
 import { getCommentList, publishComment, deleteComment } from '../api/comment'
-import { submitReport } from '../api/report' // 【新增引入 submitReport】
+import { submitReport } from '../api/report'
 
 const route = useRoute()
 const router = useRouter()
@@ -336,6 +354,9 @@ const article = ref({})
 const isLiked = ref(false)
 const likeLoading = ref(false)
 const isFollowed = ref(false)
+
+// 【新增】相似文章数据
+const similarArticles = ref([])
 
 // 收藏相关
 const isCollected = ref(false)
@@ -383,6 +404,10 @@ const loadDetail = async () => {
 
     // 加载评论
     loadComments(id)
+
+    // 【新增】加载相似文章
+    loadSimilarArticles(id)
+
   } catch(e) {
     ElMessage.error("加载详情失败或文章已删除")
     router.push('/home')
@@ -390,6 +415,34 @@ const loadDetail = async () => {
     loading.value = false
   }
 }
+
+// 【新增】获取相似文章逻辑
+const loadSimilarArticles = async (id) => {
+  try {
+    const res = await getSimilarArticles(id)
+    similarArticles.value = res.data || []
+  } catch(e) {
+    console.error('获取相似文章失败', e)
+  }
+}
+
+// 【新增】点击相似文章时的跳转处理
+const toSimilarArticle = (id) => {
+  router.push(`/article/${id}`)
+  // 让页面平滑滚动回顶部
+  window.scrollTo({ top: 0, behavior: 'smooth' })
+}
+
+// 【新增】监听路由参数变化，当用户点击右侧推荐文章时，不刷新网页直接重载数据
+watch(
+    () => route.params.id,
+    (newId) => {
+      // 确保当前还在文章详情页，且 id 发生了变化
+      if (newId && route.path.startsWith('/article/')) {
+        loadDetail()
+      }
+    }
+)
 
 // 标签跳转
 const toTagSearch = (tag) => {
@@ -435,10 +488,8 @@ const confirmReport = async () => {
     ElMessage.success('举报已提交，我们会尽快处理')
     reportVisible.value = false
   } catch(e) {
-    // 错误处理交由 request.js 或显示默认错误
   }
 }
-
 
 // ---------------- 评论核心逻辑 ----------------
 
@@ -636,6 +687,18 @@ const formatTime = (time) => {
   return String(time).replace('T', ' ').substring(0, 16)
 }
 
+// 【新增】简化版的日期格式化，适合展示在小卡片上
+const formatTimeShort = (time) => {
+  if(!time) return ''
+  let dateStr = ''
+  if(Array.isArray(time)) {
+    dateStr = `${time[0]}-${time[1]}-${time[2]}`
+  } else {
+    dateStr = String(time).split('T')[0]
+  }
+  return dateStr
+}
+
 onMounted(() => {
   loadDetail()
 })
@@ -655,7 +718,9 @@ onMounted(() => {
   width: 1000px; margin: 0 auto; display: flex; align-items: flex-start; gap: 12px; padding-bottom: 50px;
 }
 .left-column { width: 694px; }
-.sidebar-column { width: 294px; }
+
+/* 【修改】给整个侧边栏加吸顶效果，而不是给单张卡片 */
+.sidebar-column { width: 294px; position: sticky; top: 80px; align-self: flex-start; }
 
 /* 通用点击样式 */
 .pointer { cursor: pointer; &:hover { color: #0066ff; } }
@@ -664,7 +729,6 @@ onMounted(() => {
 .article-card {
   background: #fff; padding: 30px 40px; border-radius: 4px; box-shadow: 0 1px 3px rgba(18,18,18,0.1); margin-bottom: 20px; min-height: 300px;
 
-  /* 【修改】标题头布局 */
   .article-header-row {
     display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 15px;
     .article-title { font-size: 32px; font-weight: 700; line-height: 1.4; color: #121212; flex: 1; }
@@ -725,8 +789,6 @@ onMounted(() => {
             &:hover { color: #0066ff; }
             &.liked { color: #0066ff; font-weight: 600; }
             &.delete-btn { color: #999; &:hover { color: #f56c6c; } }
-
-            /* 【新增】举报按钮样式 */
             &.report-btn { &:hover { color: #e6a23c; } }
           }
         }
@@ -747,7 +809,8 @@ onMounted(() => {
 
 /* 侧边栏作者卡片 */
 .author-card {
-  background: #fff; padding: 20px; border-radius: 4px; box-shadow: 0 1px 3px rgba(18,18,18,0.1); position: sticky; top: 80px;
+  /* 【修改】取消这里的 sticky，统一放到 sidebar-column 上 */
+  background: #fff; padding: 20px; border-radius: 4px; box-shadow: 0 1px 3px rgba(18,18,18,0.1);
   .author-header {
     .author-link { display: flex; align-items: center; gap: 15px; margin-bottom: 20px; cursor: pointer; transition: opacity 0.2s; &:hover { opacity: 0.8; } }
     .name { font-weight: 600; font-size: 16px; margin-bottom: 4px; }
@@ -755,6 +818,22 @@ onMounted(() => {
   }
   .stat-row { display: flex; justify-content: space-around; margin-bottom: 20px; .stat-item { text-align: center; } .num { font-weight: 600; font-size: 16px; color: #121212; } .label { font-size: 12px; color: #8590a6; } }
   .follow-btn { width: 100%; }
+}
+
+/* 【新增】相关推荐卡片样式 */
+.similar-card {
+  background: #fff; padding: 20px; border-radius: 4px; box-shadow: 0 1px 3px rgba(18,18,18,0.1); margin-top: 15px;
+  .similar-header { font-weight: 600; font-size: 16px; margin-bottom: 15px; border-left: 4px solid #0066ff; padding-left: 10px; color: #121212; }
+  .similar-list {
+    display: flex; flex-direction: column; gap: 12px;
+    .similar-item {
+      border-bottom: 1px solid #f0f2f7; padding-bottom: 12px;
+      &:last-child { border-bottom: none; padding-bottom: 0; }
+      &:hover .sim-title { color: #0066ff; }
+      .sim-title { font-size: 14px; font-weight: 500; color: #444; line-height: 1.5; margin-bottom: 6px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+      .sim-meta { font-size: 12px; color: #8590a6; }
+    }
+  }
 }
 
 /* 收藏夹列表 */

@@ -85,3 +85,8 @@ export const searchArticles = (keyword, page) => {
 export const getMyArticles = (page) => {
     return request.get('/api/article/my/list', { params: page })
 }
+
+// 【新增】获取相似文章 (猜你喜欢)
+export const getSimilarArticles = (id) => {
+    return request.get(`/api/article/${id}/similar`)
+}
