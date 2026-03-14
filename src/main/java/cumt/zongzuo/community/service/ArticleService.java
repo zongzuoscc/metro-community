@@ -84,4 +84,12 @@ public interface ArticleService extends IService<Article> {
 
     // 【新增】获取我的所有文章（包括审核中、已发布、草稿、拒绝）
     Page<Article> getMyAllArticles(Long userId, int page, int size);
+
+    /**
+     * 获取相似文章推荐 (猜你喜欢)
+     * @param articleId 当前文章 ID
+     * @param size 需要推荐的篇数
+     * @return 相似文章列表
+     */
+    List<Article> getSimilarArticles(Long articleId, int size);
 }

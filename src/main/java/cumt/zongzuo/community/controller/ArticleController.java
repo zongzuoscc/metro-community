@@ -214,6 +214,13 @@ public class ArticleController {
         return Result.success("操作成功");
     }
 
+    @GetMapping("/{id}/similar")
+    public Result<List<Article>> getSimilarArticles(@PathVariable("id") Long id) {
+        // 获取与当前文章最相似的 5 篇文章
+        List<Article> list = articleService.getSimilarArticles(id, 5);
+        return Result.success(list);
+    }
+
     private void checkAdmin(String token) {
         Long userId = JwtUtils.getUserId(token);
         User user = userService.getById(userId);

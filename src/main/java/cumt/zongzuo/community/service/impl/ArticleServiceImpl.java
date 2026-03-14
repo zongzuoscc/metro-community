@@ -42,6 +42,12 @@ import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.elasticsearch.core.query.StringQuery;
+import org.springframework.data.elasticsearch.core.SearchHit;
+import org.springframework.data.elasticsearch.core.SearchHits;
+import cumt.zongzuo.community.document.ArticleDoc;
+
 @Slf4j
 @Service
 public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> implements ArticleService {
@@ -668,5 +674,66 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
 
         wrapper.orderByDesc("create_time");
         return page(pageInfo, wrapper);
+    }
+
+    @Override
+    public List<Article> getSimilarArticles(Long articleId, int size) {
+        // 1. 确认原文章是否存在
+        Article targetArticle = getById(articleId);
+        if (targetArticle == null || targetArticle.getIsDeleted() == 1) {
+            return new ArrayList<>();
+        }
+
+        // 2. 构建原生 ES 的 More Like This 查询 JSON 语句
+        // 告诉 ES：我要在 title(标题), summary(摘要), content(正文) 中找相似的
+        // like: [{"_index": "article", "_id": "文章ID"}] 表示以这篇文章为基准
+        // min_term_freq: 1 表示只要词出现过 1 次就参与计算
+        String mltQueryJson = String.format(
+                "{\"more_like_this\": {" +
+                        "\"fields\": [\"title\", \"summary\", \"content\"]," +
+                        "\"like\": [{\"_index\": \"article\", \"_id\": \"%s\"}]," +
+                        "\"min_term_freq\": 1," +
+                        "\"max_query_terms\": 25" +
+                        "}}", articleId);
+
+        // 3. 封装为 Spring Data ES 的 StringQuery
+        StringQuery stringQuery = new StringQuery(mltQueryJson);
+        // 我们多查几条，因为可能会把文章自己给查出来，需要在代码里剔除
+        stringQuery.setPageable(PageRequest.of(0, size + 1));
+
+        // 4. 执行智能相似度搜索
+        SearchHits<ArticleDoc> searchHits = elasticsearchOperations.search(stringQuery, ArticleDoc.class);
+
+        // 5. 将结果转换为前端需要的 Article 实体
+        List<Article> resultList = new ArrayList<>();
+        for (SearchHit<ArticleDoc> hit : searchHits) {
+            ArticleDoc doc = hit.getContent();
+
+            // 排除当前正在看的这篇文章自己
+            if (doc.getId().equals(articleId)) {
+                continue;
+            }
+
+            Article article = new Article();
+            article.setId(doc.getId());
+            article.setTitle(doc.getTitle());
+            article.setSummary(doc.getSummary());
+            article.setCover(doc.getCover());
+            article.setViewCount(doc.getViewCount());
+            article.setAuthorId(doc.getAuthorId());
+            article.setCreateTime(doc.getCreateTime());
+
+            resultList.add(article);
+
+            // 达到需要的推荐数量就停止
+            if (resultList.size() >= size) {
+                break;
+            }
+        }
+
+        // 6. 填充作者信息，方便前端展示头像和名字
+        fillArticleAuthors(resultList);
+
+        return resultList;
     }
 }
