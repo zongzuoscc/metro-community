@@ -52,6 +52,28 @@
             </span>
           </div>
 
+          <div class="ai-summary-box">
+            <div class="ai-header">
+              <span class="ai-title"><el-icon><MagicStick /></el-icon> Metro AI 智能伴读</span>
+              <el-button
+                  v-if="!aiSummary && !aiLoading"
+                  size="small"
+                  round
+                  type="primary"
+                  plain
+                  @click="generateSummary"
+              >
+                一键生成总结
+              </el-button>
+            </div>
+            <div class="ai-content" v-if="aiSummary || aiLoading">
+              <div v-if="aiLoading" class="typing-indicator">
+                <el-icon class="is-loading"><Loading /></el-icon> 小 M 正在飞速阅读并提炼核心内容...
+              </div>
+              <v-md-preview v-else :text="aiSummary" class="ai-md-text"></v-md-preview>
+            </div>
+          </div>
+
           <div class="article-cover" v-if="article.cover">
             <img :src="article.cover" alt="封面图" />
           </div>
@@ -334,14 +356,13 @@
 </template>
 
 <script setup>
-// 【新增引入 watch】
 import { ref, onMounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '../utils/request'
 
-// 引入所有需要的 API (增加 getSimilarArticles)
-import { getArticleDetail, deleteArticle, getSimilarArticles } from '../api/article'
+// 【修改】引入所有需要的 API，加入 getAiSummary
+import { getArticleDetail, deleteArticle, getSimilarArticles, getAiSummary } from '../api/article'
 import { getCommentList, publishComment, deleteComment } from '../api/comment'
 import { submitReport } from '../api/report'
 
@@ -355,8 +376,12 @@ const isLiked = ref(false)
 const likeLoading = ref(false)
 const isFollowed = ref(false)
 
-// 【新增】相似文章数据
+// 相似文章数据
 const similarArticles = ref([])
+
+// 【新增】AI 总结相关数据
+const aiSummary = ref('')
+const aiLoading = ref(false)
 
 // 收藏相关
 const isCollected = ref(false)
@@ -391,6 +416,11 @@ const loadDetail = async () => {
   const id = route.params.id
   if(!id) return
   loading.value = true
+
+  // 【新增】重置 AI 总结状态，防止从相似文章跳过来时显示旧的总结
+  aiSummary.value = ''
+  aiLoading.value = false
+
   try {
     const res = await getArticleDetail(id)
     article.value = res.data || {}
@@ -405,7 +435,7 @@ const loadDetail = async () => {
     // 加载评论
     loadComments(id)
 
-    // 【新增】加载相似文章
+    // 加载相似文章
     loadSimilarArticles(id)
 
   } catch(e) {
@@ -416,7 +446,24 @@ const loadDetail = async () => {
   }
 }
 
-// 【新增】获取相似文章逻辑
+// 【新增】一键生成 AI 总结逻辑
+const generateSummary = async () => {
+  aiLoading.value = true
+  try {
+    const res = await getAiSummary(article.value.id)
+    if (res.code === 200) {
+      aiSummary.value = res.data
+    } else {
+      ElMessage.warning(res.msg || '生成失败')
+    }
+  } catch(e) {
+    ElMessage.error('AI 网络拥挤，请稍后再试')
+  } finally {
+    aiLoading.value = false
+  }
+}
+
+// 获取相似文章逻辑
 const loadSimilarArticles = async (id) => {
   try {
     const res = await getSimilarArticles(id)
@@ -426,14 +473,14 @@ const loadSimilarArticles = async (id) => {
   }
 }
 
-// 【新增】点击相似文章时的跳转处理
+// 点击相似文章时的跳转处理
 const toSimilarArticle = (id) => {
   router.push(`/article/${id}`)
   // 让页面平滑滚动回顶部
   window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 
-// 【新增】监听路由参数变化，当用户点击右侧推荐文章时，不刷新网页直接重载数据
+// 监听路由参数变化，当用户点击右侧推荐文章时，不刷新网页直接重载数据
 watch(
     () => route.params.id,
     (newId) => {
@@ -687,7 +734,7 @@ const formatTime = (time) => {
   return String(time).replace('T', ' ').substring(0, 16)
 }
 
-// 【新增】简化版的日期格式化，适合展示在小卡片上
+// 简化版的日期格式化，适合展示在小卡片上
 const formatTimeShort = (time) => {
   if(!time) return ''
   let dateStr = ''
@@ -719,7 +766,7 @@ onMounted(() => {
 }
 .left-column { width: 694px; }
 
-/* 【修改】给整个侧边栏加吸顶效果，而不是给单张卡片 */
+/* 给整个侧边栏加吸顶效果，而不是给单张卡片 */
 .sidebar-column { width: 294px; position: sticky; top: 80px; align-self: flex-start; }
 
 /* 通用点击样式 */
@@ -752,6 +799,57 @@ onMounted(() => {
     img { width: 100%; max-height: 400px; object-fit: cover; display: block; }
   }
   .article-actions { margin-top: 50px; display: flex; gap: 20px; justify-content: center; }
+}
+
+/* 【新增】AI 伴读卡片样式 */
+.ai-summary-box {
+  background: linear-gradient(145deg, #f2f7ff 0%, #fafcff 100%);
+  border: 1px solid #d9e6ff;
+  border-radius: 8px;
+  padding: 16px 20px;
+  margin-bottom: 25px;
+  box-shadow: 0 2px 8px rgba(0, 102, 255, 0.05);
+
+  .ai-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    .ai-title {
+      font-weight: 600;
+      color: #0066ff;
+      font-size: 15px;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+  }
+
+  .ai-content {
+    margin-top: 15px;
+    padding-top: 15px;
+    border-top: 1px dashed #b3d1ff;
+    color: #444;
+    font-size: 14px;
+    line-height: 1.6;
+
+    .typing-indicator {
+      color: #0066ff;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* 压扁 Markdown 默认的边距 */
+    :deep(.ai-md-text) {
+      .vuepress-markdown-body {
+        padding: 0 !important;
+        background: transparent !important;
+        color: inherit;
+        font-size: 14px;
+        p { margin: 0; line-height: 1.6; }
+      }
+    }
+  }
 }
 
 /* 评论卡片 */
@@ -809,7 +907,6 @@ onMounted(() => {
 
 /* 侧边栏作者卡片 */
 .author-card {
-  /* 【修改】取消这里的 sticky，统一放到 sidebar-column 上 */
   background: #fff; padding: 20px; border-radius: 4px; box-shadow: 0 1px 3px rgba(18,18,18,0.1);
   .author-header {
     .author-link { display: flex; align-items: center; gap: 15px; margin-bottom: 20px; cursor: pointer; transition: opacity 0.2s; &:hover { opacity: 0.8; } }
@@ -820,7 +917,7 @@ onMounted(() => {
   .follow-btn { width: 100%; }
 }
 
-/* 【新增】相关推荐卡片样式 */
+/* 相关推荐卡片样式 */
 .similar-card {
   background: #fff; padding: 20px; border-radius: 4px; box-shadow: 0 1px 3px rgba(18,18,18,0.1); margin-top: 15px;
   .similar-header { font-weight: 600; font-size: 16px; margin-bottom: 15px; border-left: 4px solid #0066ff; padding-left: 10px; color: #121212; }

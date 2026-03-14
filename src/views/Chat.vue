@@ -77,7 +77,7 @@
                     :preview-src-list="[msg.content]"
                     class="chat-img"
                 />
-                <span v-else>{{ msg.content }}</span>
+                <v-md-preview v-else :text="msg.content" class="chat-md"></v-md-preview>
               </div>
               <el-avatar v-if="isSelf(msg)" :size="36" :src="currentUser.avatar" class="avatar"></el-avatar>
             </div>
@@ -358,6 +358,19 @@ onUnmounted(() => {
       .bubble {
         padding: 10px 14px; border-radius: 8px; font-size: 14px; line-height: 1.5; word-break: break-word; position: relative; background: #fff; border: 1px solid #eee;
         .chat-img { max-width: 200px; border-radius: 4px; cursor: zoom-in; }
+
+        /* 【新增】覆盖 Markdown 组件的默认样式，让它像普通的聊天文字一样 */
+        :deep(.chat-md) {
+          .vuepress-markdown-body {
+            padding: 0; /* 去除默认的超大内边距 */
+            background: transparent; /* 背景透明，跟随气泡颜色 */
+            color: inherit; /* 字体颜色跟随气泡（自己发的是黑色，对方发的是默认色） */
+            font-size: 14px;
+            p { margin: 0; line-height: 1.6; }
+            ul, ol { margin-top: 5px; margin-bottom: 5px; padding-left: 20px; }
+            a { color: #0066ff; text-decoration: none; &:hover { text-decoration: underline; } }
+          }
+        }
       }
       &.self .bubble { background: #95ec69; color: #000; border-color: #95ec69; }
     }

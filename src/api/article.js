@@ -90,3 +90,8 @@ export const getMyArticles = (page) => {
 export const getSimilarArticles = (id) => {
     return request.get(`/api/article/${id}/similar`)
 }
+
+// 【新增】获取 AI 总结
+export const getAiSummary = (id) => {
+    return request.get(`/api/ai/summarize/${id}`)
+}
