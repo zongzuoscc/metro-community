@@ -41,7 +41,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
-
+import cumt.zongzuo.community.dto.NotificationMsgDTO;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.elasticsearch.core.query.StringQuery;
 import org.springframework.data.elasticsearch.core.SearchHit;
@@ -436,15 +436,52 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
     public void auditArticle(Long articleId, boolean pass, String reason) {
         Article article = getById(articleId);
         if (article == null) throw new RuntimeException("文章不存在");
+
+        // 1. 【核心】动态获取操作人 ID 以区分人工还是 AI
+        Long currentUserId = tryGetCurrentUserId();
+        boolean isManual = (currentUserId != null);
+        // 如果是人工操作，发送人就是管理员；如果是 MQ 异步 AI 审核，兜底发件人为官方账号 (ID=1)
+        Long adminId = isManual ? currentUserId : 9999L;
+
+        // 2. 更新文章状态
         if (pass) {
             article.setStatus(1); // 通过
         } else {
             article.setStatus(3); // 拒绝
         }
         updateById(article);
+
+        // 3. 状态联动 (同步 ES 与发送系统通知)
+        String source = isManual ? "人工" : "Metro AI "; // 动态文案
+        if (pass) {
+            // 审核通过，同步到 Elasticsearch 提供搜索
+            rabbitTemplate.convertAndSend("es.sync.queue", articleId);
+
+            // 发送通过私信通知
+            sendSystemNotification(adminId, article.getAuthorId(), articleId,
+                    "🎉 恭喜！您的文章《" + article.getTitle() + "》已通过" + source + "审核并成功发布。");
+        } else {
+            // 发送拒绝私信通知
+            String rejectReason = StrUtil.isNotBlank(reason) ? reason : "存在违规内容";
+            sendSystemNotification(adminId, article.getAuthorId(), articleId,
+                    "⚠️ 抱歉，您的文章《" + article.getTitle() + "》未通过" + source + "审核。原因：" + rejectReason + "。请修改后重新发布。");
+        }
+
+        // 4. 清理旧缓存
         stringRedisTemplate.delete(ARTICLE_DETAIL_CACHE_PREFIX + articleId);
-        // 【新增】发送同步消息
-        rabbitTemplate.convertAndSend("es.sync.queue", articleId);
+    }
+
+    /**
+     * 抽取发送系统通知的私有方法
+     */
+    private void sendSystemNotification(Long fromId, Long toId, Long targetId, String content) {
+        NotificationMsgDTO msg = new NotificationMsgDTO();
+        msg.setFromId(fromId);
+        msg.setToId(toId);
+        msg.setType(4); // 系统通知
+        msg.setTargetId(targetId);
+        msg.setContent(content);
+        rabbitTemplate.convertAndSend("message.notify.queue", msg);
     }
 
     @Override

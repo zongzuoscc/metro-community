@@ -29,8 +29,8 @@ public class MessageServiceImpl extends ServiceImpl<MessageMapper, Message> impl
 
     @Override
     public void send(Long fromId, Long toId, Integer type, Long targetId, String content) {
-        // 自己给自己点的赞/评的论，不发通知
-        if (fromId.equals(toId)) {
+        // 【核心修复】自己给自己点的赞/评的论，不发通知。但是系统通知(type=4)绝对不能拦截！
+        if (fromId.equals(toId) && !Integer.valueOf(4).equals(type)) {
             return;
         }
 
