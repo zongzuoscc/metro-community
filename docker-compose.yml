@@ -1,0 +1,89 @@
+version: '3.8'
+
+services:
+  # 1. MySQL 服务
+  mysql:
+    image: mysql:8.0
+    container_name: community-mysql
+    restart: always
+    environment:
+      # 用户名默认为 root
+      MYSQL_ROOT_PASSWORD: yangyiming.com  # 【修改】密码
+      MYSQL_DATABASE: community
+      TZ: Asia/Shanghai
+    ports:
+      - "3306:3306"
+    volumes:
+      - ./docker-data/mysql:/var/lib/mysql
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+
+  # 2. Redis 服务
+  redis:
+    image: redis:latest
+    container_name: community-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    # 【修改】密码设置在这里
+    command: redis-server --requirepass yangyiming.com --appendonly yes
+    volumes:
+      - ./docker-data/redis:/data
+
+  # 3. RabbitMQ 服务
+  rabbitmq:
+    image: rabbitmq:management
+    container_name: community-rabbitmq
+    restart: always
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      # 【修改】指定用户名为 zongzuo
+      RABBITMQ_DEFAULT_USER: zongzuo
+      # 【修改】密码
+      RABBITMQ_DEFAULT_PASS: yangyiming.com
+    volumes:
+      - ./docker-data/rabbitmq:/var/lib/rabbitmq
+
+# 4. Elasticsearch 服务
+  es:
+    build: ./elasticsearch
+    container_name: es
+    restart: always
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - xpack.security.http.ssl.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      - TZ=Asia/Shanghai
+    privileged: true
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - ./docker-data/es8/data:/usr/share/elasticsearch/data
+    ports:
+      # 【防冲突提醒】如果 9200 仍被占用，请改为 "19200:9200"
+      - "19200:9200" 
+      - "19300:9300"
+
+  # 5. Kibana 服务 (可视化控制台)
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.4.1
+    container_name: kibana
+    restart: always
+    environment:
+      - ELASTICSEARCH_HOSTS=["http://es:9200"]
+      - XPACK_SECURITY_ENABLED=false
+    ports:
+      - "5601:5601"
+    depends_on:
+      - es
+
+
+# 定义数据卷，确保容器删除后数据不会丢失
+volumes:
+  mysql-data:
+  redis-data:
+  rabbitmq-data:
