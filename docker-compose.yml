@@ -8,7 +8,7 @@ services:
     restart: always
     environment:
       # 用户名默认为 root
-      MYSQL_ROOT_PASSWORD: yangyiming.com  # 【修改】密码
+      MYSQL_ROOT_PASSWORD: 自己设置密码  # 【修改】密码
       MYSQL_DATABASE: community
       TZ: Asia/Shanghai
     ports:
@@ -25,7 +25,7 @@ services:
     ports:
       - "6379:6379"
     # 【修改】密码设置在这里
-    command: redis-server --requirepass yangyiming.com --appendonly yes
+    command: redis-server --requirepass 自己设置密码 --appendonly yes
     volumes:
       - ./docker-data/redis:/data
 
@@ -39,9 +39,9 @@ services:
       - "15672:15672"
     environment:
       # 【修改】指定用户名为 zongzuo
-      RABBITMQ_DEFAULT_USER: zongzuo
+      RABBITMQ_DEFAULT_USER: 自己设置用户名
       # 【修改】密码
-      RABBITMQ_DEFAULT_PASS: yangyiming.com
+      RABBITMQ_DEFAULT_PASS: 自己设置密码
     volumes:
       - ./docker-data/rabbitmq:/var/lib/rabbitmq
 
