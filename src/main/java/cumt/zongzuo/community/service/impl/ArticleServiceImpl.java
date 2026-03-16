@@ -440,7 +440,7 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         // 1. 【核心】动态获取操作人 ID 以区分人工还是 AI
         Long currentUserId = tryGetCurrentUserId();
         boolean isManual = (currentUserId != null);
-        // 如果是人工操作，发送人就是管理员；如果是 MQ 异步 AI 审核，兜底发件人为官方账号 (ID=1)
+        // 如果是人工操作，发送人就是管理员；如果是 MQ 异步 AI 审核，兜底发件人为官方账号
         Long adminId = isManual ? currentUserId : 9999L;
 
         // 2. 更新文章状态
