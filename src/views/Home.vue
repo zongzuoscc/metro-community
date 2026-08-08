@@ -88,7 +88,7 @@
           <div class="creation-actions">
 
             <div class="action-item" @click="$router.push('/publish')">
-              <el-icon :size="20" color="#409eff"><DocumentAdd /></el-icon>
+              <el-icon :size="20"><DocumentAdd /></el-icon>
               <span>写文章</span>
             </div>
 
@@ -662,5 +662,50 @@ onUnmounted(() => {
   :deep(.el-badge__content) {
     transform: translateY(-50%) translateX(100%) scale(0.8) !important;
   }
+}
+
+/* Editorial reading surface: the layout and data flow above stay unchanged. */
+.metro-layout { background: var(--paper-muted); color: var(--ink); }
+.navbar-wrapper { height: 58px; background: rgba(255, 253, 249, .96); border-bottom: 1px solid var(--line); box-shadow: none; }
+.navbar-container { max-width: 1244px; margin: 0 auto; padding: 0 var(--space-4); }
+.navbar-left .logo { color: var(--accent); font-family: "Songti SC", SimSun, serif; font-size: 27px; font-weight: 700; letter-spacing: .04em; }
+.navbar-left .nav-links { gap: var(--space-5); }
+.navbar-left .nav-links .nav-item { color: var(--ink-muted); }
+.navbar-left .nav-links .nav-item:hover,
+.navbar-left .nav-links .nav-item.active { color: var(--accent); }
+.navbar-left .nav-links .nav-item.active { border-bottom-color: var(--accent); }
+.navbar-center .search-box :deep(.el-input__wrapper) { border-radius: var(--radius-sm); background: #fffdf9; }
+.navbar-right { margin-right: 0; gap: var(--space-4); }
+.navbar-right .user-area { gap: var(--space-4); }
+.main-container { width: min(1180px, calc(100% - 32px)); margin-top: 78px; gap: var(--space-5); }
+.feed-column { width: min(760px, 100%); }
+.feed-column .creation-card,
+.sidebar-column .sidebar-card,
+.feed-column .feed-tabs,
+.loading-state { border: 1px solid var(--line); background: #fffdf9; box-shadow: none; }
+.feed-column .creation-card { margin-bottom: var(--space-3); }
+.feed-column .creation-card .creation-actions .action-item { color: var(--accent); }
+.feed-column .feed-tabs { padding: var(--space-4) var(--space-5); }
+.feed-column .feed-tabs .tab-item:hover,
+.feed-column .feed-tabs .tab-item.active { color: var(--accent); }
+.feed-column .article-list .feed-card { margin-top: var(--space-2); border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fffdf9; padding: var(--space-5); }
+.feed-column .article-list .feed-card:hover { background: #fffaf3; }
+.feed-column .article-list .feed-card .title { font-family: "Songti SC", SimSun, serif; font-size: 22px; line-height: 1.45; color: var(--ink); }
+.feed-column .article-list .feed-card .title:hover { color: var(--accent); }
+.feed-column .article-list .feed-card .content-preview { color: var(--ink-muted); }
+.feed-column .article-list .feed-card .card-actions .vote-btn.up { background: #f4e1dc; color: var(--accent); }
+.feed-column .article-list .feed-card .card-actions .text-btn:hover,
+.sidebar-column .sidebar-card .card-header .link:hover,
+.sidebar-column .sidebar-card .hot-list .hot-item:hover { color: var(--accent); }
+.sidebar-column .sidebar-card { margin-bottom: var(--space-3); }
+.sidebar-column .sidebar-card .card-header { color: var(--ink-muted); }
+.sidebar-column .sidebar-card .card-header .title { color: var(--ink); font-family: "Songti SC", SimSun, serif; }
+@media (max-width: 760px) {
+  .navbar-center, .navbar-left .nav-links { display: none; }
+  .navbar-container { justify-content: space-between; }
+  .main-container { width: 100%; padding: 0 var(--space-3); margin-top: 70px; }
+  .feed-column .article-list .feed-card { padding: var(--space-4); }
+  .feed-column .article-list .feed-card .card-body { gap: var(--space-3); }
+  .feed-column .article-list .feed-card .card-body .cover-box { width: 116px; height: 76px; }
 }
 </style>

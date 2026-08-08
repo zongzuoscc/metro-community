@@ -296,4 +296,16 @@ onMounted(() => {
   background: #f8f9fa; padding: 20px; border-radius: 4px; display: flex; justify-content: space-between; align-items: center;
   .email-info { color: #666; .email-text { font-weight: 600; color: #333; margin-left: 10px; } }
 }
+
+.setting-layout { background: var(--paper-muted); padding-top: var(--space-5); }
+.nav-back { width: min(1180px, calc(100% - 32px)); color: var(--ink-muted); }
+.nav-back:hover { color: var(--accent); }
+.main-container { width: min(1180px, calc(100% - 32px)); }
+.setting-card { background: #fffdf9; border: 1px solid var(--line); border-radius: var(--radius-sm); box-shadow: none; }
+:deep(.el-tabs__item) { color: var(--ink-muted); }
+:deep(.el-tabs__item.is-active) { color: var(--accent); background: #f8eee8; }
+.pane-content .pane-title { color: var(--ink); font-family: "Songti SC", SimSun, serif; font-size: 25px; }
+.avatar-uploader .avatar-uploader-icon { border-color: var(--line); color: var(--ink-muted); }
+.avatar-uploader .avatar-uploader-icon:hover { border-color: var(--accent); color: var(--accent); }
+.email-box { background: #f8f1e8; border: 1px solid var(--line); }
 </style>

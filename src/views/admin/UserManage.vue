@@ -179,5 +179,8 @@ onMounted(() => loadData())
 </script>
 
 <style scoped>
-.pagination { margin-top: 20px; text-align: right; }
+.user-page :deep(.el-card) { background: #fffdf9; border: 1px solid var(--line); box-shadow: none; }
+.user-page :deep(.el-card__header) { border-bottom-color: var(--line); color: var(--ink); font-family: "Songti SC", SimSun, serif; }
+.user-page :deep(.el-table) { --el-table-header-bg-color: #f8f1e8; --el-table-tr-bg-color: #fffdf9; --el-table-border-color: var(--line); --el-table-row-hover-bg-color: #fff7ec; color: var(--ink); }
+.pagination { margin-top: var(--space-5); text-align: right; }
 </style>

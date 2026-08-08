@@ -141,4 +141,8 @@ onUnmounted(() => {
 .submit-btn {
   width: 100%;
 }
+
+.reset-container { background: var(--paper-muted); }
+.reset-card { border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fffdf9; box-shadow: none; }
+.reset-card .card-header { color: var(--ink); font-family: "Songti SC", SimSun, serif; font-size: 20px; }
 </style>

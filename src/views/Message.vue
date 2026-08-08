@@ -188,4 +188,18 @@ onMounted(() => {
 
 .load-more { text-align: center; padding: 20px; }
 .no-more { font-size: 13px; color: #999; }
+
+.message-layout { background: var(--paper-muted); padding-top: var(--space-5); }
+.nav-back, .main-container { width: min(900px, calc(100% - 32px)); }
+.nav-back:hover { color: var(--accent); }
+.message-card { background: #fffdf9; border: 1px solid var(--line); border-radius: var(--radius-sm); box-shadow: none; padding: 0 var(--space-5); }
+.message-card .card-header { border-bottom-color: var(--line); }
+.message-card .card-header .title { color: var(--ink); font-family: "Songti SC", SimSun, serif; }
+.msg-item { border-bottom-color: var(--line); }
+.msg-item:hover { background: #fff7ec; }
+.msg-item.unread { background: #f8eee8; }
+.msg-item .msg-content .top-row .sender-name,
+.msg-item .msg-content .detail-text { color: var(--ink); }
+.msg-item .msg-content .detail-text { background: #f8f1e8; border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.msg-item .red-dot { background: var(--accent); }
 </style>

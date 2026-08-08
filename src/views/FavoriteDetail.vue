@@ -113,4 +113,16 @@ onMounted(() => {
     .author { color: #333; font-weight: 500; }
   }
 }
+
+.fav-detail-layout { background: var(--paper-muted); padding-top: var(--space-5); }
+.nav-back, .main-container { width: min(900px, calc(100% - 32px)); }
+.nav-back:hover, .article-item:hover .a-title { color: var(--accent); }
+.folder-header, .article-list-card { background: #fffdf9; border: 1px solid var(--line); border-radius: var(--radius-sm); box-shadow: none; }
+.folder-header { padding: var(--space-5) 36px; }
+.folder-header .f-icon-box { background: #f4e1dc; color: var(--accent); border: 1px solid #dfbbb3; border-radius: var(--radius-sm); }
+.folder-header .f-info .f-name { color: var(--ink); font-family: "Songti SC", SimSun, serif; }
+.article-list-card { padding: 0 36px; }
+.article-item { border-bottom-color: var(--line); }
+.article-item .a-title { color: var(--ink); font-family: "Songti SC", SimSun, serif; }
+.article-item .a-summary { color: var(--ink-muted); }
 </style>

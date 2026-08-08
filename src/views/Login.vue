@@ -241,4 +241,17 @@ const handleLogin = async () => {
   .login-content { width: 90%; max-width: 450px; height: auto; border-radius: 12px; }
   .login-right { padding: 40px 20px; }
 }
+
+/* Authentication uses the same restrained editorial surface as the community. */
+.login-container { background: var(--paper-muted); }
+.bg-shape { display: none; }
+.login-content { width: min(960px, calc(100% - 32px)); height: auto; min-height: 540px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fffdf9; box-shadow: none; }
+.login-left { background: #4a3530; border-right: 1px solid var(--line); }
+.login-left .welcome-text h1 { font-family: "Songti SC", SimSun, serif; font-size: 38px; letter-spacing: .08em; }
+.login-left .illustration { opacity: .82; }
+.login-right { background: #fffdf9; }
+.login-right .form-box h2 { color: var(--ink); font-family: "Songti SC", SimSun, serif; }
+.login-right .form-box .sub-title, .register-row { color: var(--ink-muted); }
+.login-btn { background: var(--accent); border-radius: var(--radius-sm); }
+.login-btn:hover { background: var(--accent-dark); }
 </style>

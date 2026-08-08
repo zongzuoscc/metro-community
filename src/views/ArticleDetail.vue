@@ -970,4 +970,57 @@ onMounted(() => {
 /* Markdown 图片修正 */
 :deep(.vuepress-markdown-body img) { display: block; margin: 20px auto; max-width: 100%; border-radius: 4px; box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.1); }
 :deep(.vuepress-markdown-body) { padding: 0; color: #121212; }
+
+/* A quiet paper reading surface, while every article and comment action remains intact. */
+.detail-layout { background: var(--paper-muted); padding-top: var(--space-5); color: var(--ink); }
+.navbar-placeholder,
+.main-container { width: min(1180px, calc(100% - 32px)); }
+.navbar-placeholder { margin-bottom: var(--space-4); }
+.navbar-placeholder .nav-back,
+.pointer:hover { color: var(--accent); }
+.main-container { gap: var(--space-5); }
+.left-column { width: min(800px, 100%); }
+.sidebar-column { width: 330px; top: 76px; }
+.article-card,
+.comment-card,
+.author-card,
+.similar-card { background: #fffdf9; border: 1px solid var(--line); border-radius: var(--radius-sm); box-shadow: none; }
+.article-card { padding: 44px min(6vw, 64px); }
+.article-card .article-header-row .article-title { color: var(--ink); font-family: "Songti SC", SimSun, serif; font-size: clamp(30px, 3.4vw, 44px); font-weight: 700; letter-spacing: .02em; }
+.article-card .tags-row .tag-item { background: #f5ece0; color: var(--ink-muted); border-color: var(--line); border-radius: 2px; }
+.article-card .tags-row .tag-item:hover { color: var(--accent); background: #f4e1dc; }
+.article-card .article-meta { color: var(--ink-muted); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: var(--space-3) 0; margin-bottom: var(--space-5); }
+.article-card .article-meta .author { color: var(--ink); }
+.ai-summary-box { background: #f8eee8; border-color: #dfbbb3; border-radius: var(--radius-sm); box-shadow: none; }
+.ai-summary-box .ai-header .ai-title,
+.ai-summary-box .ai-content .typing-indicator { color: var(--accent); }
+.ai-summary-box .ai-content { border-top-color: #dfbbb3; color: var(--ink); }
+.article-card .article-cover { border-radius: var(--radius-sm); border: 1px solid var(--line); }
+.article-card .article-actions { justify-content: flex-start; margin-top: 42px; padding-top: var(--space-5); border-top: 1px solid var(--line); }
+.comment-card { padding: var(--space-5) min(6vw, 64px); }
+.comment-card .comment-header { border-left-color: var(--accent); color: var(--ink); font-family: "Songti SC", SimSun, serif; }
+.comment-card .comment-list .comment-item { border-top-color: var(--line); }
+.comment-card .comment-list .comment-item .content-box .u-content { color: var(--ink); }
+.comment-card .comment-list .comment-item .content-box .u-stat .action-btn:hover,
+.comment-card .comment-list .comment-item .content-box .u-stat .action-btn.liked { color: var(--accent); }
+.comment-card .comment-list .comment-item .content-box .sub-comment-list { background: #f8f1e8; border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.author-card, .similar-card { padding: var(--space-5); }
+.similar-card .similar-header { border-left-color: var(--accent); font-family: "Songti SC", SimSun, serif; }
+.similar-card .similar-list .similar-item:hover .sim-title { color: var(--accent); }
+.author-tag { background: var(--accent); }
+:deep(.vuepress-markdown-body) { color: var(--ink); font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Microsoft YaHei", sans-serif; line-height: 1.9; }
+:deep(.vuepress-markdown-body h1),
+:deep(.vuepress-markdown-body h2),
+:deep(.vuepress-markdown-body h3) { color: var(--ink); font-family: "Songti SC", SimSun, serif; }
+:deep(.vuepress-markdown-body blockquote) { border-left-color: var(--accent); background: #f8f1e8; color: var(--ink-muted); }
+@media (max-width: 980px) {
+  .sidebar-column { display: none; }
+  .left-column { width: 100%; }
+}
+@media (max-width: 600px) {
+  .detail-layout { padding-top: var(--space-4); }
+  .navbar-placeholder, .main-container { width: calc(100% - 24px); }
+  .article-card, .comment-card { padding: var(--space-4); }
+  .article-card .article-actions { gap: var(--space-2); }
+}
 </style>

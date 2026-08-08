@@ -108,5 +108,9 @@ onMounted(() => loadData())
 </script>
 
 <style scoped>
-.pagination { margin-top: 20px; text-align: right; }
+.report-page :deep(.el-card) { background: #fffdf9; border: 1px solid var(--line); box-shadow: none; }
+.report-page :deep(.el-table) { --el-table-header-bg-color: #f8f1e8; --el-table-tr-bg-color: #fffdf9; --el-table-border-color: var(--line); --el-table-row-hover-bg-color: #fff7ec; color: var(--ink); }
+.report-page :deep(.el-tabs__item.is-active) { color: var(--accent); }
+.report-page :deep(.el-tabs__active-bar) { background-color: var(--accent); }
+.pagination { margin-top: var(--space-5); text-align: right; }
 </style>

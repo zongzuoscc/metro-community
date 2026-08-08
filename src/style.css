@@ -25,6 +25,38 @@ body {
   padding: 0;
   min-width: 320px;
   min-height: 100vh;
+  background: var(--paper-muted);
+}
+
+* { box-sizing: border-box; }
+
+a { color: var(--accent); }
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.el-card,
+.el-dialog,
+.el-message-box {
+  border-color: var(--line) !important;
+  box-shadow: none !important;
+}
+
+.el-button--primary {
+  --el-button-bg-color: var(--accent);
+  --el-button-border-color: var(--accent);
+  --el-button-hover-bg-color: var(--accent-dark);
+  --el-button-hover-border-color: var(--accent-dark);
+  --el-button-active-bg-color: var(--accent-dark);
+  --el-button-active-border-color: var(--accent-dark);
+}
+
+.el-input__wrapper,
+.el-textarea__inner {
+  box-shadow: 0 0 0 1px var(--line) inset !important;
+  background: #fffdf9 !important;
 }
 
 /* 2. 滚动条美化 */

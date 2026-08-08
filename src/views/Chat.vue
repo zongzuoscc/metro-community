@@ -384,4 +384,25 @@ onUnmounted(() => {
   .empty-chat { flex: 1; display: flex; flex-direction: column; justify-content: center; align-items: center; color: #ccc; gap: 10px; }
 }
 .text-ellipsis { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.chat-layout { background: var(--paper-muted); }
+.navbar-placeholder { height: 58px; background: #fffdf9; border-bottom-color: var(--line); padding: 0 max(16px, calc((100% - 1180px) / 2)); }
+.navbar-placeholder .nav-back:hover { color: var(--accent); }
+.chat-container { width: min(1180px, calc(100% - 32px)); margin: var(--space-5) auto; background: #fffdf9; border: 1px solid var(--line); border-radius: var(--radius-sm); box-shadow: none; }
+.chat-sidebar { border-right-color: var(--line); background: #f8f1e8; }
+.chat-sidebar .sidebar-tabs { border-bottom-color: var(--line); }
+.chat-sidebar .sidebar-tabs span { color: var(--ink-muted); background: #f8f1e8; }
+.chat-sidebar .sidebar-tabs span.active { background: #fffdf9; color: var(--accent); border-bottom-color: var(--accent); }
+.chat-sidebar .friend-list .friend-item:hover { background: #f4e1dc; }
+.chat-sidebar .friend-list .friend-item.active { background: #f1ddd9; }
+.chat-sidebar .friend-list .friend-item .friend-info .name { color: var(--ink); }
+.chat-main { background: #fffaf3; }
+.chat-main .chat-header { background: #fffdf9; border-bottom-color: var(--line); }
+.chat-main .message-box .message-row .bubble { border-color: var(--line); background: #fffdf9; border-radius: var(--radius-sm); }
+.chat-main .message-box .message-row.self .bubble { background: #f1ddd9; border-color: #dfbbb3; color: var(--ink); }
+.chat-main .message-box .message-row .bubble :deep(.chat-md) .vuepress-markdown-body a { color: var(--accent); }
+.chat-main .input-area { background: #fffdf9; border-top-color: var(--line); }
+.chat-main .input-area .tool-bar .tool-btn:hover { color: var(--accent); }
+.chat-main .empty-chat { color: var(--ink-muted); }
+@media (max-width: 700px) { .chat-container { width: 100%; margin: 0; border-left: 0; border-right: 0; } .chat-sidebar { width: 218px; } }
 </style>

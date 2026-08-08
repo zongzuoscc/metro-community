@@ -117,7 +117,10 @@ onMounted(() => loadData())
 </script>
 
 <style scoped>
-.title-link { color: #409EFF; text-decoration: none; font-weight: bold; }
-.title-link:hover { text-decoration: underline; }
-.pagination { margin-top: 20px; text-align: right; }
+.audit-page :deep(.el-card) { background: #fffdf9; border: 1px solid var(--line); box-shadow: none; }
+.audit-page :deep(.el-card__header) { border-bottom-color: var(--line); color: var(--ink); font-family: "Songti SC", SimSun, serif; }
+.audit-page :deep(.el-table) { --el-table-header-bg-color: #f8f1e8; --el-table-tr-bg-color: #fffdf9; --el-table-border-color: var(--line); --el-table-row-hover-bg-color: #fff7ec; color: var(--ink); }
+.title-link { color: var(--accent); text-decoration: none; font-weight: 600; }
+.title-link:hover { text-decoration: underline; color: var(--accent-dark); }
+.pagination { margin-top: var(--space-5); text-align: right; }
 </style>

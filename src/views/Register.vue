@@ -142,4 +142,19 @@ const handleRegister = async () => {
   .register-container .right-form-container { width: 100%; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
   .register-container .right-form-container .box-card { box-shadow: 0 2px 12px 0 rgba(0,0,0,0.1) !important; background: #fff; padding: 20px; border-radius: 8px;}
 }
+
+.register-container { background: var(--paper-muted); }
+.register-container .left-banner { background-image: none; background-color: #4a3530; border-right: 1px solid var(--line); }
+.register-container .left-banner::before { background: linear-gradient(145deg, rgba(165, 82, 69, .24), rgba(42, 35, 30, .2)); }
+.register-container .left-banner .banner-content h1 { font-family: "Songti SC", SimSun, serif; letter-spacing: .1em; }
+.register-container .right-form-container { background: #fffdf9; border-left: 1px solid var(--line); }
+.register-container .right-form-container .box-card { background: transparent; }
+.register-container .right-form-container .box-card .header h2 { color: var(--ink); font-family: "Songti SC", SimSun, serif; }
+.register-container .right-form-container .box-card .header p,
+.register-container .right-form-container .box-card .footer-links { color: var(--ink-muted); }
+.register-container .right-form-container .box-card .footer-links a { color: var(--accent); }
+@media (max-width: 900px) {
+  .register-container .right-form-container { background: var(--paper-muted); }
+  .register-container .right-form-container .box-card { border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fffdf9; box-shadow: none !important; }
+}
 </style>

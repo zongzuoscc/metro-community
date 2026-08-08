@@ -429,4 +429,21 @@ onMounted(() => {
     .f-count { font-size: 12px; color: #999; }
   }
 }
+
+.user-center-layout { background: var(--paper-muted); padding-top: var(--space-5); }
+.nav-back, .article-item .content-main:hover .a-title { color: var(--accent); }
+.nav-back, .main-container { width: min(1180px, calc(100% - 32px)); }
+.profile-header, .content-tabs { background: #fffdf9; border: 1px solid var(--line); border-radius: var(--radius-sm); box-shadow: none; }
+.profile-header { padding: 36px 42px; }
+.profile-header .info-row .info-content .u-name { color: var(--ink); font-family: "Songti SC", SimSun, serif; font-size: 32px; }
+.profile-header .stat-row .stat-item:hover .num { color: var(--accent); }
+.profile-header .stat-row .stat-item .num,
+.article-item .content-main .a-title { color: var(--ink); }
+.content-tabs { padding: var(--space-5) 42px; }
+.article-item, .user-item { border-bottom-color: var(--line); }
+.article-item .content-main .a-summary { color: var(--ink-muted); }
+.fav-grid .fav-card { border-color: var(--line); border-radius: var(--radius-sm); background: #fffaf3; }
+.fav-grid .fav-card:hover { border-color: var(--accent); box-shadow: none; transform: translateY(-1px); }
+.fav-grid .fav-card .f-icon { color: var(--accent); }
+@media (max-width: 640px) { .profile-header, .content-tabs { padding: var(--space-4); } .profile-header .stat-row { gap: var(--space-5); padding-left: 0; } .fav-grid { grid-template-columns: repeat(2, 1fr); } }
 </style>
