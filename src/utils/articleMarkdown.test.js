@@ -25,4 +25,20 @@ describe('article Markdown helpers', () => {
 
     expect(sanitizeMarkdownImageDestinations(replacementMarkdown)).toBe('正文\n\n临时图')
   })
+
+  it('removes angle-bracket and reference-style unsafe image destinations', () => {
+    const markdown =
+      '![尖括号图](<blob:https://metro.example/image-id>)\n\n![引用图][route-map]\n\n[route-map]: data:image/svg+xml,%3Csvg%3E%3C%2Fsvg%3E "路线图"'
+
+    expect(sanitizeMarkdownImageDestinations(markdown)).toBe('尖括号图\n\n引用图')
+  })
+
+  it('leaves safe images and non-image links as standard Markdown', () => {
+    const markdown = [
+      '[乘车指南](https://metro.example/guide)',
+      '![安全线路图](https://metro.example/assets/station-map.png)',
+    ].join('\n\n')
+
+    expect(sanitizeMarkdownImageDestinations(markdown)).toBe(markdown)
+  })
 })
