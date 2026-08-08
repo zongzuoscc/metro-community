@@ -88,7 +88,14 @@
       <div class="footer-actions__content">
         <p class="footer-actions__tip">{{ isEdit ? '修改会在发布后更新文章内容' : '草稿会保存在你的账号中' }}</p>
         <div class="footer-actions__buttons">
-          <el-button size="large" :loading="saving && !publishing" @click="handleSaveDraft">保存草稿</el-button>
+          <el-button
+            size="large"
+            :loading="saving && !publishing"
+            :disabled="saving || publishing"
+            @click="handleSaveDraft"
+          >
+            保存草稿
+          </el-button>
           <el-button type="primary" size="large" :loading="publishing" @click="handlePublish">
             {{ isEdit ? '更新发布' : '发布文章' }}
           </el-button>

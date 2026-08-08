@@ -8,10 +8,12 @@ function wait(milliseconds) {
 
 function deferred() {
   let resolve
-  const promise = new Promise((nextResolve) => {
+  let reject
+  const promise = new Promise((nextResolve, nextReject) => {
     resolve = nextResolve
+    reject = nextReject
   })
-  return { promise, resolve }
+  return { promise, resolve, reject }
 }
 
 describe('article save coordinator', () => {
@@ -97,5 +99,79 @@ describe('article save coordinator', () => {
 
     await wait(20)
     expect(draftPayloads).toHaveLength(1)
+  })
+
+  it('does not retry a failed draft without a later edit', async () => {
+    const form = { title: '标题', content: '离线时的正文' }
+    let saveAttempts = 0
+    const coordinator = createArticleSaveCoordinator({
+      autoSaveDelay: 5,
+      hasRequiredContent: () => Boolean(form.title && form.content),
+      buildPayload: () => ({ ...form }),
+      saveDraft: async () => {
+        saveAttempts += 1
+        throw new Error('network unavailable')
+      },
+      publish: async () => ({ data: true }),
+    })
+
+    coordinator.markChanged()
+    await wait(15)
+
+    expect(saveAttempts).toBe(1)
+    expect(coordinator.state.failed).toBe(true)
+
+    await wait(20)
+    expect(saveAttempts).toBe(1)
+    coordinator.dispose()
+  })
+
+  it('keeps a failed save visible while the author makes another edit', async () => {
+    const form = { title: '标题', content: '第一次编辑' }
+    const coordinator = createArticleSaveCoordinator({
+      autoSaveDelay: 100,
+      hasRequiredContent: () => Boolean(form.title && form.content),
+      buildPayload: () => ({ ...form }),
+      saveDraft: async () => {
+        throw new Error('network unavailable')
+      },
+      publish: async () => ({ data: true }),
+    })
+
+    coordinator.markChanged()
+    await coordinator.saveCurrentDraft()
+    expect(coordinator.state.failed).toBe(true)
+
+    form.content = '第二次编辑'
+    coordinator.markChanged()
+
+    expect(coordinator.state.failed).toBe(true)
+    coordinator.dispose()
+  })
+
+  it('rejects a manual draft while publication is in flight', async () => {
+    const publishGate = deferred()
+    const savedPayloads = []
+    const form = { title: '标题', content: '准备发布的正文' }
+    const coordinator = createArticleSaveCoordinator({
+      autoSaveDelay: 100,
+      hasRequiredContent: () => Boolean(form.title && form.content),
+      buildPayload: () => ({ ...form }),
+      saveDraft: async (payload) => {
+        savedPayloads.push(payload)
+        return { data: 1 }
+      },
+      publish: () => publishGate.promise,
+    })
+
+    coordinator.markChanged()
+    const publishing = coordinator.requestPublish()
+    await Promise.resolve()
+
+    await expect(coordinator.saveCurrentDraft()).resolves.toBe(false)
+    expect(savedPayloads).toEqual([])
+
+    publishGate.resolve({ data: true })
+    await expect(publishing).resolves.toBe(true)
   })
 })

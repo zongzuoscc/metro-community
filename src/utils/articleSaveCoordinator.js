@@ -66,12 +66,11 @@ export function createArticleSaveCoordinator({
 
     changeVersion += 1
     state.dirty = true
-    state.failed = false
     scheduleAutoSave()
   }
 
   async function saveCurrentDraft() {
-    if (state.disposed || state.saving || !hasRequiredContent()) return false
+    if (state.disposed || state.saving || publishRequested || inFlightPublish || !hasRequiredContent()) return false
 
     clearAutoSaveTimer()
     const requestVersion = changeVersion
@@ -91,7 +90,10 @@ export function createArticleSaveCoordinator({
         return false
       } finally {
         state.saving = false
-        if (!state.disposed && !publishRequested && state.dirty) scheduleAutoSave()
+        const changedDuringSave = changeVersion !== requestVersion
+        if (!state.disposed && !publishRequested && !inFlightPublish && changedDuringSave && state.dirty) {
+          scheduleAutoSave()
+        }
       }
     })()
 
