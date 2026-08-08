@@ -41,4 +41,16 @@ describe('article Markdown helpers', () => {
 
     expect(sanitizeMarkdownImageDestinations(markdown)).toBe(markdown)
   })
+
+  it('preserves escaped image literals and Markdown code examples verbatim', () => {
+    const markdown = [
+      '\\![转义示例](data:image/png;base64,AAAA)',
+      '`![行内代码](blob:https://metro.example/image-id)`',
+      '```markdown',
+      '![围栏代码](data:image/png;base64,AAAA)',
+      '```',
+    ].join('\n\n')
+
+    expect(sanitizeMarkdownImageDestinations(markdown)).toBe(markdown)
+  })
 })
