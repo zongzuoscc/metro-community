@@ -1,110 +1,304 @@
 <template>
   <div class="publish-page">
-    <div class="navbar-placeholder">
-      <div class="nav-back" @click="$router.go(-1)">
-        <el-icon><ArrowLeft /></el-icon> 返回
-      </div>
-      <div class="page-title">{{ isEdit ? '编辑文章' : '发布文章' }}</div>
-    </div>
+    <header class="publish-header">
+      <button class="publish-header__back" type="button" @click="$router.go(-1)">
+        <el-icon><ArrowLeft /></el-icon>
+        返回
+      </button>
+      <p class="publish-header__eyebrow">METRO COMMUNITY · {{ isEdit ? 'REVISE' : 'DRAFT' }}</p>
+      <div class="publish-header__spacer" aria-hidden="true"></div>
+    </header>
 
-    <div class="main-container">
-      <div class="form-group">
-        <input
-            v-model="form.title"
-            type="text"
-            class="title-input"
-            placeholder="请输入文章标题..."
-        />
-      </div>
+    <div class="publish-layout">
+      <aside class="editor-meta" aria-label="文章信息">
+        <div class="editor-meta__section editor-meta__status" :class="`is-${draftStatus.tone}`" aria-live="polite">
+          <span class="editor-meta__status-dot" aria-hidden="true"></span>
+          {{ draftStatus.label }}
+        </div>
 
-      <div class="form-group">
-        <div class="section-label">文章封面 (可选)</div>
-        <el-upload
+        <div class="editor-meta__section">
+          <p class="editor-meta__label">文章封面</p>
+          <el-upload
             class="cover-uploader"
             action="/api/file/upload"
             :show-file-list="false"
             :headers="uploadHeaders"
             :on-success="handleCoverSuccess"
             :before-upload="beforeCoverUpload"
-        >
-          <img v-if="form.cover" :src="form.cover" class="cover-img" />
-          <el-icon v-else class="uploader-icon"><Plus /></el-icon>
-        </el-upload>
-        <el-button v-if="form.cover" type="danger" link size="small" @click.stop="form.cover = ''">移除封面</el-button>
-      </div>
+          >
+            <img v-if="form.cover" :src="form.cover" class="cover-uploader__image" alt="文章封面预览" />
+            <span v-else class="cover-uploader__placeholder">
+              <el-icon><Plus /></el-icon>
+              添加封面
+            </span>
+          </el-upload>
+          <el-button v-if="form.cover" class="cover-uploader__remove" type="primary" link @click="form.cover = ''">
+            移除封面
+          </el-button>
+        </div>
 
-      <div class="form-group tag-section">
-        <div class="section-label">添加标签</div>
-        <el-select
+        <div class="editor-meta__section">
+          <label class="editor-meta__label" for="article-tags">文章标签</label>
+          <el-select
+            id="article-tags"
             v-model="form.tags"
             multiple
             filterable
             allow-create
             default-first-option
             :reserve-keyword="false"
-            placeholder="输入标签后按回车，如：Java, 提问"
-            class="tag-input"
-            size="large"
-        >
-          <el-option
-              v-for="item in hotTags"
-              :key="item"
-              :label="item"
-              :value="item"
-          />
-        </el-select>
-      </div>
+            placeholder="输入后按回车"
+            class="editor-meta__tags"
+          >
+            <el-option v-for="item in hotTags" :key="item" :label="item" :value="item" />
+          </el-select>
+        </div>
 
-      <div class="editor-box">
-        <v-md-editor
-            v-model="form.content"
-            height="600px"
-            :disabled-menus="[]"
-            @upload-image="handleUploadImage"
-        ></v-md-editor>
-      </div>
+        <div class="editor-meta__section editor-meta__reading">
+          <div>
+            <span class="editor-meta__metric-value">{{ wordCount }}</span>
+            <span class="editor-meta__metric-label">字</span>
+          </div>
+          <div>
+            <span class="editor-meta__metric-value">{{ readingMinutes }}</span>
+            <span class="editor-meta__metric-label">分钟阅读</span>
+          </div>
+        </div>
+      </aside>
+
+      <main class="editor-canvas">
+        <p class="editor-canvas__kicker">{{ isEdit ? '编辑已有文章' : '开始一篇新的记录' }}</p>
+        <input
+          v-model="form.title"
+          class="title-input"
+          type="text"
+          maxlength="100"
+          placeholder="给文章一个清晰的标题"
+          aria-label="文章标题"
+        />
+        <RichArticleEditor
+          v-model="form.content"
+          @upload-image="uploadInlineImage"
+          @word-count="wordCount = $event"
+        />
+      </main>
     </div>
 
-    <div class="footer-actions">
-      <div class="footer-content">
-        <span class="tip" v-if="isEdit">当前为编辑模式</span>
-        <div class="btns">
-          <el-button size="large" @click="handleSaveDraft">存草稿</el-button>
-          <el-button type="primary" size="large" @click="handlePublish" :loading="publishing">
-            {{ isEdit ? '更新发布' : '立即发布' }}
+    <footer class="footer-actions">
+      <div class="footer-actions__content">
+        <p class="footer-actions__tip">{{ isEdit ? '修改会在发布后更新文章内容' : '草稿会保存在你的账号中' }}</p>
+        <div class="footer-actions__buttons">
+          <el-button size="large" :loading="saving && !publishing" @click="handleSaveDraft">保存草稿</el-button>
+          <el-button type="primary" size="large" :loading="publishing" @click="handlePublish">
+            {{ isEdit ? '更新发布' : '发布文章' }}
           </el-button>
         </div>
       </div>
-    </div>
+    </footer>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, computed } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { ArrowLeft, Plus } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
+import RichArticleEditor from '../components/RichArticleEditor.vue'
 import request from '../utils/request'
-import { getArticleDetail, publishArticle } from '../api/article'
+import { getArticleForEdit, publishArticle, saveDraft } from '../api/article'
 import { getHotTags } from '../api/tag'
+import { nextDraftState } from '../utils/draftState'
+
+const AUTO_SAVE_DELAY = 1500
 
 const route = useRoute()
 const router = useRouter()
 const isEdit = ref(false)
+const isLoading = ref(false)
+const saving = ref(false)
 const publishing = ref(false)
+const dirty = ref(false)
+const failed = ref(false)
+const wordCount = ref(0)
+const hotTags = ref([])
 
 const form = reactive({
   id: null,
   title: '',
   content: '',
   cover: '',
-  tags: []
+  tags: [],
 })
 
-const hotTags = ref([])
+let autoSaveTimer
+let changeVersion = 0
+let savedVersion = 0
 
-const uploadHeaders = computed(() => ({ token: localStorage.getItem('token') }))
+const uploadHeaders = computed(() => {
+  const token = localStorage.getItem('token')
+  return token ? { token } : {}
+})
 
-onMounted(async () => {
+const draftStatus = computed(() => nextDraftState(dirty.value, saving.value, failed.value))
+const readingMinutes = computed(() => Math.max(1, Math.ceil(wordCount.value / 400)))
+
+function hasRequiredContent() {
+  return Boolean(form.title.trim() && form.content.trim())
+}
+
+function clearAutoSaveTimer() {
+  if (autoSaveTimer) {
+    window.clearTimeout(autoSaveTimer)
+    autoSaveTimer = undefined
+  }
+}
+
+function scheduleAutoSave() {
+  clearAutoSaveTimer()
+
+  if (isLoading.value || saving.value || !hasRequiredContent()) return
+
+  autoSaveTimer = window.setTimeout(() => {
+    autoSaveTimer = undefined
+    save(false)
+  }, AUTO_SAVE_DELAY)
+}
+
+function buildPayload() {
+  return {
+    id: form.id,
+    title: form.title.trim(),
+    content: form.content,
+    cover: form.cover,
+    tags: form.tags,
+  }
+}
+
+async function save(isPublish) {
+  if (saving.value) return false
+
+  if (!hasRequiredContent()) {
+    if (isPublish) ElMessage.warning('请先填写标题和正文')
+    return false
+  }
+
+  clearAutoSaveTimer()
+  const requestVersion = changeVersion
+  let saved = false
+  saving.value = true
+  publishing.value = isPublish
+
+  try {
+    const response = isPublish
+      ? await publishArticle({ ...buildPayload(), isPublish: true })
+      : await saveDraft(buildPayload())
+
+    if (!isPublish && response.data) form.id = response.data
+
+    savedVersion = requestVersion
+    dirty.value = changeVersion !== savedVersion
+    failed.value = false
+    saved = true
+
+    if (isPublish) {
+      ElMessage.success('文章已发布')
+      await router.push('/home')
+    }
+
+    return true
+  } catch (error) {
+    failed.value = true
+    dirty.value = true
+    if (!isPublish) ElMessage.error('草稿保存失败，请检查网络后重试')
+    return false
+  } finally {
+    saving.value = false
+    publishing.value = false
+    if (!isPublish && dirty.value && (saved || changeVersion !== requestVersion)) scheduleAutoSave()
+  }
+}
+
+async function handleSaveDraft() {
+  const saved = await save(false)
+  if (saved) ElMessage.success('草稿已保存')
+}
+
+function handlePublish() {
+  save(true)
+}
+
+async function uploadInlineImage(file, insertImage) {
+  const body = new FormData()
+  body.append('file', file)
+
+  try {
+    const response = await request.post('/api/file/upload', body)
+    insertImage(response.data)
+  } catch (error) {
+    ElMessage.error('图片上传失败')
+  }
+}
+
+function handleCoverSuccess(response) {
+  if (response.code === 200) form.cover = response.data
+}
+
+function beforeCoverUpload(file) {
+  const allowedTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif']
+  if (!allowedTypes.includes(file.type)) {
+    ElMessage.error('仅支持 JPG、PNG、WEBP 或 GIF 图片')
+    return false
+  }
+  if (file.size > 10 * 1024 * 1024) {
+    ElMessage.error('图片最大 10MB')
+    return false
+  }
+  return true
+}
+
+async function loadHotTags() {
+  try {
+    const response = await getHotTags()
+    hotTags.value = response.data || []
+  } catch (error) {
+    // 标签是辅助信息，不阻断写作。
+  }
+}
+
+async function loadArticle(id) {
+  isLoading.value = true
+  try {
+    const response = await getArticleForEdit(id)
+    const article = response.data
+    form.id = article.id
+    form.title = article.title || ''
+    form.content = article.content || ''
+    form.cover = article.cover || ''
+    form.tags = article.tagList || []
+    changeVersion = 0
+    savedVersion = 0
+    dirty.value = false
+    failed.value = false
+  } catch (error) {
+    ElMessage.error('加载文章失败')
+  } finally {
+    isLoading.value = false
+  }
+}
+
+watch(
+  [() => form.title, () => form.content, () => form.cover, () => form.tags],
+  () => {
+    if (isLoading.value) return
+
+    changeVersion += 1
+    dirty.value = true
+    scheduleAutoSave()
+  },
+  { deep: true },
+)
+
+onMounted(() => {
   loadHotTags()
   const id = route.query.id
   if (id) {
@@ -113,132 +307,218 @@ onMounted(async () => {
   }
 })
 
-const loadHotTags = async () => {
-  try {
-    const res = await getHotTags()
-    hotTags.value = res.data || []
-  } catch(e) {}
-}
-
-const loadArticle = async (id) => {
-  try {
-    const res = await getArticleDetail(id)
-    const data = res.data
-    form.id = data.id
-    form.title = data.title
-    form.content = data.content
-    form.cover = data.cover
-    form.tags = data.tagList || []
-  } catch (e) {
-    ElMessage.error('加载文章失败')
-  }
-}
-
-const handleSaveDraft = () => submit(false)
-const handlePublish = () => submit(true)
-
-const submit = async (isPublish) => {
-  if (!form.title.trim()) return ElMessage.warning('请输入标题')
-  if (!form.content.trim()) return ElMessage.warning('请输入内容')
-
-  publishing.value = true
-  try {
-    const payload = {
-      id: form.id,
-      title: form.title,
-      content: form.content,
-      cover: form.cover,
-      tags: form.tags,
-      isPublish: isPublish // 传给后端状态
-    }
-
-    await publishArticle(payload)
-
-    ElMessage.success(isPublish ? '发布成功' : '已存入草稿')
-    router.push('/home')
-  } catch(e) {
-    ElMessage.error(e.msg || '操作失败')
-  } finally {
-    publishing.value = false
-  }
-}
-
-const handleCoverSuccess = (res) => {
-  if(res.code === 200) form.cover = res.data
-}
-const beforeCoverUpload = (file) => {
-  if (file.size / 1024 / 1024 > 5) {
-    ElMessage.error('图片最大 5MB')
-    return false
-  }
-  return true
-}
-
-const handleUploadImage = async (event, insertImage, files) => {
-  const file = files[0]
-  const formData = new FormData()
-  formData.append('file', file)
-  try {
-    const res = await request.post('/api/file/upload', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' }
-    })
-    if (res.code === 200) {
-      insertImage({ url: res.data, desc: 'image' })
-    }
-  } catch (e) {
-    ElMessage.error('图片上传失败')
-  }
-}
+onBeforeUnmount(clearAutoSaveTimer)
 </script>
 
 <style scoped lang="scss">
 .publish-page {
-  min-height: 100vh; background: #fff; padding-bottom: 80px; /* 防止内容被底部遮挡 */
-}
-.navbar-placeholder {
-  height: 60px; border-bottom: 1px solid #eee; display: flex; align-items: center; padding: 0 40px; justify-content: space-between;
-  .nav-back { cursor: pointer; display: flex; align-items: center; gap: 5px; color: #666; &:hover { color: #0066ff; } }
-  .page-title { font-size: 18px; font-weight: 600; color: #333; }
+  min-height: 100vh;
+  padding-bottom: 104px;
+  background: var(--paper);
+  color: var(--ink);
 }
 
-.main-container {
-  width: 900px; margin: 30px auto;
+.publish-header {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  min-height: 68px;
+  padding: 0 clamp(var(--space-4), 5vw, 72px);
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--paper) 92%, transparent);
 }
 
-.form-group {
-  margin-bottom: 25px;
-  .title-input {
-    width: 100%; border: none; outline: none; font-size: 32px; font-weight: 600; color: #121212;
-    &::placeholder { color: #ccc; }
+.publish-header__back {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  gap: var(--space-1);
+  padding: var(--space-2) 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink-muted);
+  font: inherit;
+  cursor: pointer;
+
+  &:hover,
+  &:focus-visible {
+    color: var(--accent-dark);
   }
-  .section-label { font-size: 14px; color: #666; margin-bottom: 10px; }
 }
 
-.tag-section .tag-input { width: 100%; }
+.publish-header__eyebrow,
+.editor-canvas__kicker,
+.editor-meta__label {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.publish-layout {
+  display: grid;
+  grid-template-columns: minmax(188px, 240px) minmax(0, 820px);
+  gap: clamp(var(--space-6), 6vw, 88px);
+  width: min(1180px, calc(100% - 2 * clamp(var(--space-4), 5vw, 72px)));
+  margin: clamp(var(--space-6), 8vw, 88px) auto;
+}
+
+.editor-meta {
+  align-self: start;
+  border-top: 2px solid var(--ink);
+}
+
+.editor-meta__section {
+  padding: var(--space-5) 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.editor-meta__status {
+  display: flex;
+  align-items: center;
+  min-height: 22px;
+  gap: var(--space-2);
+  color: var(--ink-muted);
+  font-size: 14px;
+
+  &.is-saving { color: var(--accent-dark); }
+  &.is-error { color: #9a4038; }
+  &.is-saved { color: #59745a; }
+}
+
+.editor-meta__status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.editor-meta__label {
+  display: block;
+  margin-bottom: var(--space-3);
+}
 
 .cover-uploader {
-  width: 200px; height: 112px; border: 1px dashed #d9d9d9; border-radius: 6px; cursor: pointer; position: relative; overflow: hidden; background: #fafafa;
-  &:hover { border-color: #0066ff; }
-  .uploader-icon { font-size: 28px; color: #8c939d; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); }
-  .cover-img { width: 100%; height: 100%; object-fit: cover; }
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--paper-muted);
+  cursor: pointer;
+
+  :deep(.el-upload) {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  &:hover { border-color: var(--accent); }
 }
 
-.editor-box {
-  margin-bottom: 20px;
+.cover-uploader__placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  width: 100%;
+  height: 100%;
+  color: var(--ink-muted);
+  font-size: 13px;
+
+  .el-icon { font-size: 24px; }
 }
 
-/* 底部操作栏增强样式 */
+.cover-uploader__image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.cover-uploader__remove { margin-top: var(--space-2); padding-inline: 0; }
+.editor-meta__tags { width: 100%; }
+
+.editor-meta__reading {
+  display: flex;
+  gap: var(--space-5);
+}
+
+.editor-meta__metric-value {
+  margin-right: 4px;
+  color: var(--ink);
+  font-family: "Songti SC", STSong, SimSun, serif;
+  font-size: 24px;
+  font-weight: 700;
+}
+
+.editor-meta__metric-label { color: var(--ink-muted); font-size: 12px; }
+
+.editor-canvas { min-width: 0; }
+.editor-canvas__kicker { margin-bottom: var(--space-4); }
+
+.title-input {
+  box-sizing: border-box;
+  width: 100%;
+  margin-bottom: var(--space-6);
+  padding: 0 0 var(--space-4);
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  outline: 0;
+  background: transparent;
+  color: var(--ink);
+  font-family: "Songti SC", STSong, SimSun, serif;
+  font-size: clamp(34px, 5vw, 52px);
+  font-weight: 700;
+  line-height: 1.25;
+
+  &::placeholder { color: color-mix(in srgb, var(--ink-muted) 60%, transparent); }
+  &:focus { border-color: var(--accent); }
+}
+
 .footer-actions {
-  position: fixed; bottom: 0; left: 0; width: 100%; height: 72px;
-  background: #fff; border-top: 1px solid #e0e0e0;
-  z-index: 999; /* 确保层级最高 */
-  box-shadow: 0 -4px 12px rgba(0,0,0,0.05);
-  display: flex; justify-content: center; align-items: center;
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 20;
+  border-top: 1px solid var(--line);
+  background: color-mix(in srgb, var(--paper) 94%, transparent);
 }
 
-.footer-content {
-  width: 900px; display: flex; justify-content: space-between; align-items: center;
-  .tip { font-size: 13px; color: #999; }
-  .btns { display: flex; gap: 15px; margin-left: auto; } /* 强制靠右 */
+.footer-actions__content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  width: min(1180px, calc(100% - 2 * clamp(var(--space-4), 5vw, 72px)));
+  min-height: 76px;
+  margin: 0 auto;
+}
+
+.footer-actions__tip { margin: 0; color: var(--ink-muted); font-size: 13px; }
+.footer-actions__buttons { display: flex; gap: var(--space-3); }
+
+@media (max-width: 959px) {
+  .publish-layout { grid-template-columns: minmax(0, 1fr); gap: var(--space-6); }
+  .editor-meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: var(--space-5); }
+  .editor-meta__status { grid-column: 1 / -1; }
+  .editor-meta__section { min-width: 0; }
+}
+
+@media (max-width: 599px) {
+  .publish-header { grid-template-columns: 1fr auto; }
+  .publish-header__eyebrow { display: none; }
+  .publish-header__spacer { display: none; }
+  .editor-meta { grid-template-columns: 1fr; }
+  .editor-meta__status { grid-column: auto; }
+  .footer-actions__content { min-height: 68px; }
+  .footer-actions__tip { display: none; }
+  .footer-actions__buttons { width: 100%; }
+  .footer-actions__buttons :deep(.el-button) { flex: 1; }
 }
 </style>

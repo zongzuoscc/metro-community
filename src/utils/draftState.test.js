@@ -8,4 +8,9 @@ describe('nextDraftState', () => {
     expect(nextDraftState(false, false, false)).toEqual({ label: '已保存', tone: 'saved' })
     expect(nextDraftState(true, false, true)).toEqual({ label: '保存失败', tone: 'error' })
   })
+
+  it('keeps a failure visible until new input is saved', () => {
+    expect(nextDraftState(true, false, true)).toEqual({ label: '保存失败', tone: 'error' })
+    expect(nextDraftState(false, false, false)).toEqual({ label: '已保存', tone: 'saved' })
+  })
 })
