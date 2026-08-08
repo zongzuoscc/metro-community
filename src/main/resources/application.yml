@@ -1,5 +1,5 @@
 server:
-  port: 8080
+  port: ${SERVER_PORT:8080}
 
 spring:
   application:
@@ -11,49 +11,44 @@ spring:
       max-file-size: 10MB      # 单个文件最大大小 (按需调整，例如 10MB, 50MB)
       max-request-size: 50MB   # 整个请求最大大小 (通常比单个文件大，用于多文件上传)
 
-  # 1. ????? (?? url ????????? password)
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
-    url: jdbc:mysql://localhost:3306/community?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai
-    username: root
-    password: yangyiming.com
-  # 2. Redis ??
+    url: ${DB_URL:jdbc:mysql://127.0.0.1:3306/metro_community?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai}
+    username: ${DB_USERNAME:metro}
+    password: ${DB_PASSWORD:}
   data:
     redis:
-      host: localhost
-      port: 6379
-      password: yangyiming.com
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
       database: 0
 
-  # 3. RabbitMQ ??
   rabbitmq:
-    host: localhost
-    port: 5672
-    username: zongzuo
-    password: yangyiming.com
+    host: ${RABBITMQ_HOST:127.0.0.1}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USERNAME:metro}
+    password: ${RABBITMQ_PASSWORD:}
 
-  # 4. ???? (SMTP) - ????????????????????????????????
   mail:
-    host: smtp.163.com
-    username: metrocommunity@163.com # ?????
-    password: GTg3F34BVVjFK4XB    # ?????
+    host: ${MAIL_HOST:smtp.163.com}
+    username: ${MAIL_USERNAME:}
+    password: ${MAIL_PASSWORD:}
     default-encoding: UTF-8
-    debug: true
+    debug: false
   ai:
     openai:
-      api-key: ${DEEPSEEKAPIKEY}
-      base-url: https://api.deepseek.com
+      api-key: ${DEEPSEEK_API_KEY:}
+      base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
       chat:
+        enabled: ${AI_CHAT_ENABLED:false}
         options:
-          model: deepseek-chat  # 使用的模型名称
-          temperature: 0.7      # 创造力指数 (0-2)，0.7 适合日常对话
+          model: ${DEEPSEEK_MODEL:deepseek-chat}
+          temperature: 0.7
   elasticsearch:
-    uris: http://localhost:19200
+    uris: ${ELASTICSEARCH_URIS:http://127.0.0.1:19200}
 
 # MyBatis-Plus ??
 mybatis-plus:
-  configuration:
-    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl # ??????? SQL?????
   global-config:
     db-config:
       logic-delete-field: deleted # ???????
@@ -63,7 +58,7 @@ mybatis-plus:
 
 aliyun:
   oss:
-    endpoint: oss-cn-shanghai.aliyuncs.com  # 换成你的地域节点
-    access-key-id: ${OSS_ACCESS_KEY_ID:default_id}          # 换成你的 Key ID
-    access-key-secret: ${OSS_ACCESS_KEY_SECRET:default_secret}      # 换成你的 Key Secret
-    bucket-name: metro-community
+    endpoint: ${OSS_ENDPOINT:}
+    access-key-id: ${OSS_ACCESS_KEY_ID:}
+    access-key-secret: ${OSS_ACCESS_KEY_SECRET:}
+    bucket-name: ${OSS_BUCKET_NAME:}
