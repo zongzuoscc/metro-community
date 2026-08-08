@@ -5,10 +5,12 @@ import cumt.zongzuo.community.entity.Article;
 import cumt.zongzuo.community.service.ArticleService;
 import cumt.zongzuo.community.service.MetroAiService;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
 @RequestMapping("/api/ai")
+@ConditionalOnProperty(name = "spring.ai.openai.chat.enabled", havingValue = "true")
 public class AiController {
 
     @Autowired

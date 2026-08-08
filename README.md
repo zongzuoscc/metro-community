@@ -1,57 +1,61 @@
-# 🚇 Metro Community (Metro 智能化全栈开发者社区)
+# Metro Community
 
-![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.x-brightgreen.svg)
-![Vue 3](https://img.shields.io/badge/Vue.js-3.x-blue.svg)
-![Elasticsearch](https://img.shields.io/badge/Elasticsearch-Search-yellow.svg)
-![RabbitMQ](https://img.shields.io/badge/RabbitMQ-Message%20Queue-orange.svg)
-![Spring AI](https://img.shields.io/badge/Spring%20AI-Agentic%20RAG-purple.svg)
+一个面向内容创作与互动的社区后端服务，提供文章、评论、点赞、收藏、关注、通知、全文检索和实时聊天能力。前端位于仓库的 `frontend` 分支。
 
-> **Metro Community** 是一个集高并发实时互动、海量全文检索与 Agent 智能体深度融合的现代化内容社区。本项目不仅实现了传统论坛的 CRUD 闭环，更着重解决了**分布式状态下的双写一致性**、**大模型异步风控**等企业级架构难题。
+## 技术栈
 
-## ✨ 核心亮点与架构设计
+- Java 17、Spring Boot 3、Spring Security、MyBatis-Plus
+- MySQL 8、Redis、RabbitMQ、Elasticsearch 8 + IK 中文分词
+- WebSocket、阿里云 OSS、Spring AI（默认关闭，需显式配置）
 
-* 🧠 **Agentic RAG 智能体引擎**：基于 Spring AI Function Calling 将私有 ES 检索封装为 AI 工具，赋予大模型自主调度知识库的精准问答能力；并在前端无缝集成长文“一键智能伴读摘要”。
-* 🛡️ **分块熔断式 AI 异步内容风控**：自研“文本分块+快进熔断”算法拦截对抗性违规样本；基于 MQ 异步调度与状态分流闭环，将 AI 审核（耗时2-5s）与发帖主链路彻底解耦，发帖接口耗时降至 50ms 内。
-* 🔄 **MQ 驱动的最终一致性架构**：以 MySQL 为单一真理源，引入 RabbitMQ 状态驱动增量同步链路。在复杂状态（草稿/审核/拦截/发布/删除）流转下，精准控制 Elasticsearch 索引的物理擦除与重建。
-* ⚡ **高并发基建与检索算法**：基于 ES 的 BM25 算法实现高亮搜索，结合 `More Like This` 原生语法与 TF-IDF 实现“猜你喜欢”精准推荐；利用 Redis + 自定义 `@RateLimit` 注解实现轻量级 API 防刷限流器。
-* 💬 **WebSocket 实时通信**：封装双向实时 P2P 聊天与系统通知模块，结合 JWT 实现了严密的握手鉴权与消息溯源。
+## 已实现能力
 
-## 🛠️ 技术栈
+- JWT 无状态认证：支持标准 `Authorization: Bearer <token>`，同时兼容现有前端的 `token` 请求头。
+- 角色保护：文章、用户和举报管理接口需要管理员角色。
+- 内容社区闭环：文章状态流转、评论、点赞、收藏、关注、系统通知与私信。
+- Elasticsearch 全文检索、相似文章，以及 RabbitMQ 驱动的异步索引同步。
+- Redis 缓存与接口限流。
 
-### 后端 (Backend)
-- **核心框架**: Java 17 + Spring Boot 3
-- **持久层**: MyBatis-Plus + MySQL 8.x
-- **大模型基建**: Spring AI
-- **缓存与限流**: Redis
-- **消息队列**: RabbitMQ
-- **搜索引擎**: Elasticsearch 8.x + IK 中文分词器
-- **安全鉴权**: JWT
+## 本地启动
 
-### 前端 (Frontend)
-- **核心框架**: Vue 3 (Composition API) + Vite
-- **UI 组件库**: Element Plus
-- **Markdown**: `@kangc/v-md-editor` (支持沉浸式阅读与排版渲染)
-- **网络请求**: Axios
+### 1. 准备依赖
 
----
+需要 JDK 17、Docker（或已有的 MySQL 8、Redis、RabbitMQ、Elasticsearch 8）。Elasticsearch 必须安装仓库中 `elasticsearch/` Dockerfile 使用的 IK 插件。
 
-## 🚀 快速开始 (Quick Start)
+项目 Docker Compose 将 ES 映射到 `19200`，避免与默认的 `9200` 冲突。运行前请根据本机情况检查 Compose 中的端口映射。
 
-### 1. 环境准备 (Prerequisites)
-在本地运行本项目，你需要提前安装以下环境：
-* **JDK**: 17 或更高版本
-* **Node.js**: v16+ (推荐 v18+)
-* **MySQL**: 8.0+
-* **Redis**: 6.0+
-* **RabbitMQ**: 3.x (需开启 Web 管理插件)
-* **Elasticsearch**: 包含对应版本的 `elasticsearch-analysis-ik` 插件
-> 💡 **提示**: 强烈建议使用 Docker Compose 一键启动 MySQL、Redis、RabbitMQ 和 ES 等中间件服务。已将yml文件上传
+```bash
+docker compose up -d
+```
 
-### 2. 数据库初始化
-1. 登录 MySQL，创建数据库 `metro_community`。
-2. 运行项目根目录下的 SQL 脚本（如 `db/metro_community.sql`），初始化表结构与基础数据。
+### 2. 初始化数据库与环境变量
 
-### 3. 后端服务配置与启动
-1. 克隆本项目到本地：
-   ```bash
-   git clone [https://github.com/your-username/metro-community.git](https://github.com/your-username/metro-community.git)
+创建 `metro_community` 数据库并执行根目录的 [script.sql](script.sql)。随后复制环境变量示例并替换占位符；不要将真实密钥提交到 Git。通过 IDE 的运行环境、Shell 或部署平台将这些变量注入 Spring Boot 进程。
+
+```bash
+cp .env.example .env
+```
+
+至少需要设置：`DB_PASSWORD`、`REDIS_PASSWORD`、`RABBITMQ_PASSWORD`、`JWT_SECRET`、OSS 相关变量。`JWT_SECRET` 必须至少 32 个字符。
+
+默认 CORS 仅允许 `http://localhost:5173`；生产环境请通过 `CORS_ALLOWED_ORIGINS` 设置前端正式域名。
+
+### 3. 启动后端
+
+```bash
+./mvnw spring-boot:run
+```
+
+服务默认端口为 `8080`，可通过 `SERVER_PORT` 修改。
+
+## AI 模块状态
+
+当前没有可用的 AI Provider Key 时，聊天、向量、图片和音频模型均保持关闭，应用仍可正常启动。后续启用聊天模型需要设置 `DEEPSEEK_API_KEY`、`DEEPSEEK_BASE_URL`、`DEEPSEEK_MODEL` 与 `AI_CHAT_ENABLED=true`。在重新接入前，请先完成 Provider 配置与集成测试，不应把 API Key 写入配置文件。
+
+## 测试
+
+```bash
+./mvnw test
+```
+
+集成测试使用 Testcontainers 启动隔离的 MySQL、Redis、RabbitMQ 与带 IK 插件的 Elasticsearch，所有端口均由 Docker 动态分配，不会占用本机已有容器端口。

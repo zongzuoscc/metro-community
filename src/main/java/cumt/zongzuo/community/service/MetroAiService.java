@@ -1,9 +1,11 @@
 package cumt.zongzuo.community.service;
 
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 @Service
+@ConditionalOnProperty(name = "spring.ai.openai.chat.enabled", havingValue = "true")
 public class MetroAiService {
 
     private final ChatClient chatClient;

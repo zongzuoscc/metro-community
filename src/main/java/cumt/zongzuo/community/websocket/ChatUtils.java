@@ -6,6 +6,7 @@ import cumt.zongzuo.community.entity.ChatMsg;
 import cumt.zongzuo.community.service.ChatService;
 import cumt.zongzuo.community.service.MetroAiService;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import jakarta.annotation.PostConstruct;
@@ -13,6 +14,7 @@ import jakarta.websocket.Session;
 import java.time.LocalDateTime;
 
 @Component
+@ConditionalOnProperty(name = "spring.ai.openai.chat.enabled", havingValue = "true")
 public class ChatUtils {
 
     @Autowired

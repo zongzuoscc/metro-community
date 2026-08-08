@@ -2,6 +2,9 @@ package cumt.zongzuo.community.exception;
 
 import cumt.zongzuo.community.common.Result;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
@@ -11,6 +14,13 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 @Slf4j
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    @ExceptionHandler(ResponseStatusException.class)
+    public ResponseEntity<Result<String>> handleResponseStatusException(ResponseStatusException e) {
+        log.warn("请求被拒绝: {}", e.getReason());
+        return ResponseEntity.status(e.getStatusCode())
+                .body(Result.error(e.getStatusCode().value(), e.getReason()));
+    }
 
     /**
      * 捕获我们手动抛出的 RuntimeException (业务异常)

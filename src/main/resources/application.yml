@@ -44,6 +44,20 @@ spring:
         options:
           model: ${DEEPSEEK_MODEL:deepseek-chat}
           temperature: 0.7
+      embedding:
+        enabled: ${AI_EMBEDDING_ENABLED:false}
+      image:
+        enabled: false
+      audio:
+        speech:
+          enabled: false
+        transcription:
+          enabled: false
+      # Spring AI 1.0.0-M5 unconditionally creates a moderation client. It is not
+      # used by this application and receives a non-routable placeholder until
+      # the AI module is rebuilt with a real provider configuration.
+      moderation:
+        api-key: ${AI_MODERATION_API_KEY:disabled}
   elasticsearch:
     uris: ${ELASTICSEARCH_URIS:http://127.0.0.1:19200}
 
@@ -62,3 +76,9 @@ aliyun:
     access-key-id: ${OSS_ACCESS_KEY_ID:}
     access-key-secret: ${OSS_ACCESS_KEY_SECRET:}
     bucket-name: ${OSS_BUCKET_NAME:}
+
+app:
+  security:
+    jwt-secret: ${JWT_SECRET:}
+    token-ttl: ${JWT_TOKEN_TTL:P7D}
+    cors-allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173}

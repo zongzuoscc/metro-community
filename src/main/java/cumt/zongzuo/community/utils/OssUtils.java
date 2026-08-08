@@ -7,6 +7,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
+import java.time.LocalDate;
 import java.util.UUID;
 
 @Component
@@ -28,12 +29,13 @@ public class OssUtils {
      * 上传文件并返回 URL
      */
     public String uploadFile(MultipartFile file) throws IOException {
-        // 1. 获取原始文件名
         String originalFilename = file.getOriginalFilename();
-
-        // 2. 生成唯一文件名 (防止覆盖)
-        // 例如: avatar/uuid.jpg
-        String fileName = UUID.randomUUID().toString() + "_" + originalFilename;
+        String extension = originalFilename != null && originalFilename.lastIndexOf('.') >= 0
+                ? originalFilename.substring(originalFilename.lastIndexOf('.')).toLowerCase()
+                : "";
+        LocalDate today = LocalDate.now();
+        String fileName = "uploads/%d/%02d/%s%s".formatted(
+                today.getYear(), today.getMonthValue(), UUID.randomUUID(), extension);
 
         // 3. 创建 OSS 客户端
         OSS ossClient = new OSSClientBuilder().build(endpoint, accessKeyId, accessKeySecret);
