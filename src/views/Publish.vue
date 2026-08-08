@@ -108,17 +108,13 @@ import request from '../utils/request'
 import { getArticleForEdit, publishArticle, saveDraft } from '../api/article'
 import { getHotTags } from '../api/tag'
 import { nextDraftState } from '../utils/draftState'
+import { createArticleSaveCoordinator } from '../utils/articleSaveCoordinator'
 
 const AUTO_SAVE_DELAY = 1500
 
 const route = useRoute()
 const router = useRouter()
 const isEdit = ref(false)
-const isLoading = ref(false)
-const saving = ref(false)
-const publishing = ref(false)
-const dirty = ref(false)
-const failed = ref(false)
 const wordCount = ref(0)
 const hotTags = ref([])
 
@@ -130,38 +126,15 @@ const form = reactive({
   tags: [],
 })
 
-let autoSaveTimer
-let changeVersion = 0
-let savedVersion = 0
-
 const uploadHeaders = computed(() => {
   const token = localStorage.getItem('token')
   return token ? { token } : {}
 })
 
-const draftStatus = computed(() => nextDraftState(dirty.value, saving.value, failed.value))
 const readingMinutes = computed(() => Math.max(1, Math.ceil(wordCount.value / 400)))
 
 function hasRequiredContent() {
   return Boolean(form.title.trim() && form.content.trim())
-}
-
-function clearAutoSaveTimer() {
-  if (autoSaveTimer) {
-    window.clearTimeout(autoSaveTimer)
-    autoSaveTimer = undefined
-  }
-}
-
-function scheduleAutoSave() {
-  clearAutoSaveTimer()
-
-  if (isLoading.value || saving.value || !hasRequiredContent()) return
-
-  autoSaveTimer = window.setTimeout(() => {
-    autoSaveTimer = undefined
-    save(false)
-  }, AUTO_SAVE_DELAY)
 }
 
 function buildPayload() {
@@ -174,57 +147,42 @@ function buildPayload() {
   }
 }
 
-async function save(isPublish) {
-  if (saving.value) return false
+const saveCoordinator = createArticleSaveCoordinator({
+  autoSaveDelay: AUTO_SAVE_DELAY,
+  hasRequiredContent,
+  buildPayload,
+  saveDraft,
+  publish: (payload) => publishArticle({ ...payload, isPublish: true }),
+  onDraftSaved: (response) => {
+    if (response.data) form.id = response.data
+  },
+  onDraftFailed: () => ElMessage.error('草稿保存失败，请检查网络后重试'),
+})
 
-  if (!hasRequiredContent()) {
-    if (isPublish) ElMessage.warning('请先填写标题和正文')
-    return false
-  }
-
-  clearAutoSaveTimer()
-  const requestVersion = changeVersion
-  let saved = false
-  saving.value = true
-  publishing.value = isPublish
-
-  try {
-    const response = isPublish
-      ? await publishArticle({ ...buildPayload(), isPublish: true })
-      : await saveDraft(buildPayload())
-
-    if (!isPublish && response.data) form.id = response.data
-
-    savedVersion = requestVersion
-    dirty.value = changeVersion !== savedVersion
-    failed.value = false
-    saved = true
-
-    if (isPublish) {
-      ElMessage.success('文章已发布')
-      await router.push('/home')
-    }
-
-    return true
-  } catch (error) {
-    failed.value = true
-    dirty.value = true
-    if (!isPublish) ElMessage.error('草稿保存失败，请检查网络后重试')
-    return false
-  } finally {
-    saving.value = false
-    publishing.value = false
-    if (!isPublish && dirty.value && (saved || changeVersion !== requestVersion)) scheduleAutoSave()
-  }
-}
+const saving = computed(() => saveCoordinator.state.saving)
+const publishing = computed(() => saveCoordinator.state.publishing)
+const draftStatus = computed(() => nextDraftState(
+  saveCoordinator.state.dirty,
+  saveCoordinator.state.saving,
+  saveCoordinator.state.failed,
+))
 
 async function handleSaveDraft() {
-  const saved = await save(false)
+  const saved = await saveCoordinator.saveCurrentDraft()
   if (saved) ElMessage.success('草稿已保存')
 }
 
-function handlePublish() {
-  save(true)
+async function handlePublish() {
+  if (!hasRequiredContent()) {
+    ElMessage.warning('请先填写标题和正文')
+    return
+  }
+
+  const published = await saveCoordinator.requestPublish()
+  if (published) {
+    ElMessage.success('文章已发布')
+    await router.push('/home')
+  }
 }
 
 async function uploadInlineImage(file, insertImage) {
@@ -266,34 +224,27 @@ async function loadHotTags() {
 }
 
 async function loadArticle(id) {
-  isLoading.value = true
+  saveCoordinator.beginHydration()
   try {
     const response = await getArticleForEdit(id)
+    if (saveCoordinator.state.disposed) return
     const article = response.data
     form.id = article.id
     form.title = article.title || ''
     form.content = article.content || ''
     form.cover = article.cover || ''
     form.tags = article.tagList || []
-    changeVersion = 0
-    savedVersion = 0
-    dirty.value = false
-    failed.value = false
   } catch (error) {
-    ElMessage.error('加载文章失败')
+    if (!saveCoordinator.state.disposed) ElMessage.error('加载文章失败')
   } finally {
-    isLoading.value = false
+    await saveCoordinator.completeHydration()
   }
 }
 
 watch(
   [() => form.title, () => form.content, () => form.cover, () => form.tags],
   () => {
-    if (isLoading.value) return
-
-    changeVersion += 1
-    dirty.value = true
-    scheduleAutoSave()
+    saveCoordinator.markChanged()
   },
   { deep: true },
 )
@@ -307,7 +258,7 @@ onMounted(() => {
   }
 })
 
-onBeforeUnmount(clearAutoSaveTimer)
+onBeforeUnmount(saveCoordinator.dispose)
 </script>
 
 <style scoped lang="scss">
