@@ -34,3 +34,4 @@ build/
 .env
 application-local.yml
 .worktrees/
+.superpowers/
