@@ -99,4 +99,30 @@ describe('article Markdown helpers', () => {
       '[纯文本资料](data:text/plain,metro)',
     ].join('\n'))
   })
+
+  it('uses the first duplicate definition when an image reference resolves to an unsafe URL', () => {
+    const markdown = [
+      '![首条危险定义][route-map]',
+      '',
+      '[route-map]: data:image/png;base64,FIRST',
+      '[route-map]: https://metro.example/assets/second-definition.png',
+    ].join('\n')
+
+    expect(sanitizeMarkdownImageDestinations(markdown)).toBe([
+      '首条危险定义',
+      '',
+      '[route-map]: https://metro.example/assets/second-definition.png',
+    ].join('\n'))
+  })
+
+  it('keeps a safe image when a later duplicate definition is unsafe', () => {
+    const markdown = [
+      '![首条安全定义][route-map]',
+      '',
+      '[route-map]: https://metro.example/assets/first-definition.png',
+      '[route-map]: data:image/png;base64,SECOND',
+    ].join('\n')
+
+    expect(sanitizeMarkdownImageDestinations(markdown)).toBe(markdown)
+  })
 })

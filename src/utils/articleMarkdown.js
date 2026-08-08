@@ -62,7 +62,12 @@ export function sanitizeMarkdownImageDestinations(value = '') {
   const replacements = []
 
   visitMarkdownNodes(tree, node => {
-    if (node.type === 'definition') definitions.set(node.identifier, node)
+    // CommonMark resolves duplicate reference definitions to the first one.
+    // Keep that exact ordering so sanitization follows the same destination
+    // the renderer will use for an image reference.
+    if (node.type === 'definition' && !definitions.has(node.identifier)) {
+      definitions.set(node.identifier, node)
+    }
 
     if (node.type === 'image') {
       const range = sourceRange(node)
