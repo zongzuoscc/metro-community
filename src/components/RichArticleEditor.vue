@@ -221,6 +221,7 @@ import TableHeader from '@tiptap/extension-table-header'
 import TableCell from '@tiptap/extension-table-cell'
 import Underline from '@tiptap/extension-underline'
 import Placeholder from '@tiptap/extension-placeholder'
+import { sanitizeMarkdownImageDestinations } from '../utils/articleMarkdown'
 
 const props = defineProps({
   modelValue: {
@@ -251,7 +252,7 @@ function emitEditorValue(editorInstance) {
 }
 
 const editor = useEditor({
-  content: props.modelValue,
+  content: sanitizeMarkdownImageDestinations(props.modelValue),
   contentType: 'markdown',
   extensions: [
     StarterKit.configure({
@@ -296,9 +297,11 @@ const editor = useEditor({
 watch(
   () => props.modelValue,
   value => {
-    if (!editor.value || value === editor.value.getMarkdown()) return
+    const sanitizedValue = sanitizeMarkdownImageDestinations(value)
 
-    editor.value.commands.setContent(value, {
+    if (!editor.value || sanitizedValue === editor.value.getMarkdown()) return
+
+    editor.value.commands.setContent(sanitizedValue, {
       contentType: 'markdown',
       emitUpdate: false,
     })
