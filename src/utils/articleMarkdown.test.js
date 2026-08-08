@@ -53,4 +53,22 @@ describe('article Markdown helpers', () => {
 
     expect(sanitizeMarkdownImageDestinations(markdown)).toBe(markdown)
   })
+
+  it('preserves unsafe image literals inside indented code blocks', () => {
+    const markdown = [
+      '    ![四空格代码](data:image/png;base64,AAAA)',
+      '',
+      '\t![制表符代码](blob:https://metro.example/image-id)',
+      '',
+      '![实际图片](data:image/png;base64,BBBB)',
+    ].join('\n')
+
+    expect(sanitizeMarkdownImageDestinations(markdown)).toBe([
+      '    ![四空格代码](data:image/png;base64,AAAA)',
+      '',
+      '\t![制表符代码](blob:https://metro.example/image-id)',
+      '',
+      '实际图片',
+    ].join('\n'))
+  })
 })

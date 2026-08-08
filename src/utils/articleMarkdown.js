@@ -54,12 +54,43 @@ function findFencedCodeRanges(value) {
   return ranges
 }
 
+function isIndentedCodeLine(line) {
+  return /^(?: {4}|\t)/.test(line)
+}
+
+function findIndentedCodeRanges(value) {
+  const ranges = []
+  let lineStart = 0
+
+  while (lineStart < value.length) {
+    if (!isIndentedCodeLine(lineAt(value, lineStart))) {
+      lineStart = nextLineStart(value, lineStart)
+      continue
+    }
+
+    const start = lineStart
+    let end = nextLineStart(value, lineStart)
+
+    while (end < value.length) {
+      const line = lineAt(value, end)
+
+      if (!isIndentedCodeLine(line) && !/^[ \t]*$/.test(line)) break
+      end = nextLineStart(value, end)
+    }
+
+    ranges.push({ start, end })
+    lineStart = end
+  }
+
+  return ranges
+}
+
 function findRangeContaining(ranges, index) {
   return ranges.find(range => range.start <= index && index < range.end)
 }
 
 function findProtectedMarkdownRanges(value) {
-  const ranges = findFencedCodeRanges(value)
+  const ranges = [...findFencedCodeRanges(value), ...findIndentedCodeRanges(value)]
   let cursor = 0
 
   while (cursor < value.length) {
