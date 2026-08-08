@@ -11,7 +11,7 @@ import cumt.zongzuo.community.entity.*;
 import cumt.zongzuo.community.mapper.*;
 import cumt.zongzuo.community.service.ArticleService;
 import cumt.zongzuo.community.service.UserService;
-import cumt.zongzuo.community.utils.JwtUtils;
+import cumt.zongzuo.community.security.CurrentUser;
 import cumt.zongzuo.community.utils.SensitiveUtils;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
@@ -694,17 +694,7 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
     }
 
     private Long tryGetCurrentUserId() {
-        try {
-            ServletRequestAttributes attributes = (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
-            if (attributes != null) {
-                HttpServletRequest request = attributes.getRequest();
-                String token = request.getHeader("token");
-                if (StrUtil.isNotBlank(token)) {
-                    return JwtUtils.getUserId(token);
-                }
-            }
-        } catch (Exception e) {}
-        return null;
+        return CurrentUser.idOrNull();
     }
 
     @Override

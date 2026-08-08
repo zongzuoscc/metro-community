@@ -1,51 +1,140 @@
 package cumt.zongzuo.community.config;
 
+import org.springframework.amqp.core.Binding;
+import org.springframework.amqp.core.BindingBuilder;
+import org.springframework.amqp.core.DirectExchange;
 import org.springframework.amqp.core.Queue;
+import org.springframework.amqp.core.QueueBuilder;
 import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
 import org.springframework.amqp.support.converter.MessageConverter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+/**
+ * Declares durable work queues together with a dead-letter queue per business
+ * queue. Listener retry is configured in application.yml; a message that still
+ * fails after its attempts is rejected and routed to the matching DLQ instead
+ * of disappearing silently.
+ */
 @Configuration
 public class RabbitConfig {
 
-    // 原有的邮件队列
+    public static final String DEAD_LETTER_EXCHANGE = "community.dlx";
+
+    @Bean
+    public DirectExchange deadLetterExchange() {
+        return new DirectExchange(DEAD_LETTER_EXCHANGE);
+    }
+
     @Bean
     public Queue mailQueue() {
-        return new Queue("mail.queue", true);
+        return workQueue("mail.queue");
     }
 
-    // 【新增】消息通知队列
     @Bean
     public Queue notificationQueue() {
-        return new Queue("message.notify.queue", true);
+        return workQueue("message.notify.queue");
     }
 
-    // JSON 转换器 (保持不变)
+    @Bean
+    public Queue commentTaskQueue() {
+        return workQueue("comment.task.queue");
+    }
+
+    @Bean
+    public Queue likeQueue() {
+        return workQueue("like.task.queue");
+    }
+
+    @Bean
+    public Queue esSyncQueue() {
+        return workQueue("es.sync.queue");
+    }
+
+    @Bean
+    public Queue articleAuditQueue() {
+        return workQueue("article.audit.queue");
+    }
+
+    @Bean
+    public Queue mailDeadLetterQueue() {
+        return deadLetterQueue("mail.queue");
+    }
+
+    @Bean
+    public Queue notificationDeadLetterQueue() {
+        return deadLetterQueue("message.notify.queue");
+    }
+
+    @Bean
+    public Queue commentTaskDeadLetterQueue() {
+        return deadLetterQueue("comment.task.queue");
+    }
+
+    @Bean
+    public Queue likeDeadLetterQueue() {
+        return deadLetterQueue("like.task.queue");
+    }
+
+    @Bean
+    public Queue esSyncDeadLetterQueue() {
+        return deadLetterQueue("es.sync.queue");
+    }
+
+    @Bean
+    public Queue articleAuditDeadLetterQueue() {
+        return deadLetterQueue("article.audit.queue");
+    }
+
+    @Bean
+    public Binding mailDeadLetterBinding() {
+        return deadLetterBinding(mailDeadLetterQueue(), "mail.queue");
+    }
+
+    @Bean
+    public Binding notificationDeadLetterBinding() {
+        return deadLetterBinding(notificationDeadLetterQueue(), "message.notify.queue");
+    }
+
+    @Bean
+    public Binding commentTaskDeadLetterBinding() {
+        return deadLetterBinding(commentTaskDeadLetterQueue(), "comment.task.queue");
+    }
+
+    @Bean
+    public Binding likeDeadLetterBinding() {
+        return deadLetterBinding(likeDeadLetterQueue(), "like.task.queue");
+    }
+
+    @Bean
+    public Binding esSyncDeadLetterBinding() {
+        return deadLetterBinding(esSyncDeadLetterQueue(), "es.sync.queue");
+    }
+
+    @Bean
+    public Binding articleAuditDeadLetterBinding() {
+        return deadLetterBinding(articleAuditDeadLetterQueue(), "article.audit.queue");
+    }
+
     @Bean
     public MessageConverter messageConverter() {
         return new Jackson2JsonMessageConverter();
     }
-    @Bean
-    public Queue commentTaskQueue() {
-        return new Queue("comment.task.queue", true);
+
+    private Queue workQueue(String name) {
+        return QueueBuilder.durable(name)
+                .deadLetterExchange(DEAD_LETTER_EXCHANGE)
+                .deadLetterRoutingKey(name + ".dlq")
+                .build();
     }
 
-    // 【新增】点赞任务队列
-    @Bean
-    public Queue likeQueue() {
-        return new Queue("like.task.queue", true);
+    private Queue deadLetterQueue(String originalQueueName) {
+        return QueueBuilder.durable(originalQueueName + ".dlq").build();
     }
 
-    // 【新增】ES 文章数据同步队列
-    @Bean
-    public Queue esSyncQueue() {
-        return new Queue("es.sync.queue", true);
-    }
-
-    // 【本次新增】AI 文章审核队列
-    @Bean
-    public Queue articleAuditQueue() {
-        return new Queue("article.audit.queue", true);
+    private Binding deadLetterBinding(Queue queue, String originalQueueName) {
+        return BindingBuilder.bind(queue)
+                .to(deadLetterExchange())
+                .with(originalQueueName + ".dlq");
     }
 }

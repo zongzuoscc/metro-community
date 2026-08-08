@@ -1,7 +1,7 @@
 package cumt.zongzuo.community.aspect;
 
 import cumt.zongzuo.community.annotation.RateLimit;
-import cumt.zongzuo.community.utils.JwtUtils;
+import cumt.zongzuo.community.security.CurrentUser;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.aspectj.lang.ProceedingJoinPoint;
@@ -32,14 +32,9 @@ public class RateLimitAspect {
 
         // 1. 获取请求标识 (优先使用用户 ID，没登录则使用 IP)
         String identify = getIpAddress(request);
-        String token = request.getHeader("token");
-        try {
-            if (token != null && !token.isEmpty()) {
-                Long userId = JwtUtils.getUserId(token);
-                identify = "user:" + userId;
-            }
-        } catch (Exception e) {
-            // 解析失败忽略，继续用 IP
+        Long userId = CurrentUser.idOrNull();
+        if (userId != null) {
+            identify = "user:" + userId;
         }
 
         // 2. 构造 Redis Key (格式: rate_limit:业务名:用户标识)

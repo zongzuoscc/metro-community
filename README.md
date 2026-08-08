@@ -22,7 +22,7 @@
 
 需要 JDK 17、Docker（或已有的 MySQL 8、Redis、RabbitMQ、Elasticsearch 8）。Elasticsearch 必须安装仓库中 `elasticsearch/` Dockerfile 使用的 IK 插件。
 
-项目 Docker Compose 将 ES 映射到 `19200`，避免与默认的 `9200` 冲突。运行前请根据本机情况检查 Compose 中的端口映射。
+项目 Docker Compose 使用独立默认端口：MySQL `13306`、Redis `16379`、RabbitMQ AMQP `15673` / 管理台 `15674`、Elasticsearch `19200`、Kibana `15601`，避免占用常见的本机开发端口。可以通过 `.env` 中的 `*_HOST_PORT` 覆盖它们。
 
 ```bash
 docker compose up -d
@@ -36,9 +36,17 @@ docker compose up -d
 cp .env.example .env
 ```
 
-至少需要设置：`DB_PASSWORD`、`REDIS_PASSWORD`、`RABBITMQ_PASSWORD`、`JWT_SECRET`、OSS 相关变量。`JWT_SECRET` 必须至少 32 个字符。
+至少需要设置：`MYSQL_ROOT_PASSWORD`、`DB_PASSWORD`、`REDIS_PASSWORD`、`RABBITMQ_PASSWORD`、`JWT_SECRET`、OSS 相关变量。`.env.example` 已按上述独立端口配置好后端连接地址。`JWT_SECRET` 必须至少 32 个字符。
+
+在 Shell 中本地启动时，可显式加载该文件：
+
+```bash
+set -a && source .env && set +a
+```
 
 默认 CORS 仅允许 `http://localhost:5173`；生产环境请通过 `CORS_ALLOWED_ORIGINS` 设置前端正式域名。
+
+RabbitMQ 工作队列现在配置了 3 次有限重试与死信队列（队列名后缀为 `.dlq`）。如果本地 RabbitMQ 已存在由旧版本创建的同名队列，需要先在管理界面删除这些**项目队列**后再启动，以便声明死信交换机参数；不要删除其他项目的队列。
 
 ### 3. 启动后端
 

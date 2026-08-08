@@ -4,7 +4,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import cumt.zongzuo.community.common.Result;
 import cumt.zongzuo.community.entity.User;
 import cumt.zongzuo.community.service.FollowService;
-import cumt.zongzuo.community.utils.JwtUtils;
+import cumt.zongzuo.community.security.CurrentUser;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
@@ -17,8 +17,8 @@ public class FollowController {
 
     // 关注或取消关注
     @PostMapping("/{followedId}")
-    public Result<String> follow(@PathVariable Long followedId, @RequestHeader("token") String token) {
-        Long userId = JwtUtils.getUserId(token);
+    public Result<String> follow(@PathVariable Long followedId) {
+        Long userId = CurrentUser.id();
 
         // 【核心修改】捕获业务异常，不再直接抛出 500 错误
         try {
@@ -33,8 +33,8 @@ public class FollowController {
 
     // 检查是否已关注
     @GetMapping("/check/{followedId}")
-    public Result<Boolean> check(@PathVariable Long followedId, @RequestHeader("token") String token) {
-        Long userId = JwtUtils.getUserId(token);
+    public Result<Boolean> check(@PathVariable Long followedId) {
+        Long userId = CurrentUser.id();
         boolean isFollowed = followService.isFollowed(userId, followedId);
         return Result.success(isFollowed);
     }
@@ -62,9 +62,8 @@ public class FollowController {
     @PostMapping("/remark")
     public Result<String> setRemark(@RequestParam Long targetId,
                                     @RequestParam String remark,
-                                    @RequestParam(required = false) String description,
-                                    @RequestHeader("token") String token) {
-        Long userId = JwtUtils.getUserId(token);
+                                    @RequestParam(required = false) String description) {
+        Long userId = CurrentUser.id();
         followService.updateRemark(userId, targetId, remark, description);
         return Result.success("设置成功");
     }

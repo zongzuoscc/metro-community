@@ -1,6 +1,5 @@
 package cumt.zongzuo.community.mq;
 
-import jakarta.mail.MessagingException;
 import jakarta.mail.internet.MimeMessage;
 import org.springframework.amqp.rabbit.annotation.RabbitHandler;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
@@ -11,9 +10,11 @@ import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.stereotype.Component;
 import org.thymeleaf.TemplateEngine;
 import org.thymeleaf.context.Context;
+import lombok.extern.slf4j.Slf4j;
 
 import java.util.Map;
 
+@Slf4j
 @Component
 @RabbitListener(queues = "mail.queue")
 public class MailConsumer {
@@ -56,8 +57,9 @@ public class MailConsumer {
 
             mailSender.send(message);
             System.out.println("✅ HTML 邮件已发送给: " + email);
-        } catch (MessagingException e) {
-            System.err.println("❌ 邮件发送失败: " + e.getMessage());
+        } catch (Exception e) {
+            log.error("邮件发送失败，收件人: {}", email, e);
+            throw new IllegalStateException("邮件发送任务执行失败", e);
         }
     }
 }

@@ -28,6 +28,15 @@ spring:
     port: ${RABBITMQ_PORT:5672}
     username: ${RABBITMQ_USERNAME:metro}
     password: ${RABBITMQ_PASSWORD:}
+    listener:
+      simple:
+        default-requeue-rejected: false
+        retry:
+          enabled: true
+          initial-interval: 1000ms
+          multiplier: 2
+          max-interval: 10000ms
+          max-attempts: 3
 
   mail:
     host: ${MAIL_HOST:smtp.163.com}

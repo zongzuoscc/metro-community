@@ -48,6 +48,7 @@ public class ArticleAuditConsumer {
 
         } catch (Exception e) {
             log.error("AI 异步审核任务执行失败，文章 ID: {}", articleId, e);
+            throw new IllegalStateException("AI 审核任务执行失败", e);
         }
     }
 }

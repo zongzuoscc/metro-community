@@ -2,11 +2,13 @@ package cumt.zongzuo.community.mq;
 
 import cumt.zongzuo.community.dto.NotificationMsgDTO;
 import cumt.zongzuo.community.service.MessageService;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.annotation.RabbitHandler;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+@Slf4j
 @Component
 @RabbitListener(queues = "message.notify.queue")
 public class NotificationConsumer {
@@ -27,8 +29,8 @@ public class NotificationConsumer {
                     msg.getContent()
             );
         } catch (Exception e) {
-            // 生产环境建议加日志 log.error("消息处理失败", e);
-            e.printStackTrace();
+            log.error("站内通知任务执行失败: {}", msg, e);
+            throw new IllegalStateException("站内通知任务执行失败", e);
         }
     }
 }

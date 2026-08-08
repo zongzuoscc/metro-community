@@ -57,6 +57,7 @@ public class EsSyncConsumer {
 
         } catch (Exception e) {
             log.error("ES 同步任务执行失败，文章 ID: {}", articleId, e);
+            throw new IllegalStateException("ES 同步任务执行失败", e);
         }
     }
 }

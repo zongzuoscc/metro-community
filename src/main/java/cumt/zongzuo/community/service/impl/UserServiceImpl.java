@@ -19,7 +19,7 @@ import cumt.zongzuo.community.mapper.ArticleMapper;
 import cumt.zongzuo.community.mapper.FollowMapper;
 import cumt.zongzuo.community.mapper.UserMapper;
 import cumt.zongzuo.community.service.UserService;
-import cumt.zongzuo.community.utils.JwtUtils;
+import cumt.zongzuo.community.security.JwtService;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -51,6 +51,9 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
 
     @Autowired
     private FollowMapper followMapper;
+
+    @Autowired
+    private JwtService jwtService;
 
     private static final String USER_CACHE_PREFIX = "user:info:";
 
@@ -211,8 +214,14 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
 
         // 2. 【新增】检查封禁状态 (核心拦截逻辑)
         // 如果 status 为 1，直接阻断，不进行密码校验也不发放 Token
-        if (user.getStatus() != null && user.getStatus() == 1) {
-            return Result.error("该账号已被封禁，无法登录");
+        if (Integer.valueOf(1).equals(user.getStatus())) {
+            if (user.getBanTime() == null || LocalDateTime.now().isBefore(user.getBanTime())) {
+                return Result.error("该账号已被封禁，无法登录");
+            }
+            user.setStatus(0);
+            user.setBanTime(null);
+            updateById(user);
+            clearUserCache(user.getId());
         }
 
         // 3. 校验密码
@@ -221,7 +230,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         }
 
         // 4. 生成 Token
-        String token = JwtUtils.generateToken(user.getId());
+        String token = jwtService.generate(user.getId());
 
         // 5. 返回数据
         Map<String, Object> map = new HashMap<>();

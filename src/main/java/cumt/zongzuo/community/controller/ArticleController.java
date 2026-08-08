@@ -5,11 +5,9 @@ import cumt.zongzuo.community.common.Result;
 import cumt.zongzuo.community.dto.ArticleDTO;
 import cumt.zongzuo.community.entity.Article;
 import cumt.zongzuo.community.entity.Tag;
-import cumt.zongzuo.community.entity.User;
 import cumt.zongzuo.community.mapper.TagMapper;
 import cumt.zongzuo.community.service.ArticleService;
-import cumt.zongzuo.community.service.UserService;
-import cumt.zongzuo.community.utils.JwtUtils;
+import cumt.zongzuo.community.security.CurrentUser;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
@@ -24,9 +22,6 @@ public class ArticleController {
 
     @Autowired
     private ArticleService articleService;
-
-    @Autowired
-    private UserService userService;
 
     @Autowired
     private TagMapper tagMapper; // 临时注入
@@ -77,8 +72,8 @@ public class ArticleController {
     // 1. 发布文章 (新增或修改)
     @PostMapping("/publish")
     @RateLimit(name = "publish_article", time = 20, count = 1)
-    public Result<Long> publish(@RequestBody ArticleDTO dto, @RequestHeader("token") String token) {
-        Long userId = JwtUtils.getUserId(token);
+    public Result<Long> publish(@RequestBody ArticleDTO dto) {
+        Long userId = CurrentUser.id();
 
         // 【核心修复】
         // 从 DTO 获取状态，如果没传(null)则默认为 true(发布)
@@ -89,8 +84,8 @@ public class ArticleController {
 
     // 2. 存为草稿 (新增或修改)
     @PostMapping("/draft")
-    public Result<Long> saveDraft(@RequestBody ArticleDTO dto, @RequestHeader("token") String token) {
-        Long userId = JwtUtils.getUserId(token);
+    public Result<Long> saveDraft(@RequestBody ArticleDTO dto) {
+        Long userId = CurrentUser.id();
         // false 表示存草稿
         Long articleId = articleService.publishOrSave(dto, false, userId);
         return Result.success(articleId);
@@ -98,16 +93,16 @@ public class ArticleController {
 
     // 4. 获取草稿列表
     @GetMapping("/drafts")
-    public Result<List<Article>> getDrafts(@RequestHeader("token") String token) {
-        Long userId = JwtUtils.getUserId(token);
+    public Result<List<Article>> getDrafts() {
+        Long userId = CurrentUser.id();
         List<Article> list = articleService.getMyDrafts(userId);
         return Result.success(list);
     }
 
     // 5. 获取编辑详情 (回显数据用)
     @GetMapping("/edit/{id}")
-    public Result<Article> getForEdit(@PathVariable Long id, @RequestHeader("token") String token) {
-        Long userId = JwtUtils.getUserId(token);
+    public Result<Article> getForEdit(@PathVariable Long id) {
+        Long userId = CurrentUser.id();
         Article article = articleService.getArticleForEdit(id, userId);
         return Result.success(article);
     }
@@ -116,8 +111,8 @@ public class ArticleController {
 
     // 1. 【修改】删除文章 -> 移入回收站
     @DeleteMapping("/{id}")
-    public Result<String> delete(@PathVariable Long id, @RequestHeader("token") String token) {
-        Long userId = JwtUtils.getUserId(token);
+    public Result<String> delete(@PathVariable Long id) {
+        Long userId = CurrentUser.id();
         // 调用新的软删除方法
         articleService.moveToRecycleBin(id, userId);
         return Result.success("已移入回收站");
@@ -125,32 +120,32 @@ public class ArticleController {
 
     // 2. 【新增】恢复文章
     @PostMapping("/restore/{id}")
-    public Result<String> restore(@PathVariable Long id, @RequestHeader("token") String token) {
-        Long userId = JwtUtils.getUserId(token);
+    public Result<String> restore(@PathVariable Long id) {
+        Long userId = CurrentUser.id();
         articleService.restoreArticle(id, userId);
         return Result.success("恢复成功");
     }
 
     // 3. 【新增】彻底删除
     @DeleteMapping("/hard/{id}")
-    public Result<String> hardDelete(@PathVariable Long id, @RequestHeader("token") String token) {
-        Long userId = JwtUtils.getUserId(token);
+    public Result<String> hardDelete(@PathVariable Long id) {
+        Long userId = CurrentUser.id();
         articleService.deletePermanently(id, userId);
         return Result.success("彻底删除成功");
     }
 
     // 4. 【新增】获取回收站列表
     @GetMapping("/recycle-bin")
-    public Result<List<Article>> getRecycleBin(@RequestHeader("token") String token) {
-        Long userId = JwtUtils.getUserId(token);
+    public Result<List<Article>> getRecycleBin() {
+        Long userId = CurrentUser.id();
         List<Article> list = articleService.getRecycleBin(userId);
         return Result.success(list);
     }
 
     // 【新增】获取草稿数量
     @GetMapping("/draft-count")
-    public Result<Long> getDraftCount(@RequestHeader("token") String token) {
-        Long userId = JwtUtils.getUserId(token);
+    public Result<Long> getDraftCount() {
+        Long userId = CurrentUser.id();
         return Result.success(articleService.getDraftCount(userId));
     }
 
@@ -162,9 +157,8 @@ public class ArticleController {
 
     // 【新增】关注流接口
     @GetMapping("/follow-feed")
-    public Result<Page<Article>> getFollowFeed(@RequestParam(defaultValue = "1") int page,
-                                               @RequestHeader("token") String token) {
-        Long userId = JwtUtils.getUserId(token);
+    public Result<Page<Article>> getFollowFeed(@RequestParam(defaultValue = "1") int page) {
+        Long userId = CurrentUser.id();
         // 默认每页 10 条
         return Result.success(articleService.getFollowArticles(userId, page, 10));
     }
@@ -183,29 +177,20 @@ public class ArticleController {
     @GetMapping("/my/list")
     public Result<Page<Article>> getMyList(
             @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "10") int size,
-            @RequestHeader("token") String token) {
-
-        Long userId = JwtUtils.getUserId(token);
+            @RequestParam(defaultValue = "10") int size) {
+        Long userId = CurrentUser.id();
         return Result.success(articleService.getMyAllArticles(userId, page, size));
     }
 
     @GetMapping("/admin/pending")
     public Result<Page<Article>> getPendingList(
             @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "10") int size,
-            @RequestHeader("token") String token) {
-
-        checkAdmin(token);
+            @RequestParam(defaultValue = "10") int size) {
         return Result.success(articleService.getPendingArticles(page, size));
     }
 
     @PostMapping("/admin/audit")
-    public Result<String> auditArticle(
-            @RequestBody Map<String, Object> params,
-            @RequestHeader("token") String token) {
-
-        checkAdmin(token);
+    public Result<String> auditArticle(@RequestBody Map<String, Object> params) {
         Long articleId = Long.valueOf(params.get("id").toString());
         boolean pass = Boolean.parseBoolean(params.get("pass").toString());
         String reason = (String) params.get("reason");
@@ -219,14 +204,5 @@ public class ArticleController {
         // 获取与当前文章最相似的 5 篇文章
         List<Article> list = articleService.getSimilarArticles(id, 5);
         return Result.success(list);
-    }
-
-    private void checkAdmin(String token) {
-        Long userId = JwtUtils.getUserId(token);
-        User user = userService.getById(userId);
-        // 【关键修复】增加 null 判断，防止 NPE
-        if (user == null || user.getRole() == null || user.getRole() != 1) {
-            throw new RuntimeException("无权访问");
-        }
     }
 }

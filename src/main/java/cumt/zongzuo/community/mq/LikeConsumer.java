@@ -10,11 +10,13 @@ import cumt.zongzuo.community.mapper.ArticleMapper;
 import cumt.zongzuo.community.mapper.CommentMapper;
 import cumt.zongzuo.community.mapper.LikeRecordMapper;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.amqp.rabbit.annotation.RabbitHandler;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 
@@ -33,6 +35,7 @@ public class LikeConsumer {
     private RabbitTemplate rabbitTemplate;
 
     @RabbitHandler
+    @Transactional
     public void handle(LikeTaskDTO msg) {
         Long userId = msg.getUserId();
         Long targetId = msg.getTargetId();
@@ -50,8 +53,8 @@ public class LikeConsumer {
                 record.setCreateTime(LocalDateTime.now());
                 try {
                     likeRecordMapper.insert(record);
-                } catch (Exception e) {
-                    // 可能是重复消费，忽略
+                } catch (DuplicateKeyException e) {
+                    // A redelivered message whose database transaction already completed.
                     return;
                 }
 
@@ -61,14 +64,14 @@ public class LikeConsumer {
                 if (targetType == 1) { // 文章
                     Article article = articleMapper.selectById(targetId);
                     if (article != null) {
-                        article.setLikeCount(article.getLikeCount() + 1);
+                        article.setLikeCount((article.getLikeCount() == null ? 0 : article.getLikeCount()) + 1);
                         articleMapper.updateById(article);
                         receiverId = article.getAuthorId();
                     }
                 } else if (targetType == 2) { // 评论
                     Comment comment = commentMapper.selectById(targetId);
                     if (comment != null) {
-                        comment.setLikeCount(comment.getLikeCount() + 1);
+                        comment.setLikeCount((comment.getLikeCount() == null ? 0 : comment.getLikeCount()) + 1);
                         commentMapper.updateById(comment);
                         receiverId = comment.getUserId();
                     }
@@ -113,6 +116,7 @@ public class LikeConsumer {
             }
         } catch (Exception e) {
             log.error("点赞异步处理失败: {}", msg, e);
+            throw new IllegalStateException("点赞任务执行失败", e);
         }
     }
 }

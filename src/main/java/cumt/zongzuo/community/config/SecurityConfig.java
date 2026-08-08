@@ -51,7 +51,7 @@ public class SecurityConfig {
                         .accessDeniedHandler((request, response, exception) -> writeError(response, 403, "无权访问该资源")))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
-                        .requestMatchers("/api/auth/**", "/error").permitAll()
+                        .requestMatchers("/api/auth/**", "/error", "/im/**").permitAll()
                         .requestMatchers(HttpMethod.GET,
                                 "/api/tag/**",
                                 "/api/article/hot", "/api/article/feed", "/api/article/hot-rank",

@@ -42,6 +42,7 @@ public class CommentConsumer {
             }
         } catch (Exception e) {
             log.error("评论数异步更新失败: {}", msg, e);
+            throw new IllegalStateException("评论计数任务执行失败", e);
         }
     }
 }

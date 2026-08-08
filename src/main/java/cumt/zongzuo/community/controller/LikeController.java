@@ -3,7 +3,7 @@ package cumt.zongzuo.community.controller;
 import cumt.zongzuo.community.annotation.RateLimit;
 import cumt.zongzuo.community.common.Result;
 import cumt.zongzuo.community.service.LikeService;
-import cumt.zongzuo.community.utils.JwtUtils;
+import cumt.zongzuo.community.security.CurrentUser;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
@@ -22,9 +22,8 @@ public class LikeController {
     @PostMapping
     @RateLimit(name = "do_like", time = 1, count = 5)
     public Result<String> like(@RequestParam Long targetId,
-                               @RequestParam Integer targetType,
-                               @RequestHeader("token") String token) {
-        Long userId = JwtUtils.getUserId(token);
+                               @RequestParam Integer targetType) {
+        Long userId = CurrentUser.id();
         likeService.like(userId, targetId, targetType);
         return Result.success("操作成功");
     }
@@ -33,9 +32,8 @@ public class LikeController {
     // GET /api/like/check?targetId=1&targetType=1
     @GetMapping("/check")
     public Result<Boolean> checkIsLiked(@RequestParam Long targetId,
-                                        @RequestParam Integer targetType,
-                                        @RequestHeader("token") String token) {
-        Long userId = JwtUtils.getUserId(token);
+                                        @RequestParam Integer targetType) {
+        Long userId = CurrentUser.id();
         boolean isLiked = likeService.isLiked(userId, targetId, targetType);
         return Result.success(isLiked);
     }
