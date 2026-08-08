@@ -54,21 +54,49 @@ describe('article Markdown helpers', () => {
     expect(sanitizeMarkdownImageDestinations(markdown)).toBe(markdown)
   })
 
-  it('preserves unsafe image literals inside indented code blocks', () => {
+  it('sanitizes Markdown images that continue a paragraph or list item', () => {
     const markdown = [
-      '    ![四空格代码](data:image/png;base64,AAAA)',
+      '    ![普通缩进代码](data:image/png;base64,BBBB)',
       '',
-      '\t![制表符代码](blob:https://metro.example/image-id)',
+      '正文',
+      '    ![段落续行](data:image/png;base64,AAAA)',
       '',
-      '![实际图片](data:image/png;base64,BBBB)',
+      '- 条目',
+      '    ![列表续行](blob:https://metro.example/image-id)',
+      '>     ![引用代码](data:image/png;base64,CCCC)',
     ].join('\n')
 
     expect(sanitizeMarkdownImageDestinations(markdown)).toBe([
-      '    ![四空格代码](data:image/png;base64,AAAA)',
+      '    ![普通缩进代码](data:image/png;base64,BBBB)',
       '',
-      '\t![制表符代码](blob:https://metro.example/image-id)',
+      '正文',
+      '    段落续行',
       '',
-      '实际图片',
+      '- 条目',
+      '    列表续行',
+      '>     ![引用代码](data:image/png;base64,CCCC)',
+    ].join('\n'))
+  })
+
+  it('sanitizes full, collapsed, and shortcut references without changing data links', () => {
+    const markdown = [
+      '![完整引用][full-image]',
+      '![折叠引用][]',
+      '![快捷引用]',
+      '',
+      '[full-image]: data:image/png;base64,FULL',
+      '[折叠引用]: <blob:https://metro.example/collapsed>',
+      '[快捷引用]: data:image/png;base64,SHORTCUT',
+      '',
+      '[纯文本资料](data:text/plain,metro)',
+    ].join('\n')
+
+    expect(sanitizeMarkdownImageDestinations(markdown)).toBe([
+      '完整引用',
+      '折叠引用',
+      '快捷引用',
+      '',
+      '[纯文本资料](data:text/plain,metro)',
     ].join('\n'))
   })
 })
