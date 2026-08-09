@@ -14,6 +14,8 @@ import cumt.zongzuo.community.recommendation.entity.RecommendationEventType;
 import cumt.zongzuo.community.recommendation.service.RecommendationEventOutboxService;
 import cumt.zongzuo.community.service.FollowService;
 import cumt.zongzuo.community.service.MessageService;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.AmqpException;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DuplicateKeyException;
@@ -27,6 +29,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 @Service
+@Slf4j
 public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> implements FollowService {
 
     @Autowired
@@ -96,8 +99,12 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
             msg.setType(3); // 关注
             msg.setTargetId(followerId); // 点击跳转到粉丝主页
 
-            // 发送到 MQ
-            rabbitTemplate.convertAndSend("message.notify.queue", msg);
+            try {
+                rabbitTemplate.convertAndSend("message.notify.queue", msg);
+            } catch (AmqpException exception) {
+                log.warn("Follow notification enqueue failed for follower {} and followed user {}",
+                        followerId, followedId, exception);
+            }
             redisTemplate.opsForSet().add(key, followedId.toString());
         }
     }

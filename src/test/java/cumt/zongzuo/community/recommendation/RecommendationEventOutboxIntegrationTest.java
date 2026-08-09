@@ -3,6 +3,7 @@ package cumt.zongzuo.community.recommendation;
 import cumt.zongzuo.community.IntegrationTestSupport;
 import cumt.zongzuo.community.dto.CommentDTO;
 import cumt.zongzuo.community.dto.LikeTaskDTO;
+import cumt.zongzuo.community.dto.NotificationMsgDTO;
 import cumt.zongzuo.community.entity.Article;
 import cumt.zongzuo.community.mq.LikeConsumer;
 import cumt.zongzuo.community.recommendation.config.RecommendationProperties;
@@ -17,19 +18,31 @@ import cumt.zongzuo.community.service.FavoriteService;
 import cumt.zongzuo.community.service.FollowService;
 import cumt.zongzuo.community.service.LikeService;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
+import org.springframework.amqp.AmqpException;
 import org.springframework.amqp.core.AmqpAdmin;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataAccessException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 
 class RecommendationEventOutboxIntegrationTest extends IntegrationTestSupport {
 
@@ -75,6 +88,11 @@ class RecommendationEventOutboxIntegrationTest extends IntegrationTestSupport {
         purge("like.task.queue");
         purge("comment.task.queue");
         purge("message.notify.queue");
+    }
+
+    @AfterEach
+    void restoreFollowNotificationTemplate() {
+        ReflectionTestUtils.setField(followService, "rabbitTemplate", rabbitTemplate);
     }
 
     @Test
@@ -129,6 +147,25 @@ class RecommendationEventOutboxIntegrationTest extends IntegrationTestSupport {
 
         followService.follow(7L, 9L);
         assertThat(outboxRows()).hasSize(1);
+    }
+
+    @Test
+    void notificationPublishFailureDoesNotRollbackFollowOrRecommendationOutbox() {
+        RabbitTemplate failingNotificationTemplate = Mockito.mock(RabbitTemplate.class);
+        doThrow(new AmqpException("notification broker unavailable"))
+                .when(failingNotificationTemplate)
+                .convertAndSend(eq("message.notify.queue"), any(NotificationMsgDTO.class));
+        ReflectionTestUtils.setField(followService, "rabbitTemplate", failingNotificationTemplate);
+
+        assertThatCode(() -> followService.follow(7L, 9L)).doesNotThrowAnyException();
+
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM follow WHERE follower_id = 7 AND followed_id = 9", Long.class)).isEqualTo(1L);
+        assertThat(outboxRows()).singleElement().satisfies(row -> {
+            assertThat(row.getStatus()).isEqualTo("PENDING");
+            assertThat(row.getEventType()).isEqualTo("FOLLOW_AUTHOR");
+        });
+        assertThat(redisTemplate.opsForSet().isMember("user:following:7", "9")).isTrue();
     }
 
     @Test
@@ -202,13 +239,21 @@ class RecommendationEventOutboxIntegrationTest extends IntegrationTestSupport {
     }
 
     @Test
-    void conditionalClaimAllowsOnlyOneDispatcherToOwnARow() {
+    void conditionalClaimAllowsOnlyOneDispatcherToOwnARow() throws Exception {
         RecommendationEventCommand command = command("dispatch:claim");
         outboxService.enqueue(command);
         RecommendationEventOutbox row = outboxByDedupe(command.dedupeKey());
 
-        assertThat(outboxMapper.claim(row.getId(), LocalDateTime.now())).isEqualTo(1);
-        assertThat(outboxMapper.claim(row.getId(), LocalDateTime.now())).isZero();
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        CyclicBarrier barrier = new CyclicBarrier(2);
+        try {
+            Future<Integer> firstClaim = executor.submit(() -> claimAfterBarrier(barrier, row.getId()));
+            Future<Integer> secondClaim = executor.submit(() -> claimAfterBarrier(barrier, row.getId()));
+
+            assertThat(firstClaim.get() + secondClaim.get()).isEqualTo(1);
+        } finally {
+            executor.shutdownNow();
+        }
         assertThat(outboxMapper.selectById(row.getId()).getStatus()).isEqualTo("SENDING");
     }
 
@@ -295,5 +340,10 @@ class RecommendationEventOutboxIntegrationTest extends IntegrationTestSupport {
         if (amqpAdmin.getQueueProperties(queue) != null) {
             amqpAdmin.purgeQueue(queue, true);
         }
+    }
+
+    private int claimAfterBarrier(CyclicBarrier barrier, Long rowId) throws Exception {
+        barrier.await();
+        return outboxMapper.claim(rowId, LocalDateTime.now().withNano(0));
     }
 }

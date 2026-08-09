@@ -6,10 +6,12 @@ import cumt.zongzuo.community.recommendation.mapper.RecommendationEventOutboxMap
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
@@ -82,10 +84,19 @@ class RecommendationOutboxSchedule {
 @Component
 class CorrelatedRabbitRecommendationEventSender implements RecommendationOutboxDispatcher.EventSender {
 
-    private final RabbitTemplate rabbitTemplate;
+    private static final Duration CONFIRM_TIMEOUT = Duration.ofSeconds(5);
 
+    private final RabbitTemplate rabbitTemplate;
+    private final Duration confirmTimeout;
+
+    @Autowired
     CorrelatedRabbitRecommendationEventSender(RabbitTemplate rabbitTemplate) {
+        this(rabbitTemplate, CONFIRM_TIMEOUT);
+    }
+
+    CorrelatedRabbitRecommendationEventSender(RabbitTemplate rabbitTemplate, Duration confirmTimeout) {
         this.rabbitTemplate = rabbitTemplate;
+        this.confirmTimeout = confirmTimeout;
         this.rabbitTemplate.setMandatory(true);
     }
 
@@ -93,7 +104,7 @@ class CorrelatedRabbitRecommendationEventSender implements RecommendationOutboxD
     public void send(RecommendationEventCommand command) throws Exception {
         CorrelationData correlation = new CorrelationData(UUID.randomUUID().toString());
         rabbitTemplate.convertAndSend(RecommendationOutboxDispatcher.EVENT_QUEUE, command, correlation);
-        CorrelationData.Confirm confirm = correlation.getFuture().get(5, TimeUnit.SECONDS);
+        CorrelationData.Confirm confirm = correlation.getFuture().get(confirmTimeout.toMillis(), TimeUnit.MILLISECONDS);
         if (correlation.getReturned() != null) {
             throw new IllegalStateException("Rabbit returned message: " + correlation.getReturned().getReplyText());
         }
