@@ -40,10 +40,20 @@ spring:
 
   mail:
     host: ${MAIL_HOST:smtp.163.com}
+    port: ${MAIL_PORT:465}
     username: ${MAIL_USERNAME:}
     password: ${MAIL_PASSWORD:}
     default-encoding: UTF-8
     debug: false
+    properties:
+      mail:
+        smtp:
+          auth: true
+          ssl:
+            enable: ${MAIL_SSL_ENABLED:true}
+          connectiontimeout: ${MAIL_CONNECTION_TIMEOUT:10000}
+          timeout: ${MAIL_TIMEOUT:10000}
+          writetimeout: ${MAIL_WRITE_TIMEOUT:10000}
   ai:
     openai:
       api-key: ${DEEPSEEK_API_KEY:}
