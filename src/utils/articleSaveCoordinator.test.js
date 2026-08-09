@@ -363,4 +363,95 @@ describe('article save coordinator', () => {
     expect(publishedPayloads).toEqual([{ id: 94, title: '已发布文章', content: '编辑中的新正文' }])
     coordinator.dispose()
   })
+
+  it('ignores a draft response from an article context that has already been replaced', async () => {
+    const oldDraft = deferred()
+    const savedIds = []
+    let saveAttempts = 0
+    const form = { id: 1, title: '文章 A', content: 'A 修改' }
+    const coordinator = createArticleSaveCoordinator({
+      autoSaveDelay: 5,
+      hasRequiredContent: () => true,
+      buildPayload: () => ({ ...form }),
+      saveDraft: () => {
+        saveAttempts += 1
+        return saveAttempts === 1 ? oldDraft.promise : Promise.resolve({ data: 2 })
+      },
+      publish: async () => ({ data: form.id }),
+      onDraftSaved: response => savedIds.push(response.data),
+    })
+
+    coordinator.markChanged()
+    const saving = coordinator.saveCurrentDraft()
+    coordinator.beginHydration()
+    form.id = 2
+    form.title = '文章 B'
+    form.content = 'B 正文'
+    await coordinator.completeHydration()
+    form.content = 'B 正文修改'
+    coordinator.markChanged()
+    oldDraft.resolve({ data: 1 })
+
+    await expect(saving).resolves.toBe(false)
+    await wait(15)
+    expect(savedIds).toEqual([2])
+    expect(form.id).toBe(2)
+    coordinator.dispose()
+  })
+
+  it('ignores a publish response after navigation replaces the article context', async () => {
+    const oldPublish = deferred()
+    const publishedIds = []
+    const form = { id: 1, title: '文章 A', content: 'A 修改' }
+    const coordinator = createArticleSaveCoordinator({
+      autoSaveDelay: 10_000,
+      hasRequiredContent: () => true,
+      buildPayload: () => ({ ...form }),
+      saveDraft: async () => ({ data: form.id }),
+      publish: () => oldPublish.promise,
+      onPublished: response => publishedIds.push(response.data),
+    })
+
+    coordinator.markChanged()
+    const publishing = coordinator.requestPublish()
+    coordinator.beginHydration()
+    form.id = 2
+    await coordinator.completeHydration()
+    oldPublish.resolve({ data: 1 })
+
+    await expect(publishing).resolves.toBe(false)
+    expect(publishedIds).toEqual([])
+    expect(form.id).toBe(2)
+    coordinator.dispose()
+  })
+
+  it('does not leak an outdated-publish lock into the next hydrated article', async () => {
+    const firstPublish = deferred()
+    const form = { id: 1, title: '文章 A', content: 'A 正文' }
+    const coordinator = createArticleSaveCoordinator({
+      autoSaveDelay: 10_000,
+      hasRequiredContent: () => true,
+      buildPayload: () => ({ ...form }),
+      saveDraft: async () => ({ data: form.id }),
+      publish: () => firstPublish.promise,
+    })
+
+    coordinator.markChanged()
+    const publishing = coordinator.requestPublish()
+    form.content = 'A 发布期间修改'
+    coordinator.markChanged()
+    firstPublish.resolve({ data: 1 })
+    await expect(publishing).resolves.toBe(false)
+    expect(coordinator.state.publishOutdated).toBe(true)
+
+    coordinator.beginHydration()
+    form.id = 2
+    form.title = '文章 B'
+    form.content = 'B 正文'
+    await coordinator.completeHydration()
+
+    expect(coordinator.state.publishOutdated).toBe(false)
+    expect(coordinator.state.dirty).toBe(false)
+    coordinator.dispose()
+  })
 })

@@ -392,12 +392,20 @@ function handleBeforeUnload(event) {
 }
 
 onBeforeRouteLeave(() => {
+  if (saveCoordinator.state.saving || saveCoordinator.state.publishing) {
+    ElMessage.warning('保存或发布正在进行，请等待完成后再离开')
+    return false
+  }
   if (!hasUnsavedArticleChanges()) return true
   return window.confirm('当前修改尚未保存，确定离开编辑页吗？')
 })
 
 onBeforeRouteUpdate((to, from) => {
   if (normalizedArticleId(to.query.id) === normalizedArticleId(from.query.id)) return true
+  if (saveCoordinator.state.saving || saveCoordinator.state.publishing) {
+    ElMessage.warning('保存或发布正在进行，请等待完成后再切换文章')
+    return false
+  }
   if (!hasUnsavedArticleChanges()) return true
   return window.confirm('切换文章会丢失当前未保存修改，确定继续吗？')
 })

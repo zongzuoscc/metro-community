@@ -29,6 +29,7 @@ export function createArticleSaveCoordinator({
   let inFlightSave
   let inFlightPublish
   let publishRequested = false
+  let contextVersion = 0
 
   function clearAutoSaveTimer() {
     if (autoSaveTimer) {
@@ -50,6 +51,7 @@ export function createArticleSaveCoordinator({
 
   function beginHydration() {
     clearAutoSaveTimer()
+    contextVersion += 1
     state.hydrating = true
   }
 
@@ -58,6 +60,7 @@ export function createArticleSaveCoordinator({
     savedVersion = 0
     state.dirty = false
     state.failed = false
+    state.publishOutdated = false
     state.hydrating = false
   }
 
@@ -79,16 +82,19 @@ export function createArticleSaveCoordinator({
 
     clearAutoSaveTimer()
     const requestVersion = changeVersion
+    const requestContextVersion = contextVersion
     state.saving = true
     const currentSave = (async () => {
       try {
         const response = await saveDraft(buildPayload())
+        if (state.disposed || requestContextVersion !== contextVersion) return false
         savedVersion = requestVersion
         state.dirty = changeVersion !== savedVersion
         state.failed = false
         onDraftSaved(response)
         return true
       } catch (error) {
+        if (state.disposed || requestContextVersion !== contextVersion) return false
         state.failed = true
         state.dirty = true
         onDraftFailed(error)
@@ -96,7 +102,8 @@ export function createArticleSaveCoordinator({
       } finally {
         state.saving = false
         const changedDuringSave = changeVersion !== requestVersion
-        if (!state.disposed && !publishRequested && !inFlightPublish && changedDuringSave && state.dirty) {
+        const needsCurrentContextSave = requestContextVersion !== contextVersion || changedDuringSave
+        if (!state.disposed && !publishRequested && !inFlightPublish && needsCurrentContextSave && state.dirty) {
           scheduleAutoSave()
         }
       }
@@ -110,10 +117,11 @@ export function createArticleSaveCoordinator({
     }
   }
 
-  async function publishCurrentArticle() {
+  async function publishCurrentArticle(requestContextVersion) {
     const requestVersion = changeVersion
     try {
       const response = await publish(buildPayload())
+      if (state.disposed || requestContextVersion !== contextVersion) return false
       onPublished(response)
       savedVersion = requestVersion
       state.dirty = changeVersion !== savedVersion
@@ -121,6 +129,7 @@ export function createArticleSaveCoordinator({
       state.publishOutdated = state.dirty
       return !state.publishOutdated
     } catch (error) {
+      if (state.disposed || requestContextVersion !== contextVersion) return false
       state.failed = true
       state.dirty = true
       return false
@@ -133,12 +142,13 @@ export function createArticleSaveCoordinator({
     }
 
     clearAutoSaveTimer()
+    const requestContextVersion = contextVersion
     publishRequested = true
     state.publishing = true
     const currentPublish = (async () => {
       if (inFlightSave) await inFlightSave
-      if (state.disposed) return false
-      return publishCurrentArticle()
+      if (state.disposed || requestContextVersion !== contextVersion) return false
+      return publishCurrentArticle(requestContextVersion)
     })()
 
     inFlightPublish = currentPublish
@@ -152,6 +162,7 @@ export function createArticleSaveCoordinator({
 
   function dispose() {
     state.disposed = true
+    contextVersion += 1
     clearAutoSaveTimer()
   }
 

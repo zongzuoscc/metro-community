@@ -136,4 +136,26 @@ describe('Publish edit hydration', () => {
       title: '文章 B 更新',
     }))
   })
+
+  it('blocks an article route switch while a draft request is still in flight', async () => {
+    const draftGate = deferred()
+    mocks.getArticleForEdit.mockResolvedValue({
+      data: { id: 1, title: '草稿 A', content: 'A 正文', status: 0 },
+    })
+    mocks.saveDraft.mockReturnValue(draftGate.promise)
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
+    mountPublish()
+    await flushPromises()
+    await wrapper.get('.title-input').setValue('草稿 A 修改')
+    const saveButton = wrapper.findAll('button').find(button => button.text().includes('保存草稿'))
+    await saveButton.trigger('click')
+    await nextTick()
+
+    expect(mocks.updateGuard({ query: { id: '2' } }, { query: { id: '1' } })).toBe(false)
+    expect(mocks.messageWarning).toHaveBeenCalled()
+
+    draftGate.resolve({ data: 1 })
+    await flushPromises()
+  })
 })
