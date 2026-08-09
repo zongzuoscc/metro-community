@@ -6,11 +6,12 @@
 
 **Architecture:** 推荐作为单体内独立 `recommendation` 领域模块：原业务成功后投递幂等行为事件，冷启动推荐页的真实曝光会写入 MySQL；消费者维护 Redis 画像，训练任务从真实曝光和后续互动构造样本、验证并发布版本化 Logistic Regression 模型。请求侧从关注、标签、ES 相似和热度新鲜度四路召回，双门槛满足且模型有效时以模型精排，否则以时间线响应推荐页；最新页始终复用 `ArticleService#getFeedArticles`。
 
-**Tech Stack:** Java 17、Spring Boot 3.5、MyBatis-Plus、MySQL 8、Redis 7、RabbitMQ 3、Elasticsearch 8、JUnit 5、Testcontainers、Vue 3、Vite、Vitest。
+**Tech Stack:** Java 21、Spring Boot 3.5、MyBatis-Plus、MySQL 8、Redis 7、RabbitMQ 3、Elasticsearch 8、JUnit 5、Testcontainers、Vue 3、Vite、Vitest。
 
 ## Global Constraints
 
 - 不使用 mock 数据、AI Key、Embedding、向量数据库、深度学习框架、外部模型服务或新的推荐微服务；第一版机器学习为 Java 内实现的离线 Logistic Regression。
+- 后端统一升级到 Java 21；Maven 编译、测试和本地运行均使用 `/Users/yangyiming/.sdkman/candidates/java/21.0.11-amzn` 或等价 JDK 21。
 - 保留 `/api/article/feed`、`/api/article/hot-feed`、`/api/article/follow-feed` 和 `/api/article/{id}/similar` 的既有语义；详情相关推荐仍由 ES `more_like_this` 提供。
 - 仅登录用户调用新推荐接口；未登录推荐页和所有用户的最新页继续请求现有时间线。首页必须展示独立的“推荐”和“最新”入口。
 - 所有行为消息必须在原业务动作成功后发送；消费失败走现有 RabbitMQ retry/DLQ，不能影响点赞、收藏、评论和关注主请求。
@@ -157,6 +158,7 @@ POST /api/recommendations/views/{articleId}
 - Modify: `script.sql`
 - Modify: `src/main/java/cumt/zongzuo/community/config/RabbitConfig.java`
 - Modify: `src/main/resources/application.yml`
+- Modify: `pom.xml`
 - Test: `src/test/java/cumt/zongzuo/community/recommendation/RecommendationPolicyTest.java`
 - Test: `src/test/java/cumt/zongzuo/community/security/SecurityIntegrationTest.java`
 
@@ -217,7 +219,7 @@ public class RecommendationProperties {
 }
 ```
 
-Create `UserArticleEvent` with `@TableName("user_article_event")`, `IdType.AUTO`, `Long userId/articleId/targetAuthorId`, `String eventType/dedupeKey/source`, and `LocalDateTime occurredAt/createTime`. The mapper is exactly `interface UserArticleEventMapper extends BaseMapper<UserArticleEvent> {}`. Add `@EnableConfigurationProperties(RecommendationProperties.class)` to the properties class. Add `recommendation.event.queue` and its `.dlq` using the existing `workQueue`, `deadLetterQueue`, and `deadLetterBinding` helpers. Add:
+Create `UserArticleEvent` with `@TableName("user_article_event")`, `IdType.AUTO`, `Long userId/articleId/targetAuthorId`, `String eventType/dedupeKey/source`, and `LocalDateTime occurredAt/createTime`. The mapper is exactly `interface UserArticleEventMapper extends BaseMapper<UserArticleEvent> {}`. Add `@EnableConfigurationProperties(RecommendationProperties.class)` to the properties class. Change `<java.version>` in `pom.xml` from `17` to `21`. Add `recommendation.event.queue` and its `.dlq` using the existing `workQueue`, `deadLetterQueue`, and `deadLetterBinding` helpers. Add:
 
 ```yaml
 recommendation:
@@ -243,7 +245,7 @@ Expected: PASS; Docker-backed test infrastructure initializes the appended schem
 - [ ] **Step 5: Commit the independently usable foundation**
 
 ```bash
-git add script.sql src/main/java/cumt/zongzuo/community/config/RabbitConfig.java src/main/java/cumt/zongzuo/community/recommendation src/main/resources/application.yml src/test/java/cumt/zongzuo/community/recommendation src/test/java/cumt/zongzuo/community/security/SecurityIntegrationTest.java
+git add pom.xml script.sql src/main/java/cumt/zongzuo/community/config/RabbitConfig.java src/main/java/cumt/zongzuo/community/recommendation src/main/resources/application.yml src/test/java/cumt/zongzuo/community/recommendation src/test/java/cumt/zongzuo/community/security/SecurityIntegrationTest.java
 git commit -m "feat: add recommendation event foundation"
 ```
 
@@ -314,7 +316,7 @@ public class RecommendationEventPublisher {
 }
 ```
 
-Create action keys that have deterministic business identity and cannot collide: `like:{userId}:article:{articleId}:{yyyyMMddHHmmssSSS}` only when `isLike` is true; `collect:{favoriteId}` after insert; `comment:{commentId}` after `save`; `follow:{followId}` after `save`; view keys are implemented in Task 4. Pass `source` as `article_detail`, `favorite`, `comment`, or `follow`. Keep existing notification and business queues unchanged. Do not emit inverse events for unlikes, unfavorites or unfollows in V1.
+Create action keys that have deterministic business identity and cannot collide: `like:{userId}:article:{articleId}:{yyyyMMddHHmmssSSS}` only when `isLike` is true; `collect:{favoriteId}` after insert; `comment:{commentId}` after `save`; `follow:{followId}` after `save`; view keys are implemented in Task 5. Pass `source` as `article_detail`, `favorite`, `comment`, or `follow`. Keep existing notification and business queues unchanged. Do not emit inverse events for unlikes, unfavorites or unfollows in V1.
 
 - [ ] **Step 4: Run focused tests to verify they pass**
 
@@ -378,15 +380,16 @@ Implement the listener with no swallowed exception so configured retry/DLQ remai
 ```java
 @RabbitListener(queues = RecommendationEventPublisher.QUEUE)
 public void consume(RecommendationEventCommand command) {
-    if (!eventMapper.exists(new LambdaQueryWrapper<UserArticleEvent>()
-            .eq(UserArticleEvent::getDedupeKey, command.dedupeKey()))) {
+    try {
         eventMapper.insert(toEntity(command));
-        profileService.apply(command);
+    } catch (DuplicateKeyException duplicate) {
+        log.debug("Recommendation fact already exists: {}", command.dedupeKey());
     }
+    profileService.rebuildProfile(command.userId());
 }
 ```
 
-Replace the non-atomic `exists` plus `insert` race with the table's unique key as the authority: catch only `DuplicateKeyException` around `insert` and return; any other exception must propagate. `apply` loads the article's tag names and author. For every tag/author score, use:
+Use the table's unique key as the authority: catch only `DuplicateKeyException` around `insert`, then always rebuild that user's profile from MySQL facts. Any other database or Redis exception must propagate so RabbitMQ retries and ultimately routes to the DLQ. Rebuilding deletes both Redis profile keys, loads the user's facts from the last 30 days in ascending time order, and recalculates tag and author scores; this makes a retry safe even when a previous attempt inserted MySQL successfully but failed partway through Redis updates. For every tag/author score, use:
 
 ```java
 double decay = Math.exp(-Math.log(2D) * daysBetween / 14D);
@@ -395,7 +398,7 @@ redisTemplate.opsForZSet().incrementScore(tagKey(userId), tagName, delta);
 redisTemplate.expire(tagKey(userId), properties.getProfileTtlDays(), TimeUnit.DAYS);
 ```
 
-Use the same 30-day window and formula in `rebuildProfile`; delete both profile keys first, load `user_article_event` newer than `now - profileWindowDays`, then replay in ascending `occurredAt` order. `FOLLOW_AUTHOR` updates only the author zset. Article-bearing events update both tags and author zsets.
+Use the same 30-day window and formula in `rebuildProfile`; build replacement scores in temporary Redis sorted sets, set their TTL, then atomically rename them over `recommendation:tag:{userId}` and `recommendation:author:{userId}` only after the complete replay succeeds. `FOLLOW_AUTHOR` updates only the temporary author zset. Article-bearing events update both temporary tag and author zsets. This avoids exposing a half-rebuilt profile.
 
 - [ ] **Step 4: Run focused integration tests to verify they pass**
 
@@ -423,7 +426,7 @@ git commit -m "feat: build recommendation profiles from events"
 
 **Interfaces:**
 - Consumes Task 3's profile reads and existing `ElasticsearchOperations`.
-- Produces `List<RecommendationCandidate> recallAndRank(Long userId, Set<Long> shownArticleIds, int limit)` for Task 5.
+- Produces `List<RecommendationCandidate> recallAndRank(Long userId, Set<Long> shownArticleIds, int limit)` and `RecommendationCandidate assembleFeatures(Long userId, Article article)` for Task 5.
 
 - [ ] **Step 1: Write failing pure recall/ranking tests**
 
