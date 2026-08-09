@@ -34,6 +34,26 @@ class SecurityIntegrationTest extends IntegrationTestSupport {
     }
 
     @Test
+    void recommendationFeedRequiresAuthentication() {
+        ResponseEntity<String> response = restTemplate.getForEntity(
+                url("/api/recommendations/feed"), String.class);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(401);
+    }
+
+    @Test
+    void recommendationViewRequiresAuthentication() {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+
+        ResponseEntity<String> response = restTemplate.postForEntity(
+                url("/api/recommendations/views/1"),
+                new org.springframework.http.HttpEntity<>("{}", headers), String.class);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(401);
+    }
+
+    @Test
     void bearerTokenAuthenticatesProtectedEndpointWithoutLegacyHeader() {
         ResponseEntity<String> response = restTemplate.exchange(
                 url("/api/message/unread"), HttpMethod.GET,

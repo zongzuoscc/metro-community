@@ -3,6 +3,7 @@ package cumt.zongzuo.community.recommendation.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import cumt.zongzuo.community.recommendation.entity.RecommendationEventOutbox;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
@@ -12,6 +13,18 @@ import java.util.List;
 
 @Mapper
 public interface RecommendationEventOutboxMapper extends BaseMapper<RecommendationEventOutbox> {
+
+    @Insert("""
+            INSERT INTO recommendation_event_outbox
+                (user_id, article_id, target_author_id, event_type, occurred_at, dedupe_key,
+                 source, status, retry_count, next_attempt_at, create_time, update_time)
+            VALUES
+                (#{row.userId}, #{row.articleId}, #{row.targetAuthorId}, #{row.eventType},
+                 #{row.occurredAt}, #{row.dedupeKey}, #{row.source}, #{row.status},
+                 #{row.retryCount}, #{row.nextAttemptAt}, #{row.createTime}, #{row.updateTime})
+            ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)
+            """)
+    int insertViewIfAbsent(@Param("row") RecommendationEventOutbox row);
 
     @Select("""
             SELECT * FROM recommendation_event_outbox

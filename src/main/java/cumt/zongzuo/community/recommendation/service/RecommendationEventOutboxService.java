@@ -15,4 +15,9 @@ public class RecommendationEventOutboxService {
     public void enqueue(RecommendationEventCommand command) {
         mapper.insert(RecommendationEventOutbox.pending(command));
     }
+
+    /** View events use request-time daily idempotency without changing strict business-action enqueueing. */
+    public void enqueueViewIfAbsent(RecommendationEventCommand command) {
+        mapper.insertViewIfAbsent(RecommendationEventOutbox.pending(command));
+    }
 }

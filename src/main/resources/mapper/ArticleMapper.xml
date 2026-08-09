@@ -74,4 +74,35 @@
           AND a.is_deleted = 0
     </select>
 
+    <select id="selectPublishedChronological" resultType="cumt.zongzuo.community.entity.Article">
+        SELECT a.*
+        FROM article a
+        WHERE a.status = 1
+          AND a.is_deleted = 0
+        <if test="beforeCreateTime != null and beforeId != null">
+          AND (a.create_time &lt; #{beforeCreateTime}
+               OR (a.create_time = #{beforeCreateTime} AND a.id &lt; #{beforeId}))
+        </if>
+        ORDER BY a.create_time DESC, a.id DESC
+        LIMIT #{limit}
+    </select>
+
+    <select id="selectPublishedChronologicalIds" resultType="java.lang.Long">
+        SELECT a.id
+        FROM article a
+        WHERE a.status = 1
+          AND a.is_deleted = 0
+        ORDER BY a.create_time DESC, a.id DESC
+        LIMIT #{limit}
+    </select>
+
+    <select id="selectPublicById" resultType="cumt.zongzuo.community.entity.Article">
+        SELECT a.*
+        FROM article a
+        WHERE a.id = #{articleId}
+          AND a.status = 1
+          AND a.is_deleted = 0
+        LIMIT 1
+    </select>
+
 </mapper>

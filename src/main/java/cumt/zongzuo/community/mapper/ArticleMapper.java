@@ -7,6 +7,7 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
 import java.util.Collection;
+import java.time.LocalDateTime;
 import java.util.List;
 
 @Mapper
@@ -37,4 +38,12 @@ public interface ArticleMapper extends BaseMapper<Article> {
                                           @Param("limit") int limit);
 
     List<Article> selectPublishedByIds(@Param("articleIds") Collection<Long> articleIds);
+
+    List<Article> selectPublishedChronological(@Param("beforeCreateTime") LocalDateTime beforeCreateTime,
+                                               @Param("beforeId") Long beforeId,
+                                               @Param("limit") int limit);
+
+    List<Long> selectPublishedChronologicalIds(@Param("limit") int limit);
+
+    Article selectPublicById(@Param("articleId") Long articleId);
 }

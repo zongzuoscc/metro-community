@@ -237,3 +237,6 @@ CREATE TABLE recommendation_exposure (
     INDEX idx_exposure_user_time (user_id, exposed_at DESC),
     INDEX idx_exposure_article_time (article_id, exposed_at DESC)
 ) COMMENT='推荐真实曝光和训练特征快照';
+
+CREATE INDEX idx_article_recommendation_feed
+    ON article (status, is_deleted, create_time DESC, id DESC);

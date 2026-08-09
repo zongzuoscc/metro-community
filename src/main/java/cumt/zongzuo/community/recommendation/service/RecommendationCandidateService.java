@@ -125,6 +125,21 @@ public class RecommendationCandidateService {
         return assembleFeatures(candidate, tagProfile, authorProfile, recentlyInteracted);
     }
 
+    /**
+     * Builds the feature snapshot for chronological delivery without consulting
+     * user profile Redis. Cold-start and fallback must remain available when the
+     * recommendation data plane is unavailable.
+     */
+    public RecommendationCandidate assembleChronologicalFeatures(Article article) {
+        if (article == null) {
+            throw new IllegalArgumentException("article must not be null");
+        }
+        return RecommendationCandidate.unranked(article, Set.of(), Set.of(),
+                0D, 0D, 0D,
+                RecommendationRankingService.normalizeHeat(rawHeat(article)),
+                freshness(article.getCreateTime()), 0D);
+    }
+
     public List<Article> recallSimilar(Long userId) {
         return recallSimilar(userId, Set.of());
     }
