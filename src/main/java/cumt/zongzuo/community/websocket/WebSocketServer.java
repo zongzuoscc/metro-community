@@ -2,6 +2,7 @@ package cumt.zongzuo.community.websocket;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import cumt.zongzuo.community.service.ChatService;
 import jakarta.websocket.CloseReason;
 import jakarta.websocket.OnClose;
 import jakarta.websocket.OnError;
@@ -24,15 +25,18 @@ public class WebSocketServer {
     private final WebSocketTicketService ticketService;
     private final WebSocketSessionRegistry sessionRegistry;
     private final ObjectMapper objectMapper;
+    private final ChatService chatService;
 
     private Long userId;
 
     public WebSocketServer(WebSocketTicketService ticketService,
                            WebSocketSessionRegistry sessionRegistry,
-                           ObjectMapper objectMapper) {
+                           ObjectMapper objectMapper,
+                           ChatService chatService) {
         this.ticketService = ticketService;
         this.sessionRegistry = sessionRegistry;
         this.objectMapper = objectMapper;
+        this.chatService = chatService;
     }
 
     @OnOpen
@@ -78,12 +82,7 @@ public class WebSocketServer {
             Long toId = msgObj.get("toId").asLong();
             String content = msgObj.get("content").asText();
 
-            if (toId == 9999L) {
-                ChatUtils.saveMessageAsync(userId, toId, content);
-                ChatUtils.handleAiChatAsync(userId, content, session, objectMapper);
-                return;
-            }
-
+            chatService.sendChat(userId, toId, content);
             Session toSession = sessionRegistry.find(toId);
             if (toSession != null && toSession.isOpen()) {
                 ObjectNode pushMsg = objectMapper.createObjectNode();
@@ -94,8 +93,6 @@ public class WebSocketServer {
             } else {
                 log.info("用户{}不在线", toId);
             }
-
-            ChatUtils.saveMessageAsync(userId, toId, content);
         } catch (Exception exception) {
             log.warn("WebSocket message processing failed: {}", exception.getClass().getSimpleName());
         }
