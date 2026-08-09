@@ -412,7 +412,11 @@ git commit -m "feat(ai): enforce capability budgets and telemetry"
 **Files:**
 
 - Create: `src/main/java/cumt/zongzuo/community/ai/moderation/ManualReviewRoutingService.java`
+- Create: `src/main/java/cumt/zongzuo/community/ai/moderation/LegacyManualReviewRoutingService.java`
 - Create: `src/main/java/cumt/zongzuo/community/ai/moderation/LegacyModerationSubmissionConsumer.java`
+- Create: `src/main/java/cumt/zongzuo/community/ai/moderation/ModerationMetrics.java`
+- Modify: `src/main/java/cumt/zongzuo/community/mapper/ArticleMapper.java`
+- Modify: `src/main/java/cumt/zongzuo/community/service/impl/ArticleServiceImpl.java`
 - Create: `src/test/java/cumt/zongzuo/community/ai/moderation/ModerationFallbackIntegrationTest.java`
 - Modify: `src/test/java/cumt/zongzuo/community/security/SecurityIntegrationTest.java`
 
@@ -428,7 +432,11 @@ In stage A, `article.status=2 && is_deleted=0` is the existing human-pending sta
 
 - [ ] **Step 1: Write real-container fallback tests**
 
-Insert articles in status 2, invoke the Rabbit consumer with AI off, missing Key and an unavailable local stub Provider configuration, then assert status remains 2, no ES sync/publish decision is emitted, the article remains visible to `/api/article/admin/pending`, and a human administrator can still approve through the existing admin API. Also assert deleted/non-pending articles are ignored idempotently.
+Use real Testcontainers MySQL and RabbitMQ. The Stage A consumer is unconditional manual-only: prove the same status-2 outcome with AI all-off/no-Key and with moderation enabled against a local 503 stub, and assert the stub receives zero requests. Publish a real Long articleId to `article.audit.queue`, start only the listener with id `legacyModerationSubmissionConsumer`, await its ACK/drain, and assert no ES or notification decision is emitted and the article remains visible to `/api/article/admin/pending`.
+
+Cover duplicate delivery, deleted status-2 and statuses 0/1/3 as idempotent no-ops; a missing row must exhaust the existing bounded retry and reach the real audit DLQ because the legacy producer can publish before its database transaction commits. Assert the pending query excludes deleted rows. Prove an administrator can approve or reject exactly once, repeated identical decisions are idempotent without duplicate side effects, and two concurrent opposite decisions yield one winner, one HTTP 409 and one set of downstream messages.
+
+The integration base disables all listeners, so start/stop only the named moderation container, hold a resource lock for the shared queues, purge audit/DLQ/ES/notification queues around the class, use unique high IDs, and use Awaitility rather than sleeps. Extend security coverage for audit queue/DLQ topology and unauthenticated/user/admin access without changing legacy `Result` response shapes.
 
 - [ ] **Step 2: Run red fallback tests**
 
@@ -438,18 +446,22 @@ Expected: FAIL because the legacy consumer was removed and no explicit fallback 
 
 - [ ] **Step 3: Implement fail-closed legacy routing**
 
-The consumer must call `routeLegacyArticle(articleId, "AI_FOUNDATION_MANUAL_ONLY")` and ACK only after it verifies the current row. The service never calls `auditArticle`, never changes status to 1/3, and records `moderation.pending.age`/fallback outcome. Database/transient consumer failure is rethrown for the existing bounded Rabbit retry/DLQ; even after DLQ, the source row remains status 2 and therefore visible to administrators.
+The listener is always registered and is not conditional on AI flags. It calls only `routeLegacyArticle(articleId, "AI_FOUNDATION_MANUAL_ONLY")`; it must never inject or invoke `AiChatGateway`, `AiCapabilityExecutor`, Provider flags or `auditArticle`. Use normal container AUTO acknowledgement. Null/invalid IDs, missing rows and database failures are rethrown for the existing bounded Rabbit retry/DLQ; verified deleted/non-pending rows ACK as idempotent no-ops. The read-only routing service never changes status to 1/3 and records only low-cardinality `moderation.fallback.count` and `moderation.pending.age` metrics; logs/tags never include title, author or content. Even after DLQ, the MySQL source row remains the manual queue truth whenever it exists in status 2.
+
+Harden the existing administrator path without introducing revisions or Outbox: pending means exactly `status=2 AND is_deleted=0`, ordered by `create_time ASC,id ASC`. Remove the no-principal Metro-AI/9999 branch. Apply decisions with one conditional update `WHERE id=? AND status=2 AND is_deleted=0`; only the winner sends ES/notification and clears cache. A repeated identical decision returns idempotently without side effects; missing/deleted/opposite/already-other-state decisions return legacy HTTP 409. Keep the existing transaction and downstream mechanisms. This only closes the legacy state race; do not claim it solves content TOCTOU before Stage B revisions.
+
+Do not add `article_revision`, moderation job/attempt tables, durable fallback records, Outbox/Inbox, content hashes, model results or automatic PASS/REJECT in this task.
 
 - [ ] **Step 4: Run green fallback/manual tests**
 
 Run: `./mvnw -Dtest=ModerationFallbackIntegrationTest,SecurityIntegrationTest test`
 
-Expected: PASS; disabled/unavailable AI never publishes/rejects and manual review remains functional.
+Expected: PASS; disabled/unavailable AI never reaches a Provider or publishes/rejects, the real queue is consumed or DLQ-routed as contracted, deleted rows are absent from pending, and the conditional manual decision path is idempotent under concurrency.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/main/java/cumt/zongzuo/community/ai/moderation src/test/java/cumt/zongzuo/community/ai/moderation src/test/java/cumt/zongzuo/community/security/SecurityIntegrationTest.java
+git add src/main/java/cumt/zongzuo/community/ai/moderation src/main/java/cumt/zongzuo/community/mapper/ArticleMapper.java src/main/java/cumt/zongzuo/community/service/impl/ArticleServiceImpl.java src/test/java/cumt/zongzuo/community/ai/moderation src/test/java/cumt/zongzuo/community/security/SecurityIntegrationTest.java
 git commit -m "fix(moderation): fail closed to manual review"
 ```
 
