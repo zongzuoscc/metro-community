@@ -43,6 +43,11 @@ vi.mock('element-plus', () => ({
 const slotStub = { template: '<div><slot /><slot name="dropdown" /></div>' }
 const buttonStub = { template: '<button @click="$emit(\'click\')"><slot /></button>' }
 const cardStub = { template: '<article><slot /></article>' }
+const inputStub = {
+  props: ['modelValue', 'placeholder'],
+  emits: ['update:modelValue'],
+  template: '<input :value="modelValue" :placeholder="placeholder" @input="$emit(\'update:modelValue\', $event.target.value)" />'
+}
 
 let wrapper
 let infiniteLoader
@@ -68,7 +73,7 @@ const mountHome = () => {
         ElDropdownMenu: slotStub,
         ElEmpty: slotStub,
         ElIcon: slotStub,
-        ElInput: { template: '<input />' },
+        ElInput: inputStub,
         ElSkeleton: slotStub
       },
       directives: {
@@ -117,6 +122,62 @@ afterEach(() => {
 })
 
 describe('Home recommendation and latest feeds', () => {
+  it('does not render an empty loading panel after an empty feed settles', async () => {
+    chronologicalResponses.push([])
+
+    mountHome()
+    await flushPromises()
+
+    expect(wrapper.find('.loading-state').exists()).toBe(false)
+  })
+
+  it('renders untrusted feed text without creating executable HTML elements', async () => {
+    chronologicalResponses.push([{
+      id: 30,
+      title: '<img src=x onerror=alert(1)>',
+      summary: '<script>alert(2)</script>',
+      createTime: '2026-08-09T12:00:00'
+    }])
+
+    mountHome()
+    await flushPromises()
+
+    expect(wrapper.get('.title').text()).toBe('<img src=x onerror=alert(1)>')
+    expect(wrapper.find('.title img').exists()).toBe(false)
+    expect(wrapper.find('.text-summary script').exists()).toBe(false)
+  })
+
+  it('keeps mobile recommendation, latest, hot, follow, and search controls reachable', async () => {
+    chronologicalResponses.push(
+      [{ id: 31, title: '移动推荐流', createTime: '2026-08-09T12:00:00' }],
+      [{ id: 32, title: '移动最新流', createTime: '2026-08-09T11:00:00' }]
+    )
+    mountHome()
+    await flushPromises()
+
+    const mobileTabs = wrapper.findAll('.mobile-feed-tab')
+    expect(mobileTabs.map((tab) => tab.text())).toEqual(['推荐', '最新', '热榜', '关注'])
+    expect(wrapper.find('.mobile-feed-search').exists()).toBe(true)
+
+    await mobileTabs[1].trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('移动最新流')
+    expect(wrapper.text()).not.toContain('移动推荐流')
+
+    mocks.searchArticles.mockResolvedValueOnce({
+      code: 200,
+      data: { records: [{ id: 33, title: '移动搜索结果' }] }
+    })
+    const mobileSearch = wrapper.get('.mobile-feed-search')
+    await mobileSearch.setValue('移动关键词')
+    await mobileSearch.trigger('keydown', { key: 'Enter' })
+    await flushPromises()
+
+    expect(mocks.searchArticles).toHaveBeenCalledWith('移动关键词', 1)
+    expect(wrapper.text()).toContain('移动搜索结果')
+  })
+
   it('uses independent cursors, renders personalized reasons, and routes only recommendation exposure IDs', async () => {
     localStorage.setItem('user', JSON.stringify({ id: 1001, username: 'tester' }))
     localStorage.setItem('token', 'real-local-token')

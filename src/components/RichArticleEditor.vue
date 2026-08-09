@@ -202,7 +202,7 @@
     <div v-if="legacyProtected" class="article-editor__legacy-warning" role="alert">
       <strong>原文保护已开启</strong>
       <p>
-        该文章含有当前编辑器无法无损处理的原始 HTML。自动保存和发布已暂停，请先展开并备份原始 Markdown。
+        该文章含有当前编辑器无法无损处理的原始 HTML 或不安全的内嵌图片。自动保存和发布已暂停，请先展开并备份原始 Markdown。
       </p>
       <details>
         <summary>查看并复制原始 Markdown</summary>
@@ -251,9 +251,12 @@ const props = defineProps({
 
 const emit = defineEmits(['update:modelValue', 'upload-image', 'word-count', 'legacy-protection'])
 const imageInput = ref(null)
-const initialMarkdown = sanitizeMarkdownImageDestinations(props.modelValue)
-const legacySource = ref(initialMarkdown)
-const legacyProtected = ref(hasUnsupportedRawHtml(initialMarkdown))
+const initialRawMarkdown = String(props.modelValue ?? '')
+const initialMarkdown = sanitizeMarkdownImageDestinations(initialRawMarkdown)
+const legacySource = ref(initialRawMarkdown)
+const legacyProtected = ref(
+  initialMarkdown !== initialRawMarkdown || hasUnsupportedRawHtml(initialRawMarkdown),
+)
 
 function countWords(editorInstance) {
   const text = editorInstance.getText().trim()
@@ -320,10 +323,11 @@ const editor = useEditor({
 watch(
   () => props.modelValue,
   value => {
-    const sanitizedValue = sanitizeMarkdownImageDestinations(value)
-    const nextLegacyProtected = hasUnsupportedRawHtml(sanitizedValue)
+    const rawValue = String(value ?? '')
+    const sanitizedValue = sanitizeMarkdownImageDestinations(rawValue)
+    const nextLegacyProtected = sanitizedValue !== rawValue || hasUnsupportedRawHtml(rawValue)
 
-    legacySource.value = sanitizedValue
+    legacySource.value = rawValue
     if (legacyProtected.value !== nextLegacyProtected) {
       legacyProtected.value = nextLegacyProtected
       emit('legacy-protection', nextLegacyProtected)
@@ -343,7 +347,7 @@ function convertLegacyContent() {
   if (!editor.value || !legacyProtected.value) return
 
   const accepted = window.confirm(
-    '转换后，当前编辑器不支持的 HTML 和媒体标记将从文章中移除。请确认你已备份原始 Markdown。',
+    '转换后，当前编辑器不支持的 HTML、媒体标记和不安全内嵌图片将从文章中移除。请确认你已备份原始 Markdown。',
   )
   if (!accepted) return
 

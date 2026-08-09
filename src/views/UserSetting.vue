@@ -101,6 +101,7 @@ import { ref, onMounted, reactive, computed } from 'vue' // 【核心修复 2】
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '../utils/request'
+import { closeWebSocket } from '../utils/websocket'
 
 const router = useRouter()
 const loading = ref(false)
@@ -198,6 +199,7 @@ const changePassword = () => {
         if(res.code === 200) {
           ElMessage.success('密码修改成功，请重新登录')
           // 强制退出
+          closeWebSocket()
           localStorage.clear()
           setTimeout(() => router.push('/login'), 1500)
         } else {
@@ -223,6 +225,7 @@ const handleForget = () => {
         type: 'warning'
       }
   ).then(() => {
+    closeWebSocket()
     localStorage.clear()
     ElMessage.success('已退出登录，正在前往重置页面...')
     setTimeout(() => {

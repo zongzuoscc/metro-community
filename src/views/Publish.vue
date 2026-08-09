@@ -9,7 +9,22 @@
       <div class="publish-header__spacer" aria-hidden="true"></div>
     </header>
 
-    <div class="publish-layout">
+    <section v-if="!articleEditReady" class="editor-load-state" aria-live="polite">
+      <template v-if="articleLoadState === 'loading'">
+        <p class="editor-load-state__title">正在读取文章</p>
+        <p>完成前编辑与发布入口保持锁定，避免服务端内容覆盖本地输入。</p>
+      </template>
+      <template v-else>
+        <p class="editor-load-state__title">文章读取失败</p>
+        <p>尚未进入编辑状态，不会把当前页面误发布为一篇新文章。</p>
+        <div class="editor-load-state__actions">
+          <el-button @click="retryLoadArticle">重新加载</el-button>
+          <el-button type="primary" @click="$router.go(-1)">返回上一页</el-button>
+        </div>
+      </template>
+    </section>
+
+    <div v-else class="publish-layout">
       <aside class="editor-meta" aria-label="文章信息">
         <div class="editor-meta__section editor-meta__status" :class="`is-${draftStatus.tone}`" aria-live="polite">
           <span class="editor-meta__status-dot" aria-hidden="true"></span>
@@ -85,14 +100,20 @@
       </main>
     </div>
 
-    <footer class="footer-actions">
+    <footer v-if="articleEditReady" class="footer-actions">
       <div class="footer-actions__content">
-        <p class="footer-actions__tip">{{ isEdit ? '修改会在发布后更新文章内容' : '草稿会保存在你的账号中' }}</p>
+        <p class="footer-actions__tip">
+          {{ saveCoordinator.state.publishOutdated
+            ? '提交期间产生了新修改，请再次发布；为避免撤回审核中的版本，草稿保存已暂停'
+            : (!canAutosaveCurrentArticle
+              ? '已发布或审核中的文章仅在再次发布后更新；编辑期间不会自动撤回为草稿'
+              : (isEdit ? '修改会在发布后更新文章内容' : '草稿会保存在你的账号中')) }}
+        </p>
         <div class="footer-actions__buttons">
           <el-button
             size="large"
             :loading="saving && !publishing"
-            :disabled="saving || publishing"
+            :disabled="saving || publishing || saveCoordinator.state.publishOutdated || !canAutosaveCurrentArticle"
             @click="handleSaveDraft"
           >
             保存草稿
@@ -108,7 +129,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import { ArrowLeft, Plus } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import RichArticleEditor from '../components/RichArticleEditor.vue'
@@ -117,15 +138,19 @@ import { getArticleForEdit, publishArticle, saveDraft } from '../api/article'
 import { getHotTags } from '../api/tag'
 import { nextDraftState } from '../utils/draftState'
 import { createArticleSaveCoordinator } from '../utils/articleSaveCoordinator'
+import { canAutosaveArticleDraft, isArticleEditReady, shouldConfirmArticleLeave } from '../utils/articleEditPolicy'
 
 const AUTO_SAVE_DELAY = 1500
 
 const route = useRoute()
 const router = useRouter()
-const isEdit = ref(false)
+const isEdit = ref(Boolean(route.query.id))
 const wordCount = ref(0)
 const hotTags = ref([])
 const legacyContentProtected = ref(false)
+const loadedArticleStatus = ref(null)
+const articleLoadState = ref(isEdit.value ? 'loading' : 'ready')
+let articleLoadRequestVersion = 0
 
 const form = reactive({
   id: null,
@@ -141,6 +166,10 @@ const uploadHeaders = computed(() => {
 })
 
 const readingMinutes = computed(() => Math.max(1, Math.ceil(wordCount.value / 400)))
+const canAutosaveCurrentArticle = computed(() => (
+  canAutosaveArticleDraft(isEdit.value, loadedArticleStatus.value)
+))
+const articleEditReady = computed(() => isArticleEditReady(isEdit.value, articleLoadState.value))
 
 function hasRequiredContent() {
   return Boolean(form.title.trim() && form.content.trim())
@@ -159,7 +188,8 @@ function buildPayload() {
 const saveCoordinator = createArticleSaveCoordinator({
   autoSaveDelay: AUTO_SAVE_DELAY,
   hasRequiredContent,
-  canPersist: () => !legacyContentProtected.value,
+  canSaveDraft: () => !legacyContentProtected.value && articleEditReady.value && canAutosaveCurrentArticle.value,
+  canPublish: () => !legacyContentProtected.value && articleEditReady.value,
   buildPayload,
   saveDraft,
   publish: (payload) => publishArticle({ ...payload, isPublish: true }),
@@ -167,6 +197,9 @@ const saveCoordinator = createArticleSaveCoordinator({
     if (response.data) form.id = response.data
   },
   onDraftFailed: () => ElMessage.error('草稿保存失败，请检查网络后重试'),
+  onPublished: (response) => {
+    if (response.data) form.id = response.data
+  },
 })
 
 const saving = computed(() => saveCoordinator.state.saving)
@@ -178,8 +211,23 @@ const draftStatus = computed(() => nextDraftState(
 ))
 
 async function handleSaveDraft() {
+  if (!articleEditReady.value) {
+    ElMessage.warning('请先成功加载原文章，再进行保存')
+    return
+  }
+
   if (legacyContentProtected.value) {
     ElMessage.warning('原文保护中：请先备份原始 Markdown，再确认转换')
+    return
+  }
+
+  if (!canAutosaveCurrentArticle.value) {
+    ElMessage.warning('已发布或审核中的文章不会自动撤回为草稿，请使用“更新发布”提交修改')
+    return
+  }
+
+  if (saveCoordinator.state.publishOutdated) {
+    ElMessage.warning('提交期间有新修改，请再次发布，不能将审核中的版本静默撤回为草稿')
     return
   }
 
@@ -188,6 +236,11 @@ async function handleSaveDraft() {
 }
 
 async function handlePublish() {
+  if (!articleEditReady.value) {
+    ElMessage.warning('请先成功加载原文章，再进行更新发布')
+    return
+  }
+
   if (legacyContentProtected.value) {
     ElMessage.warning('原文保护中：请先备份原始 Markdown，再确认转换')
     return
@@ -247,22 +300,59 @@ async function loadHotTags() {
   }
 }
 
+function normalizedArticleId(id) {
+  return id == null ? null : String(Array.isArray(id) ? id[0] : id)
+}
+
+function isCurrentArticleLoad(id, requestVersion) {
+  return !saveCoordinator.state.disposed
+    && requestVersion === articleLoadRequestVersion
+    && normalizedArticleId(route.query.id) === normalizedArticleId(id)
+}
+
 async function loadArticle(id) {
+  const requestVersion = ++articleLoadRequestVersion
+  articleLoadState.value = 'loading'
+  loadedArticleStatus.value = null
   saveCoordinator.beginHydration()
   try {
     const response = await getArticleForEdit(id)
-    if (saveCoordinator.state.disposed) return
+    if (!isCurrentArticleLoad(id, requestVersion)) return
     const article = response.data
     form.id = article.id
     form.title = article.title || ''
     form.content = article.content || ''
     form.cover = article.cover || ''
     form.tags = article.tagList || []
+    loadedArticleStatus.value = article.status
+    articleLoadState.value = 'ready'
   } catch (error) {
-    if (!saveCoordinator.state.disposed) ElMessage.error('加载文章失败')
+    if (isCurrentArticleLoad(id, requestVersion)) {
+      articleLoadState.value = 'error'
+      ElMessage.error('加载文章失败')
+    }
   } finally {
-    await saveCoordinator.completeHydration()
+    if (isCurrentArticleLoad(id, requestVersion)) await saveCoordinator.completeHydration()
   }
+}
+
+function retryLoadArticle() {
+  const id = route.query.id
+  if (id && articleLoadState.value !== 'loading') loadArticle(id)
+}
+
+async function resetForNewArticle() {
+  articleLoadRequestVersion += 1
+  saveCoordinator.beginHydration()
+  isEdit.value = false
+  loadedArticleStatus.value = null
+  articleLoadState.value = 'ready'
+  form.id = null
+  form.title = ''
+  form.content = ''
+  form.cover = ''
+  form.tags = []
+  await saveCoordinator.completeHydration()
 }
 
 watch(
@@ -273,16 +363,49 @@ watch(
   { deep: true },
 )
 
+watch(
+  () => route.query.id,
+  id => {
+    if (id) {
+      isEdit.value = true
+      loadArticle(id)
+    } else {
+      resetForNewArticle()
+    }
+  },
+  { immediate: true },
+)
+
 onMounted(() => {
   loadHotTags()
-  const id = route.query.id
-  if (id) {
-    isEdit.value = true
-    loadArticle(id)
-  }
+  window.addEventListener('beforeunload', handleBeforeUnload)
 })
 
-onBeforeUnmount(saveCoordinator.dispose)
+function hasUnsavedArticleChanges() {
+  return shouldConfirmArticleLeave(saveCoordinator.state)
+}
+
+function handleBeforeUnload(event) {
+  if (!hasUnsavedArticleChanges()) return
+  event.preventDefault()
+  event.returnValue = ''
+}
+
+onBeforeRouteLeave(() => {
+  if (!hasUnsavedArticleChanges()) return true
+  return window.confirm('当前修改尚未保存，确定离开编辑页吗？')
+})
+
+onBeforeRouteUpdate((to, from) => {
+  if (normalizedArticleId(to.query.id) === normalizedArticleId(from.query.id)) return true
+  if (!hasUnsavedArticleChanges()) return true
+  return window.confirm('切换文章会丢失当前未保存修改，确定继续吗？')
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('beforeunload', handleBeforeUnload)
+  saveCoordinator.dispose()
+})
 </script>
 
 <style scoped lang="scss">
@@ -330,6 +453,33 @@ onBeforeUnmount(saveCoordinator.dispose)
   font-weight: 700;
   letter-spacing: 0.14em;
   text-transform: uppercase;
+}
+
+.editor-load-state {
+  width: min(680px, calc(100% - 2 * var(--space-4)));
+  margin: clamp(var(--space-7), 12vh, 120px) auto;
+  padding: clamp(var(--space-6), 6vw, 64px);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--paper-muted);
+  color: var(--ink-muted);
+  text-align: center;
+
+  p { margin: var(--space-2) 0; line-height: 1.7; }
+}
+
+.editor-load-state__title {
+  color: var(--ink);
+  font-family: "Songti SC", STSong, SimSun, serif;
+  font-size: clamp(24px, 4vw, 36px);
+  font-weight: 700;
+}
+
+.editor-load-state__actions {
+  display: flex;
+  justify-content: center;
+  gap: var(--space-3);
+  margin-top: var(--space-5);
 }
 
 .publish-layout {

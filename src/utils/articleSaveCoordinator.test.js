@@ -178,15 +178,22 @@ describe('article save coordinator', () => {
   it('keeps edits made during a deferred publication dirty and requires another publish', async () => {
     const firstPublish = deferred()
     const publishedPayloads = []
-    const form = { title: '标题', content: '提交时的正文' }
+    const savedPayloads = []
+    const form = { id: null, title: '标题', content: '提交时的正文' }
     const coordinator = createArticleSaveCoordinator({
-      autoSaveDelay: 10_000,
+      autoSaveDelay: 5,
       hasRequiredContent: () => Boolean(form.title && form.content),
       buildPayload: () => ({ ...form }),
-      saveDraft: async () => ({ data: 1 }),
+      saveDraft: async (payload) => {
+        savedPayloads.push(payload)
+        return { data: 1 }
+      },
       publish: (payload) => {
         publishedPayloads.push(payload)
         return firstPublish.promise
+      },
+      onPublished: (response) => {
+        form.id = response.data
       },
     })
 
@@ -196,17 +203,19 @@ describe('article save coordinator', () => {
 
     form.content = '发布期间新增的内容'
     coordinator.markChanged()
-    firstPublish.resolve({ data: true })
+    firstPublish.resolve({ data: 91 })
 
     await expect(publishing).resolves.toBe(false)
-    expect(publishedPayloads).toEqual([{ title: '标题', content: '提交时的正文' }])
+    expect(publishedPayloads).toEqual([{ id: null, title: '标题', content: '提交时的正文' }])
     expect(coordinator.state.publishOutdated).toBe(true)
     expect(coordinator.state.dirty).toBe(true)
+    await wait(15)
+    expect(savedPayloads).toEqual([])
 
     await expect(coordinator.requestPublish()).resolves.toBe(true)
     expect(publishedPayloads).toEqual([
-      { title: '标题', content: '提交时的正文' },
-      { title: '标题', content: '发布期间新增的内容' },
+      { id: null, title: '标题', content: '提交时的正文' },
+      { id: 91, title: '标题', content: '发布期间新增的内容' },
     ])
     expect(coordinator.state.publishOutdated).toBe(false)
     expect(coordinator.state.dirty).toBe(false)
@@ -245,6 +254,113 @@ describe('article save coordinator', () => {
     coordinator.markChanged()
     await wait(10)
     expect(savedPayloads).toEqual([{ title: '旧文章', content: '<iframe src="https://video.example/embed"></iframe>' }])
+    coordinator.dispose()
+  })
+
+  it('does not downgrade a submitted article to draft when the follow-up publish fails', async () => {
+    const firstPublish = deferred()
+    const savedPayloads = []
+    let publishAttempts = 0
+    const form = { id: null, title: '标题', content: '提交时的正文' }
+    const coordinator = createArticleSaveCoordinator({
+      autoSaveDelay: 5,
+      hasRequiredContent: () => Boolean(form.title && form.content),
+      buildPayload: () => ({ ...form }),
+      saveDraft: async (payload) => {
+        savedPayloads.push(payload)
+        return { data: payload.id }
+      },
+      publish: () => {
+        publishAttempts += 1
+        return publishAttempts === 1
+          ? firstPublish.promise
+          : Promise.reject(new Error('network unavailable'))
+      },
+      onPublished: (response) => {
+        form.id = response.data
+      },
+    })
+
+    coordinator.markChanged()
+    const initialPublishing = coordinator.requestPublish()
+    form.content = '发布期间新增的正文'
+    coordinator.markChanged()
+    firstPublish.resolve({ data: 92 })
+
+    await expect(initialPublishing).resolves.toBe(false)
+    await expect(coordinator.requestPublish()).resolves.toBe(false)
+    await wait(15)
+
+    expect(form.id).toBe(92)
+    expect(coordinator.state.publishOutdated).toBe(true)
+    expect(coordinator.state.dirty).toBe(true)
+    expect(savedPayloads).toEqual([])
+    coordinator.dispose()
+  })
+
+  it('does not silently withdraw an outdated publication through the draft endpoint', async () => {
+    const firstPublish = deferred()
+    const savedPayloads = []
+    const form = { id: null, title: '标题', content: '提交时的正文' }
+    const coordinator = createArticleSaveCoordinator({
+      autoSaveDelay: 5,
+      hasRequiredContent: () => Boolean(form.title && form.content),
+      buildPayload: () => ({ ...form }),
+      saveDraft: async (payload) => {
+        savedPayloads.push(payload)
+        return { data: payload.id ?? 93 }
+      },
+      publish: () => firstPublish.promise,
+      onPublished: (response) => {
+        form.id = response.data
+      },
+    })
+
+    coordinator.markChanged()
+    const publishing = coordinator.requestPublish()
+    form.content = '发布期间新增的正文'
+    coordinator.markChanged()
+    firstPublish.resolve({ data: 93 })
+    await expect(publishing).resolves.toBe(false)
+
+    await expect(coordinator.saveCurrentDraft()).resolves.toBe(false)
+    expect(coordinator.state.publishOutdated).toBe(true)
+
+    form.content = '等待再次发布的第三版'
+    coordinator.markChanged()
+    await wait(15)
+
+    expect(savedPayloads).toEqual([])
+    coordinator.dispose()
+  })
+
+  it('can block draft persistence for an already-published article without blocking republish', async () => {
+    const savedPayloads = []
+    const publishedPayloads = []
+    const form = { id: 94, title: '已发布文章', content: '编辑中的新正文' }
+    const coordinator = createArticleSaveCoordinator({
+      autoSaveDelay: 5,
+      hasRequiredContent: () => true,
+      canSaveDraft: () => false,
+      canPublish: () => true,
+      buildPayload: () => ({ ...form }),
+      saveDraft: async (payload) => {
+        savedPayloads.push(payload)
+        return { data: 94 }
+      },
+      publish: async (payload) => {
+        publishedPayloads.push(payload)
+        return { data: 94 }
+      },
+    })
+
+    coordinator.markChanged()
+    await wait(15)
+
+    await expect(coordinator.saveCurrentDraft()).resolves.toBe(false)
+    await expect(coordinator.requestPublish()).resolves.toBe(true)
+    expect(savedPayloads).toEqual([])
+    expect(publishedPayloads).toEqual([{ id: 94, title: '已发布文章', content: '编辑中的新正文' }])
     coordinator.dispose()
   })
 })

@@ -4,11 +4,14 @@ export function createArticleSaveCoordinator({
   autoSaveDelay,
   hasRequiredContent,
   canPersist = () => true,
+  canSaveDraft = canPersist,
+  canPublish = canPersist,
   buildPayload,
   saveDraft,
   publish,
   onDraftSaved = () => {},
   onDraftFailed = () => {},
+  onPublished = () => {},
 }) {
   const state = reactive({
     dirty: false,
@@ -37,7 +40,7 @@ export function createArticleSaveCoordinator({
   function scheduleAutoSave() {
     clearAutoSaveTimer()
 
-    if (state.disposed || state.hydrating || state.saving || publishRequested || !canPersist() || !hasRequiredContent()) return
+    if (state.disposed || state.hydrating || state.saving || state.publishOutdated || publishRequested || !canSaveDraft() || !hasRequiredContent()) return
 
     autoSaveTimer = globalThis.setTimeout(() => {
       autoSaveTimer = undefined
@@ -72,7 +75,7 @@ export function createArticleSaveCoordinator({
   }
 
   async function saveCurrentDraft() {
-    if (state.disposed || state.saving || publishRequested || inFlightPublish || !canPersist() || !hasRequiredContent()) return false
+    if (state.disposed || state.saving || state.publishOutdated || publishRequested || inFlightPublish || !canSaveDraft() || !hasRequiredContent()) return false
 
     clearAutoSaveTimer()
     const requestVersion = changeVersion
@@ -110,7 +113,8 @@ export function createArticleSaveCoordinator({
   async function publishCurrentArticle() {
     const requestVersion = changeVersion
     try {
-      await publish(buildPayload())
+      const response = await publish(buildPayload())
+      onPublished(response)
       savedVersion = requestVersion
       state.dirty = changeVersion !== savedVersion
       state.failed = false
@@ -124,12 +128,11 @@ export function createArticleSaveCoordinator({
   }
 
   function requestPublish() {
-    if (state.disposed || inFlightPublish || !canPersist() || !hasRequiredContent()) {
+    if (state.disposed || inFlightPublish || !canPublish() || !hasRequiredContent()) {
       return inFlightPublish || Promise.resolve(false)
     }
 
     clearAutoSaveTimer()
-    state.publishOutdated = false
     publishRequested = true
     state.publishing = true
     const currentPublish = (async () => {

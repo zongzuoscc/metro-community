@@ -84,6 +84,30 @@
     </div>
 
     <div class="main-container">
+      <section class="mobile-feed-controls" aria-label="移动端内容导航">
+        <nav class="mobile-feed-tabs" aria-label="内容流切换">
+          <button
+              v-for="item in mobileNavItems"
+              :key="item.value"
+              type="button"
+              class="mobile-feed-tab"
+              :class="{ active: activeNav === item.value }"
+              :aria-current="activeNav === item.value ? 'page' : undefined"
+              @click="switchNav(item.value)"
+          >
+            {{ item.label }}
+          </button>
+        </nav>
+        <el-input
+            v-model="searchText"
+            class="mobile-feed-search"
+            placeholder="搜索内容或用户..."
+            suffix-icon="Search"
+            clearable
+            @keydown.enter="handleSearch"
+        />
+      </section>
+
       <div class="feed-column">
         <el-card class="creation-card" shadow="never" v-if="activeNav === 'recommend'">
           <div class="creation-actions">
@@ -181,7 +205,7 @@
 
         </div>
 
-        <div class="loading-state">
+        <div v-if="loading || (noMore && (articleList.length > 0 || userList.length > 0))" class="loading-state">
           <el-skeleton v-if="loading" :rows="3" animated />
           <p v-if="noMore && (articleList.length > 0 || userList.length > 0)" class="no-more">—— 到底啦 ——</p>
         </div>
@@ -232,10 +256,18 @@ import { getHotRank, getDraftCount, getHotFeed, getFollowFeed, searchArticles } 
 import { getRecommendationFeed, toFeedCards } from '../api/recommendation'
 import { searchUsers } from '../api/user'
 import { createLatestRequestGuard } from '../utils/latestRequestGuard'
+import { closeWebSocket } from '../utils/websocket'
+import { highlightSafeHtml } from '../utils/highlightHtml'
 import {Monitor, Setting, SwitchButton, UserFilled} from '@element-plus/icons-vue'
 
 const router = useRouter()
 const route = useRoute() // 引入 route
+const mobileNavItems = Object.freeze([
+  { value: 'recommend', label: '推荐' },
+  { value: 'latest', label: '最新' },
+  { value: 'hot', label: '热榜' },
+  { value: 'follow', label: '关注' }
+])
 
 // 状态变量
 const activeNav = ref('recommend') // 'recommend', 'latest', 'hot', 'follow', 'search'
@@ -317,9 +349,7 @@ const clearSearch = () => {
 
 // 高亮关键词
 const highlightKeyword = (text) => {
-  if (activeNav.value !== 'search' || !currentSearchKeyword.value || !text) return text
-  const reg = new RegExp(currentSearchKeyword.value, 'gi')
-  return text.replace(reg, (match) => `<span style="color: #f56c6c; font-weight: bold;">${match}</span>`)
+  return highlightSafeHtml(text, currentSearchKeyword.value, activeNav.value === 'search')
 }
 
 const resetList = () => {
@@ -439,6 +469,7 @@ const handleCommand = (command) => {
     router.push('/settings')
   } else if (command === 'logout') {
     ElMessageBox.confirm('确定退出?', '提示').then(() => {
+      closeWebSocket()
       localStorage.clear()
       router.push('/login')
     }).catch(()=>{})
@@ -725,6 +756,7 @@ onUnmounted(() => {
 .loading-state { padding: 20px; text-align: center; background: #fff; }
 .no-more { color: #8590a6; font-size: 14px; padding: 20px 0; }
 .text-ellipsis { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.article-list :deep(.search-highlight) { color: var(--accent); font-weight: 650; background: #f9ece7; }
 
 .bell-badge {
   display: flex; align-items: center;
@@ -747,6 +779,7 @@ onUnmounted(() => {
 .navbar-right { margin-right: 0; gap: var(--space-4); }
 .navbar-right .user-area { gap: var(--space-4); }
 .main-container { width: min(1180px, calc(100% - 32px)); margin-top: 78px; gap: var(--space-5); }
+.mobile-feed-controls { display: none; }
 .feed-column { width: min(760px, 100%); }
 .feed-column .creation-card,
 .sidebar-column .sidebar-card,
@@ -775,7 +808,13 @@ onUnmounted(() => {
   .navbar-left .logo { margin-right: 0; }
   .navbar-right .action-btns { display: none; }
   .navbar-right .user-area { gap: var(--space-3); }
-  .main-container { width: 100%; padding: 0 var(--space-3); margin-top: 70px; }
+  .main-container { width: 100%; padding: 0 var(--space-3); margin-top: 70px; flex-direction: column; gap: var(--space-3); }
+  .mobile-feed-controls { display: grid; width: 100%; gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fffdf9; }
+  .mobile-feed-tabs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+  .mobile-feed-tab { min-height: 36px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--ink-muted); font: inherit; cursor: pointer; }
+  .mobile-feed-tab.active { background: #f4e1dc; color: var(--accent); font-weight: 600; }
+  .mobile-feed-search { width: 100%; }
+  .mobile-feed-search :deep(.el-input__wrapper) { border-radius: var(--radius-sm); background: var(--paper-muted); }
   .feed-column .article-list .feed-card { padding: var(--space-4); }
   .feed-column .article-list .feed-card .card-body { gap: var(--space-3); }
   .feed-column .article-list .feed-card .card-body .cover-box { width: 116px; height: 76px; }

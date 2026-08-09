@@ -2,6 +2,7 @@ import axios from 'axios'
 import { ElMessage } from 'element-plus'
 // 引入 router 以便跳转
 import router from '../router'
+import { closeWebSocket } from './websocket'
 
 const service = axios.create({
     baseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:18080',
@@ -36,14 +37,14 @@ service.interceptors.response.use(
         return res
     },
     error => {
-        if (error.config?.silent) return Promise.reject(error)
         // 【关键】处理 401 状态码
         if (error.response && error.response.status === 401) {
             ElMessage.error('登录已过期，请重新登录')
             localStorage.removeItem('token') // 清除脏数据
             localStorage.removeItem('user')
+            closeWebSocket()
             router.push('/login') // 强制跳转
-        } else {
+        } else if (!error.config?.silent) {
             ElMessage.error(error.message || '网络异常')
         }
         return Promise.reject(error)

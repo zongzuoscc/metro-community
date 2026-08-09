@@ -15,11 +15,11 @@ Metro Community 的 Vue 3 前端。它面向桌面端内容创作与社区浏览
 ## 前置条件
 
 - Node.js：建议使用项目锁定依赖可支持的当前 LTS 版本。
-- 已启动 Metro Community Java 后端及其依赖服务。后端默认监听 `http://localhost:8080`，启动方式与数据库、Redis、RabbitMQ、Elasticsearch 的环境变量说明见[后端 README](https://github.com/zongzuoscc/metro-community/blob/master/README.md)。
+- 已启动 Metro Community Java 21 后端及其依赖服务。项目的隔离本地配置让后端监听 `http://localhost:18080`，启动方式与 MySQL、Redis、RabbitMQ、Elasticsearch 的环境变量说明见[后端 README](https://github.com/zongzuoscc/metro-community/blob/master/README.md)。
 
-当前 `src/utils/request.js` 将 Axios 的 `baseURL` 设为 `http://localhost:8080`，所以浏览器会直接向该地址发起 API 请求。`vite.config.js` 同时保留了 `/api` 到同一地址的开发代理，供未来改用相对地址时使用；在现有实现中它不是必经路径。
+Axios 从 `VITE_API_BASE_URL` 读取后端地址，默认值为 `http://localhost:18080`。WebSocket 会从同一地址派生 `ws://localhost:18080/im/{token}`，HTTPS 环境会自动改用 `wss`，不再依赖硬编码的 8080 端口。`vite.config.js` 的开发代理由 `VITE_PROXY_TARGET` 控制。
 
-后端默认只允许 `http://localhost:5173` 的跨域来源，因此前端开发服务器也使用该端口。若修改前端端口，需要同步设置后端 `CORS_ALLOWED_ORIGINS`。
+前端隔离端口为 `15173`。后端启动时应设置 `CORS_ALLOWED_ORIGINS=http://localhost:15173,http://127.0.0.1:15173`；若修改前端端口，需要同步修改该配置。
 
 ## 本地启动
 
@@ -27,6 +27,7 @@ Metro Community 的 Vue 3 前端。它面向桌面端内容创作与社区浏览
 
 ```bash
 npm ci
+cp .env.example .env
 ```
 
 启动 Java 后端后，在此目录启动前端：
@@ -35,7 +36,14 @@ npm ci
 npm run dev -- --host 127.0.0.1
 ```
 
-在浏览器打开 `http://localhost:5173`。即使 Vite 绑定在 `127.0.0.1`，也应使用 `localhost` 访问页面，以匹配后端默认的 `CORS_ALLOWED_ORIGINS=http://localhost:5173`。登录后，前端会从 `localStorage` 读取既有 `token` 并通过 `token` 请求头发送给后端。后端也兼容标准的 Bearer Token，但前端不会自行生成认证信息。
+在浏览器打开 `http://localhost:15173`。登录后，前端会从 `localStorage` 读取既有 `token` 并通过 `token` 请求头发送给后端，同时建立同源配置的 WebSocket 连接。退出登录、密码重置或收到 401 时会主动关闭连接并取消重连。后端也兼容标准的 Bearer Token，但前端不会自行生成认证信息。
+
+## 首页推荐与最新流
+
+- 已登录用户的“推荐”调用 `GET /api/recommendations/feed`，使用服务端返回的不透明游标；只有 `PERSONALIZED` 模式展示推荐理由。
+- 访客的“推荐”和所有用户的“最新”都调用原有时间流接口。“最新”始终按发布时间展示，不受推荐模型影响。
+- 推荐卡片进入详情页时携带服务端曝光 ID。详情页累计前台可见 8 秒后，最多上报一次 `POST /api/recommendations/views/{articleId}`；页面隐藏时间不计入阈值。
+- 桌面导航和窄屏导航都保留推荐、最新、热榜、关注与搜索入口。窄屏文章编辑仍不在本轮范围内。
 
 ## 文章工作流
 
@@ -63,4 +71,4 @@ npm run preview
 ## 后续方向
 
 - 在不改变现有文章接口稳定性的前提下，为音视频及嵌入内容设计专用媒体 API 与数据模型。
-- 在真实用户浏览、互动和关注行为沉淀后，再接入可解释的个性化推荐排序；不以 mock 行为数据替代真实闭环。
+- 在真实流量和标签积累后评估更强的召回或排序模型，继续复用现有推荐接口和曝光事实，不以 mock 行为数据替代真实闭环。

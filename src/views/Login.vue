@@ -47,7 +47,7 @@
 
             <div class="actions-row">
               <el-checkbox v-model="rememberMe">记住我</el-checkbox>
-              <el-link type="primary" :underline="false" @click="$router.push('/reset-password')">
+              <el-link type="primary" underline="never" @click="$router.push('/reset-password')">
                 忘记密码？
               </el-link>
             </div>
@@ -75,6 +75,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Message, Lock } from '@element-plus/icons-vue'
 import request from '../utils/request'
+import { initWebSocket } from '../utils/websocket'
 
 const router = useRouter()
 const loading = ref(false)
@@ -114,6 +115,7 @@ const handleLogin = async () => {
           // 存储 Token 和 用户信息
           localStorage.setItem('token', userData.token)
           localStorage.setItem('user', JSON.stringify(userData))
+          initWebSocket(userData.token)
 
           ElMessage.success('登录成功，欢迎回来！')
 

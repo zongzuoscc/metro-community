@@ -78,6 +78,19 @@ describe('RichArticleEditor Markdown image sanitization', () => {
 })
 
 describe('RichArticleEditor legacy Markdown protection', () => {
+  it('protects image-only Markdown when sanitization would remove its destination', async () => {
+    const unsafeMarkdown = `![旧图](${svgDataUrl})`
+    wrapper = mount(RichArticleEditor, {
+      props: { modelValue: unsafeMarkdown },
+    })
+    await waitForEditor()
+
+    expect(wrapper.get('[role="alert"]').exists()).toBe(true)
+    expect(wrapper.get('textarea[readonly]').element.value).toBe(unsafeMarkdown)
+    expect(wrapper.emitted('legacy-protection')?.at(-1)).toEqual([true])
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+  })
+
   it('protects raw HTML loaded after the editor has mounted', async () => {
     const legacyMarkdown = '旧正文\n\n<iframe src="https://video.example/embed"></iframe>'
     wrapper = mount(RichArticleEditor, {
@@ -97,6 +110,7 @@ describe('RichArticleEditor legacy Markdown protection', () => {
   it('keeps raw HTML out of v-model until the author explicitly accepts conversion', async () => {
     const legacyMarkdown = [
       '# 旧文章',
+      `![旧图](${svgDataUrl})`,
       '<style>.legacy { color: red; }</style>',
       '<iframe src="https://video.example/embed"></iframe>',
     ].join('\n\n')

@@ -13,9 +13,12 @@ describe('narrow-screen navigation', () => {
     expect(chat).toMatch(/@media \(max-width: 700px\)[\s\S]*\.chat-main/)
   })
 
-  it('removes the space-hungry home controls before the 320px layout can overlap', () => {
+  it('replaces space-hungry desktop controls with reachable mobile feed and search controls', () => {
     const home = source('Home.vue')
 
+    expect(home).toContain('class="mobile-feed-controls"')
+    expect(home).toMatch(/\.mobile-feed-controls \{ display: none;/)
+    expect(home).toMatch(/@media \(max-width: 760px\)[\s\S]*\.mobile-feed-controls \{ display: grid;/)
     expect(home).toMatch(/@media \(max-width: 760px\)[\s\S]*\.navbar-right \.action-btns \{ display: none; \}/)
     expect(home).toMatch(/@media \(max-width: 400px\)[\s\S]*\.navbar-left \.logo \{ margin-right: 0;/)
   })
