@@ -76,6 +76,30 @@ class SecurityIntegrationTest extends IntegrationTestSupport {
     }
 
     @Test
+    void authenticatedRecommendationBindingFailuresReturnGeneric400WithoutOutbox() {
+        jdbcTemplate.update("DELETE FROM recommendation_event_outbox");
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(jwtService.generate(1001L));
+
+        ResponseEntity<String> invalidSize = restTemplate.exchange(
+                url("/api/recommendations/feed?size=abc"), HttpMethod.GET,
+                new org.springframework.http.HttpEntity<>(headers), String.class);
+        ResponseEntity<String> invalidArticleId = restTemplate.exchange(
+                url("/api/recommendations/views/not-a-long"), HttpMethod.POST,
+                new org.springframework.http.HttpEntity<>("{}", jsonHeaders(headers)), String.class);
+        ResponseEntity<String> invalidExposureId = restTemplate.exchange(
+                url("/api/recommendations/views/1"), HttpMethod.POST,
+                new org.springframework.http.HttpEntity<>("{\"exposureId\":\"abc\"}", jsonHeaders(headers)),
+                String.class);
+
+        assertGenericBadRequest(invalidSize, "abc");
+        assertGenericBadRequest(invalidArticleId, "not-a-long");
+        assertGenericBadRequest(invalidExposureId, "abc");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM recommendation_event_outbox", Integer.class)).isZero();
+    }
+
+    @Test
     void messageDeadLetterQueuesAreDeclared() {
         assertThat(amqpAdmin.getQueueProperties("like.task.queue.dlq")).isNotNull();
         assertThat(amqpAdmin.getQueueProperties("es.sync.queue.dlq")).isNotNull();
@@ -125,5 +149,19 @@ class SecurityIntegrationTest extends IntegrationTestSupport {
                 url("/api/file/upload"), new org.springframework.http.HttpEntity<>(body, headers), String.class);
 
         assertThat(response.getStatusCode().value()).isEqualTo(400);
+    }
+
+    private HttpHeaders jsonHeaders(HttpHeaders source) {
+        HttpHeaders copy = new HttpHeaders();
+        copy.putAll(source);
+        copy.setContentType(MediaType.APPLICATION_JSON);
+        return copy;
+    }
+
+    private void assertGenericBadRequest(ResponseEntity<String> response, String maliciousValue) {
+        assertThat(response.getStatusCode().value()).isEqualTo(400);
+        assertThat(response.getBody())
+                .contains("\"code\":400")
+                .doesNotContain(maliciousValue);
     }
 }

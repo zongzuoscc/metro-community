@@ -5,6 +5,8 @@ import cumt.zongzuo.community.entity.User;
 import cumt.zongzuo.community.mapper.ArticleMapper;
 import cumt.zongzuo.community.recommendation.config.RecommendationProperties;
 import cumt.zongzuo.community.recommendation.dto.RecommendationEventCommand;
+import cumt.zongzuo.community.recommendation.dto.RecommendationExposureDraft;
+import cumt.zongzuo.community.recommendation.dto.RecommendationFeatureSnapshot;
 import cumt.zongzuo.community.recommendation.dto.RecommendationFeedResponse;
 import cumt.zongzuo.community.recommendation.dto.RecommendationItem;
 import cumt.zongzuo.community.recommendation.dto.RecommendationMode;
@@ -129,12 +131,11 @@ public class RecommendationFeedService {
                 articlesById.put(article.getId(), article);
             }
         }
-        List<RecommendationItem> hydrated = pageItems.stream()
+        List<HydratedRecommendationItem> hydrated = pageItems.stream()
                 .filter(item -> articlesById.containsKey(item.articleId()))
-                .map(item -> new RecommendationItem(articlesById.get(item.articleId()),
-                        item.reason(), item.source(), null))
+                .map(item -> hydrate(item, articlesById.get(item.articleId())))
                 .toList();
-        enrichAuthors(hydrated.stream().map(RecommendationItem::article).toList());
+        enrichAuthors(hydrated.stream().map(item -> item.item().article()).toList());
         List<RecommendationItem> exposed = exposePage(sessionId, userId, hydrated);
         String nextCursor = end < session.items().size()
                 ? encode(sessionId + ":" + end)
@@ -149,8 +150,10 @@ public class RecommendationFeedService {
                 position == null ? null : position.articleId(), size);
         enrichAuthors(articles);
         String pageSessionId = fallbackPageSessionId(userId, position);
-        List<RecommendationItem> hydrated = articles.stream()
-                .map(article -> new RecommendationItem(article, null, CHRONOLOGICAL, null))
+        List<HydratedRecommendationItem> hydrated = articles.stream()
+                .map(article -> new HydratedRecommendationItem(
+                        new RecommendationItem(article, null, CHRONOLOGICAL, null),
+                        chronologicalSnapshot(article)))
                 .toList();
         List<RecommendationItem> exposed = exposePage(pageSessionId, userId, hydrated);
         String nextCursor = null;
@@ -162,14 +165,30 @@ public class RecommendationFeedService {
     }
 
     private List<RecommendationItem> exposePage(String sessionId, Long userId,
-                                                List<RecommendationItem> items) {
-        List<RecommendationCandidate> features = items.stream()
-                .map(item -> candidateService.assembleChronologicalFeatures(item.article()))
+                                                List<HydratedRecommendationItem> items) {
+        List<RecommendationExposureDraft> drafts = items.stream()
+                .map(item -> new RecommendationExposureDraft(
+                        item.item().article().getId(), item.item().source(), item.snapshot()))
                 .toList();
-        List<Long> exposureIds = exposureService.recordPage(sessionId, userId, features);
+        List<Long> exposureIds = exposureService.recordPage(sessionId, userId, drafts);
         return java.util.stream.IntStream.range(0, items.size())
-                .mapToObj(index -> items.get(index).withExposureId(exposureIds.get(index)))
+                .mapToObj(index -> items.get(index).item().withExposureId(exposureIds.get(index)))
                 .toList();
+    }
+
+    private HydratedRecommendationItem hydrate(RecommendationSessionItem sessionItem, Article article) {
+        RecommendationFeatureSnapshot snapshot = sessionItem.snapshot() == null
+                ? chronologicalSnapshot(article)
+                : sessionItem.snapshot();
+        return new HydratedRecommendationItem(
+                new RecommendationItem(article, sessionItem.reason(), sessionItem.source(), null), snapshot);
+    }
+
+    private RecommendationFeatureSnapshot chronologicalSnapshot(Article article) {
+        RecommendationCandidate candidate = candidateService.assembleChronologicalFeatures(article);
+        return new RecommendationFeatureSnapshot(
+                candidate.tagAffinity(), candidate.authorAffinity(), candidate.similarScore(),
+                candidate.heatScore(), candidate.freshnessScore(), 0D, 0D, 0D, 0D);
     }
 
     private void enrichAuthors(List<Article> articles) {
@@ -261,9 +280,10 @@ public class RecommendationFeedService {
     }
 
     private static String fallbackPageSessionId(Long userId, FallbackCursor position) {
-        String pageIdentity = position == null
-                ? "fallback:" + userId + ":start"
-                : "fallback:" + userId + ":" + position.createTime() + ":" + position.articleId();
+        if (position == null) {
+            return UUID.randomUUID().toString();
+        }
+        String pageIdentity = "fallback:" + userId + ":" + position.createTime() + ":" + position.articleId();
         return UUID.nameUUIDFromBytes(pageIdentity.getBytes(StandardCharsets.UTF_8)).toString();
     }
 
@@ -278,6 +298,11 @@ public class RecommendationFeedService {
     }
 
     private record FallbackCursor(LocalDateTime createTime, Long articleId) {
+    }
+
+    private record HydratedRecommendationItem(
+            RecommendationItem item,
+            RecommendationFeatureSnapshot snapshot) {
     }
 
     private static class InvalidSessionCursorException extends RuntimeException {

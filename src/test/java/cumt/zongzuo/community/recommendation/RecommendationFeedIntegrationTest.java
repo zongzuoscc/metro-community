@@ -6,8 +6,12 @@ import cumt.zongzuo.community.IntegrationTestSupport;
 import cumt.zongzuo.community.mapper.ArticleMapper;
 import cumt.zongzuo.community.recommendation.config.RecommendationProperties;
 import cumt.zongzuo.community.recommendation.dto.RecommendationFeedResponse;
+import cumt.zongzuo.community.recommendation.dto.RecommendationExposureDraft;
+import cumt.zongzuo.community.recommendation.dto.RecommendationFeatureSnapshot;
 import cumt.zongzuo.community.recommendation.dto.RecommendationItem;
 import cumt.zongzuo.community.recommendation.dto.RecommendationMode;
+import cumt.zongzuo.community.recommendation.dto.RecommendationSession;
+import cumt.zongzuo.community.recommendation.dto.RecommendationSessionItem;
 import cumt.zongzuo.community.recommendation.dto.RecommendationViewRequest;
 import cumt.zongzuo.community.recommendation.entity.RecommendationEventOutbox;
 import cumt.zongzuo.community.recommendation.mapper.RecommendationEventOutboxMapper;
@@ -54,6 +58,7 @@ import java.util.Base64;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -154,7 +159,8 @@ class RecommendationFeedIntegrationTest extends IntegrationTestSupport {
         });
         assertThat(exposureCount()).isEqualTo(4);
         assertThat(jdbcTemplate.queryForList("""
-                SELECT tag_affinity, author_affinity, similar_score, heat_score, freshness_score
+                SELECT tag_affinity, author_affinity, similar_score, heat_score, freshness_score,
+                       source_follow, source_tag, source_similar, source_explore
                 FROM recommendation_exposure ORDER BY article_id DESC
                 """))
                 .allSatisfy(row -> {
@@ -163,6 +169,10 @@ class RecommendationFeedIntegrationTest extends IntegrationTestSupport {
                     assertThat(((Number) row.get("similar_score")).doubleValue()).isZero();
                     assertThat(((Number) row.get("heat_score")).doubleValue()).isPositive();
                     assertThat(((Number) row.get("freshness_score")).doubleValue()).isBetween(0D, 1D);
+                    assertThat(((Number) row.get("source_follow")).doubleValue()).isZero();
+                    assertThat(((Number) row.get("source_tag")).doubleValue()).isZero();
+                    assertThat(((Number) row.get("source_similar")).doubleValue()).isZero();
+                    assertThat(((Number) row.get("source_explore")).doubleValue()).isZero();
                 });
 
         String sessionId = decodedSessionId(first.nextCursor());
@@ -175,8 +185,57 @@ class RecommendationFeedIntegrationTest extends IntegrationTestSupport {
             assertThat(item.has("article")).isFalse();
             assertThat(item.has("content")).isFalse();
             assertThat(item.has("exposureId")).isFalse();
+            assertThat(item.path("snapshot").isNull()).isTrue();
         });
         assertThat(redisTemplate.getExpire("recommendation:session:" + sessionId)).isBetween(500L, 600L);
+    }
+
+    @Test
+    void personalizedSessionPersistsItsOriginalFeatureSnapshotAndCanonicalSource() {
+        insertArticles(1);
+        String sessionId = UUID.randomUUID().toString();
+        RecommendationFeatureSnapshot snapshot = new RecommendationFeatureSnapshot(
+                0.11, 0.22, 0.33, 0.44, 0.55, 1D, 1D, 0D, 0D);
+        sessionStore.save(sessionId, new RecommendationSession(USER_ID,
+                List.of(new RecommendationSessionItem(60_001L, "Because you follow this author",
+                        "FOLLOW|TAG", snapshot)), RecommendationMode.PERSONALIZED));
+        String cursor = Base64.getUrlEncoder().withoutPadding()
+                .encodeToString((sessionId + ":0").getBytes());
+
+        RecommendationFeedResponse response = getFeed(USER_ID, cursor, 1);
+
+        assertThat(response.mode()).isEqualTo(RecommendationMode.PERSONALIZED);
+        assertThat(response.items()).singleElement().satisfies(item -> {
+            assertThat(item.reason()).isEqualTo("Because you follow this author");
+            assertThat(item.source()).isEqualTo("FOLLOW|TAG");
+        });
+        assertThat(jdbcTemplate.queryForMap("""
+                SELECT tag_affinity, author_affinity, similar_score, heat_score, freshness_score,
+                       source_follow, source_tag, source_similar, source_explore, source
+                FROM recommendation_exposure WHERE session_id = ?
+                """, sessionId)).containsEntry("source", "FOLLOW|TAG")
+                .containsEntry("tag_affinity", 0.11)
+                .containsEntry("author_affinity", 0.22)
+                .containsEntry("similar_score", 0.33)
+                .containsEntry("heat_score", 0.44)
+                .containsEntry("freshness_score", 0.55)
+                .containsEntry("source_follow", 1)
+                .containsEntry("source_tag", 1)
+                .containsEntry("source_similar", 0)
+                .containsEntry("source_explore", 0);
+    }
+
+    @Test
+    void legacySessionItemWithoutSnapshotDeserializesAsNull() {
+        String sessionId = UUID.randomUUID().toString();
+        redisTemplate.opsForValue().set("recommendation:session:" + sessionId, """
+                {"userId":%d,"items":[{"articleId":60001,"reason":null,\
+                "source":"CHRONOLOGICAL"}],"mode":"COLD_START"}
+                """.formatted(USER_ID));
+
+        RecommendationSession loaded = sessionStore.load(sessionId);
+
+        assertThat(loaded.items()).singleElement().satisfies(item -> assertThat(item.snapshot()).isNull());
     }
 
     @Test
@@ -234,24 +293,27 @@ class RecommendationFeedIntegrationTest extends IntegrationTestSupport {
     }
 
     @Test
-    void disabledServingStillReturnsChronologyAndPersistsOnlyReturnedExposuresAcrossPages() {
+    void disabledServingCreatesFreshFirstPageExposureSessionsAndReplaysValidFallbackCursors() {
         insertArticlesWithSharedTimestamps(8);
         properties.setEnabled(false);
 
         RecommendationFeedResponse first = getFeed(USER_ID, null, 3);
         RecommendationFeedResponse repeatedFirst = getFeed(USER_ID, null, 3);
         RecommendationFeedResponse second = getFeed(USER_ID, first.nextCursor(), 3);
+        RecommendationFeedResponse repeatedSecond = getFeed(USER_ID, first.nextCursor(), 3);
 
         assertThat(first.mode()).isEqualTo(RecommendationMode.FALLBACK);
         assertThat(second.mode()).isEqualTo(RecommendationMode.FALLBACK);
         assertThat(first.items()).hasSize(3);
         assertThat(second.items()).hasSize(3);
         assertThat(articleIds(repeatedFirst)).containsExactlyElementsOf(articleIds(first));
-        assertThat(exposureIds(repeatedFirst)).containsExactlyElementsOf(exposureIds(first));
+        assertThat(exposureIds(repeatedFirst)).doesNotContainAnyElementsOf(exposureIds(first));
         assertThat(articleIds(first)).doesNotContainAnyElementsOf(articleIds(second));
-        assertThat(exposureCount()).isEqualTo(6);
+        assertThat(articleIds(repeatedSecond)).containsExactlyElementsOf(articleIds(second));
+        assertThat(exposureIds(repeatedSecond)).containsExactlyElementsOf(exposureIds(second));
+        assertThat(exposureCount()).isEqualTo(9);
         assertThat(jdbcTemplate.queryForObject(
-                "SELECT COUNT(DISTINCT session_id) FROM recommendation_exposure", Integer.class)).isEqualTo(2);
+                "SELECT COUNT(DISTINCT session_id) FROM recommendation_exposure", Integer.class)).isEqualTo(3);
     }
 
     @Test
@@ -313,7 +375,8 @@ class RecommendationFeedIntegrationTest extends IntegrationTestSupport {
         RecommendationCandidate invalidCandidate = candidateService.assembleChronologicalFeatures(invalid);
 
         assertThatThrownBy(() -> exposureService.recordPage(
-                "atomic-session", USER_ID, List.of(validCandidate, invalidCandidate)))
+                "atomic-session", USER_ID, List.of(
+                        chronologicalDraft(validCandidate), chronologicalDraft(invalidCandidate))))
                 .isInstanceOf(org.springframework.dao.DataAccessException.class);
         assertThat(exposureCount()).isZero();
     }
@@ -437,6 +500,13 @@ class RecommendationFeedIntegrationTest extends IntegrationTestSupport {
 
     private int exposureCount() {
         return jdbcTemplate.queryForObject("SELECT COUNT(*) FROM recommendation_exposure", Integer.class);
+    }
+
+    private RecommendationExposureDraft chronologicalDraft(RecommendationCandidate candidate) {
+        return new RecommendationExposureDraft(candidate.articleId(), "CHRONOLOGICAL",
+                new RecommendationFeatureSnapshot(
+                        candidate.tagAffinity(), candidate.authorAffinity(), candidate.similarScore(),
+                        candidate.heatScore(), candidate.freshnessScore(), 0D, 0D, 0D, 0D));
     }
 
     private String decodedSessionId(String cursor) {

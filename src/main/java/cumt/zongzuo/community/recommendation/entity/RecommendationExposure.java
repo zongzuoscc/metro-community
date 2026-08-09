@@ -22,6 +22,10 @@ public class RecommendationExposure {
     private Double similarScore;
     private Double heatScore;
     private Double freshnessScore;
+    private Double sourceFollow;
+    private Double sourceTag;
+    private Double sourceSimilar;
+    private Double sourceExplore;
     private LocalDateTime exposedAt;
     private LocalDateTime createTime;
 }
