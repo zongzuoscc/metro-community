@@ -87,6 +87,7 @@ Null becomes empty UTF-8 text; line endings become LF; tags are trimmed, de-dupl
 
 - Create: `docs/database/migrations/2026-08-10-article-revision-moderation-outbox.sql`
 - Create: `docs/database/operations/2026-08-10-stage-b-immutable-table-grants.sql`
+- Create: `docs/database/operations/2026-08-10-stage-b-schema-expand-runbook.md`
 - Modify: `script.sql`
 - Modify: `src/main/java/cumt/zongzuo/community/entity/Article.java`
 - Create: `src/main/java/cumt/zongzuo/community/article/model/ArticleDraft.java`
@@ -96,7 +97,7 @@ Null becomes empty UTF-8 text; line endings become LF; tags are trimmed, de-dupl
 - Create mappers beside each model under `article/persistence` and `ai/moderation/revision`
 - Create: `src/test/java/cumt/zongzuo/community/article/migration/ArticleRevisionSchemaIntegrationTest.java`
 
-**Interfaces:** This task only exposes typed rows/mappers. It does not change `ArticleServiceImpl`, listeners, public queries or existing audit endpoints.
+**Interfaces:** This task only exposes typed rows/mappers. It does not change `ArticleServiceImpl`, listeners, public queries or existing audit endpoints. New revision pointer/state/version fields on `Article` are internal (`@JsonIgnore`) and excluded from generic MyBatis-Plus `updateById`; later lifecycle code updates them only through explicit CAS statements.
 
 - [ ] **Step 1: Write the failing real-MySQL schema contract**
 
@@ -118,6 +119,8 @@ assertThat(allTableCountsAfterSecondRun()).isEqualTo(allTableCountsAfterFirstRun
 
 Also assert no foreign key references an `article.user_id` column, all pointer columns remain nullable, and inserting a pointer to another article's revision fails. Add interruption recovery cases: execute only the migration statements through the third article column, restart with the full migration, and reach the identical schema; separately pre-create one expected index and one pointer FK, rerun, and prove no duplicate. If an existing same-name column/index/FK has incompatible columns, order or type, fail with `SCHEMA_DRIFT` instead of silently accepting it.
 
+Use a real long transaction to hold the `article` metadata lock after the partial prefix. The full migration must fail within the bounded session `lock_wait_timeout`; after releasing the transaction, rerunning the complete file must recover the same exact target. Execute the rendered grant template against real MySQL principals too: global/schema `UPDATE`, `DELETE`, or `ALL PRIVILEGES` must fail closed, while the dedicated role must allow real SELECT/INSERT and deny real UPDATE/DELETE on both append-only tables.
+
 - [ ] **Step 2: Run the schema test RED**
 
 Run: `./mvnw -Dtest=ArticleRevisionSchemaIntegrationTest test`
@@ -126,7 +129,7 @@ Expected: FAIL because the migration and Stage B tables do not exist.
 
 - [ ] **Step 3: Add exact additive DDL**
 
-The migration must use literal `information_schema` guards plus `PREPARE/EXECUTE/DEALLOCATE` for every ALTERed column, index and FK. The unguarded DDL below is the **fresh-install `script.sql` target only** and must not be pasted as the forward migration. The forward file begins with `SET @schema_name=DATABASE()` and repeats this executable form for each object:
+The migration must use a dedicated connection, capture the previous session `lock_wait_timeout`, set a short bounded value before any DDL, and restore it after a successful run. It uses literal `information_schema` guards plus `PREPARE/EXECUTE/DEALLOCATE` for every ALTERed column, index and FK. The unguarded DDL below is the **fresh-install `script.sql` target only** and must not be pasted as the forward migration. The forward file then sets `@schema_name=DATABASE()` and repeats this executable form for each object:
 
 ```sql
 SET @ddl = IF(
@@ -337,7 +340,7 @@ CREATE TABLE IF NOT EXISTS article_revision_migration_issue (
 
 Add nullable `message.source_event_id BINARY(16)` plus unique key `uk_message_source_event`; legacy notification rows keep null and remain valid. Mirror the final fresh-install schema in `script.sql`.
 
-The grants script revokes UPDATE/DELETE on `article_revision` and `article_moderation_attempt` from `${APP_DB_USER}` and grants SELECT/INSERT; it is an explicit operator template and never hard-codes credentials.
+The grants script never attempts a table `REVOKE` that can neither override inherited schema/global grants nor safely handle an absent direct grant. It is a credential-free operator template for a newly provisioned dedicated principal and dedicated role. Before granting the role it fails closed on effective global/schema UPDATE/DELETE (including expanded `ALL PRIVILEGES` rows), direct table/column immutable mutation grants, or an unapproved inherited role. The controlled role receives only SELECT/INSERT on `article_revision` and `article_moderation_attempt`, is made the principal's default role, and its exact postcondition is verified. The accompanying runbook covers backup/restore evidence, table size, maintenance window, online-DDL rehearsal, `information_schema.innodb_trx`, `performance_schema.metadata_locks`, bounded-lock recovery, and rerun verification.
 
 - [ ] **Step 4: Run GREEN and legacy startup checks**
 

@@ -15,9 +15,21 @@ create table article
     is_deleted    tinyint  default 0                 null comment '0-正常, 1-回收站',
     delete_time   datetime                           null comment '删除时间',
     comment_count int      default 0                 null comment '评论数',
-    collect_count int      default 0                 not null
+    collect_count int      default 0                 not null,
+    latest_revision_id    bigint                             null,
+    pending_revision_id   bigint                             null,
+    published_revision_id bigint                             null,
+    visibility_state      varchar(24)                        null,
+    review_state          varchar(24)                        null,
+    lifecycle_epoch       bigint   default 1                 not null,
+    lock_version          bigint   default 0                 not null,
+    constraint uk_article_id_author
+        unique (id, author_id),
+    index idx_article_latest_pointer (latest_revision_id, id),
+    index idx_article_pending_pointer (pending_revision_id, id),
+    index idx_article_published_pointer (published_revision_id, id)
 )
-    comment '文章表' charset = utf8mb4;
+    comment '文章表' charset = utf8mb4 collate = utf8mb4_unicode_ci;
 
 create table article_tag
 (
@@ -128,9 +140,12 @@ create table message
     target_id   bigint            null comment '关联的目标ID(文章ID等)',
     content     varchar(500)      null comment '消息内容(评论摘要等)',
     status      tinyint default 0 null comment '状态: 0-未读, 1-已读',
-    create_time datetime          null comment '创建时间'
+    create_time     datetime          null comment '创建时间',
+    source_event_id binary(16)        null,
+    constraint uk_message_source_event
+        unique (source_event_id)
 )
-    comment '消息通知表' charset = utf8mb4;
+    comment '消息通知表' charset = utf8mb4 collate = utf8mb4_unicode_ci;
 
 create index idx_to_id_status
     on message (to_id, status)
@@ -265,3 +280,167 @@ CREATE TABLE recommendation_exposure (
 
 CREATE INDEX idx_article_recommendation_feed
     ON article (status, is_deleted, create_time DESC, id DESC);
+
+CREATE TABLE article_draft (
+    article_id     BIGINT PRIMARY KEY,
+    user_id        BIGINT       NOT NULL,
+    draft_version  BIGINT       NOT NULL,
+    title          VARCHAR(100) NOT NULL,
+    summary        VARCHAR(255) NULL,
+    body_markdown  MEDIUMTEXT   NULL,
+    body_plain     MEDIUMTEXT   NULL,
+    cover          VARCHAR(255) NULL,
+    tags_json      JSON         NOT NULL,
+    content_hash   CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    created_at     DATETIME(6)  NOT NULL,
+    updated_at     DATETIME(6)  NOT NULL,
+    lock_version   BIGINT       NOT NULL DEFAULT 0,
+    UNIQUE KEY uk_article_draft_owner (article_id, user_id),
+    CONSTRAINT fk_article_draft_owner FOREIGN KEY (article_id, user_id)
+        REFERENCES article (id, author_id) ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE article_revision (
+    id                   BIGINT AUTO_INCREMENT PRIMARY KEY,
+    article_id           BIGINT       NOT NULL,
+    revision_no          BIGINT       NOT NULL,
+    title                VARCHAR(100) NOT NULL,
+    summary              VARCHAR(255) NULL,
+    body_markdown        MEDIUMTEXT   NULL,
+    body_plain           MEDIUMTEXT   NULL,
+    cover                VARCHAR(255) NULL,
+    tags_json            JSON         NOT NULL,
+    content_hash         CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    source_draft_version BIGINT       NOT NULL,
+    created_by           BIGINT       NOT NULL,
+    created_at           DATETIME(6)  NOT NULL,
+    UNIQUE KEY uk_article_revision_no (article_id, revision_no),
+    UNIQUE KEY uk_article_revision_identity (id, article_id),
+    INDEX idx_article_revision_creator (article_id, created_by),
+    CONSTRAINT fk_article_revision_article FOREIGN KEY (article_id)
+        REFERENCES article (id) ON DELETE RESTRICT,
+    CONSTRAINT fk_article_revision_creator FOREIGN KEY (article_id, created_by)
+        REFERENCES article (id, author_id) ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE article_moderation_job (
+    id               BIGINT AUTO_INCREMENT PRIMARY KEY,
+    article_id       BIGINT       NOT NULL,
+    revision_id      BIGINT       NOT NULL,
+    content_hash     CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    state            VARCHAR(24)  NOT NULL,
+    model_decision   VARCHAR(16)  NULL,
+    risk_score       DECIMAL(6,5) NULL,
+    policy_hits_json JSON         NULL,
+    attempt_count    INT          NOT NULL DEFAULT 0,
+    next_attempt_at  DATETIME(6)  NULL,
+    lease_owner      VARCHAR(96)  NULL,
+    lease_until      DATETIME(6)  NULL,
+    last_error       VARCHAR(500) NULL,
+    reviewer_id      BIGINT       NULL,
+    review_reason    VARCHAR(500) NULL,
+    reviewed_at      DATETIME(6)  NULL,
+    created_at       DATETIME(6)  NOT NULL,
+    updated_at       DATETIME(6)  NOT NULL,
+    lock_version     BIGINT       NOT NULL DEFAULT 0,
+    UNIQUE KEY uk_article_moderation_revision (article_id, revision_id),
+    UNIQUE KEY uk_article_moderation_identity (id, article_id),
+    INDEX idx_moderation_revision_fk (revision_id, article_id),
+    INDEX idx_moderation_queue (state, next_attempt_at, id),
+    CONSTRAINT fk_moderation_revision FOREIGN KEY (revision_id, article_id)
+        REFERENCES article_revision (id, article_id) ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE article_moderation_attempt (
+    id                     BIGINT AUTO_INCREMENT PRIMARY KEY,
+    job_id                 BIGINT      NOT NULL,
+    attempt_no             INT         NOT NULL,
+    provider               VARCHAR(32) NULL,
+    model                  VARCHAR(96) NULL,
+    prompt_version         VARCHAR(32) NOT NULL,
+    input_hash             CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    structured_output_json JSON        NULL,
+    latency_ms             BIGINT      NOT NULL,
+    token_usage_json       JSON        NULL,
+    finish_reason          VARCHAR(32) NULL,
+    error_code             VARCHAR(64) NULL,
+    created_at             DATETIME(6) NOT NULL,
+    UNIQUE KEY uk_moderation_attempt (job_id, attempt_no),
+    CONSTRAINT fk_attempt_job FOREIGN KEY (job_id)
+        REFERENCES article_moderation_job (id) ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE article_revision_migration_issue (
+    id              BIGINT AUTO_INCREMENT PRIMARY KEY,
+    article_id      BIGINT       NOT NULL,
+    issue_code      VARCHAR(64)  NOT NULL,
+    observed_hash   CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    details_json    JSON         NOT NULL,
+    detected_at     DATETIME(6)  NOT NULL,
+    resolved_at     DATETIME(6)  NULL,
+    resolution_note VARCHAR(500) NULL,
+    UNIQUE KEY uk_revision_migration_issue (article_id, issue_code),
+    INDEX idx_revision_migration_unresolved (resolved_at, article_id),
+    CONSTRAINT fk_revision_migration_article FOREIGN KEY (article_id)
+        REFERENCES article (id) ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE domain_event_outbox (
+    id                BIGINT AUTO_INCREMENT PRIMARY KEY,
+    event_id          BINARY(16)   NOT NULL,
+    aggregate_type    VARCHAR(64)  NOT NULL,
+    aggregate_id      BIGINT       NOT NULL,
+    aggregate_version BIGINT       NOT NULL,
+    lifecycle_epoch   BIGINT       NOT NULL,
+    event_type        VARCHAR(64)  NOT NULL,
+    payload_version   INT          NOT NULL,
+    payload_json      JSON         NOT NULL,
+    dedupe_key        VARCHAR(190) NOT NULL,
+    occurred_at       DATETIME(6)  NOT NULL,
+    state             VARCHAR(16)  NOT NULL DEFAULT 'PENDING',
+    retry_count       INT          NOT NULL DEFAULT 0,
+    next_attempt_at   DATETIME(6)  NOT NULL,
+    lease_owner       VARCHAR(96)  NULL,
+    lease_until       DATETIME(6)  NULL,
+    last_error        VARCHAR(500) NULL,
+    created_at        DATETIME(6)  NOT NULL,
+    published_at      DATETIME(6)  NULL,
+    failed_at         DATETIME(6)  NULL,
+    UNIQUE KEY uk_domain_event_id (event_id),
+    UNIQUE KEY uk_domain_event_dedupe (dedupe_key),
+    INDEX idx_domain_outbox_dispatch (state, next_attempt_at, id),
+    INDEX idx_domain_outbox_recovery (state, lease_until, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE consumer_inbox (
+    consumer_name VARCHAR(96) NOT NULL,
+    event_id      BINARY(16)  NOT NULL,
+    processed_at  DATETIME(6) NOT NULL,
+    result_hash   CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    PRIMARY KEY (consumer_name, event_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE projection_watermark (
+    consumer_name        VARCHAR(96) NOT NULL,
+    aggregate_type       VARCHAR(64) NOT NULL,
+    aggregate_id         BIGINT      NOT NULL,
+    last_applied_version BIGINT      NOT NULL DEFAULT 0,
+    lifecycle_epoch      BIGINT      NOT NULL DEFAULT 0,
+    tombstone            TINYINT(1)  NOT NULL DEFAULT 0,
+    lease_owner          VARCHAR(96) NULL,
+    lease_until          DATETIME(6) NULL,
+    updated_at           DATETIME(6) NOT NULL,
+    PRIMARY KEY (consumer_name, aggregate_type, aggregate_id),
+    INDEX idx_projection_lease (lease_until)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+ALTER TABLE article
+    ADD CONSTRAINT fk_article_latest_revision
+        FOREIGN KEY (latest_revision_id, id)
+            REFERENCES article_revision (id, article_id) ON DELETE RESTRICT,
+    ADD CONSTRAINT fk_article_pending_revision
+        FOREIGN KEY (pending_revision_id, id)
+            REFERENCES article_revision (id, article_id) ON DELETE RESTRICT,
+    ADD CONSTRAINT fk_article_published_revision
+        FOREIGN KEY (published_revision_id, id)
+            REFERENCES article_revision (id, article_id) ON DELETE RESTRICT;
