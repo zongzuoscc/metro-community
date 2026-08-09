@@ -57,6 +57,11 @@ public class RabbitConfig {
     }
 
     @Bean
+    public Queue recommendationEventQueue() {
+        return workQueue("recommendation.event.queue");
+    }
+
+    @Bean
     public Queue mailDeadLetterQueue() {
         return deadLetterQueue("mail.queue");
     }
@@ -87,6 +92,11 @@ public class RabbitConfig {
     }
 
     @Bean
+    public Queue recommendationEventDeadLetterQueue() {
+        return deadLetterQueue("recommendation.event.queue");
+    }
+
+    @Bean
     public Binding mailDeadLetterBinding() {
         return deadLetterBinding(mailDeadLetterQueue(), "mail.queue");
     }
@@ -114,6 +124,11 @@ public class RabbitConfig {
     @Bean
     public Binding articleAuditDeadLetterBinding() {
         return deadLetterBinding(articleAuditDeadLetterQueue(), "article.audit.queue");
+    }
+
+    @Bean
+    public Binding recommendationEventDeadLetterBinding() {
+        return deadLetterBinding(recommendationEventDeadLetterQueue(), "recommendation.event.queue");
     }
 
     @Bean

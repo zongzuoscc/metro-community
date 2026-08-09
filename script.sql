@@ -185,4 +185,36 @@ create table tag
 )
     comment '标签表' charset = utf8mb4;
 
+CREATE TABLE user_article_event (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    article_id BIGINT NULL,
+    target_author_id BIGINT NULL,
+    event_type VARCHAR(32) NOT NULL,
+    occurred_at DATETIME NOT NULL,
+    dedupe_key VARCHAR(160) NOT NULL,
+    source VARCHAR(64) NOT NULL,
+    create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uk_user_article_event_dedupe UNIQUE (dedupe_key),
+    INDEX idx_user_event_time (user_id, occurred_at DESC),
+    INDEX idx_article_event_time (article_id, occurred_at DESC)
+) COMMENT='个性化推荐行为事实';
+
+CREATE TABLE recommendation_exposure (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    article_id BIGINT NOT NULL,
+    session_id VARCHAR(64) NOT NULL,
+    source VARCHAR(32) NOT NULL,
+    tag_affinity DOUBLE NOT NULL,
+    author_affinity DOUBLE NOT NULL,
+    similar_score DOUBLE NOT NULL,
+    heat_score DOUBLE NOT NULL,
+    freshness_score DOUBLE NOT NULL,
+    exposed_at DATETIME NOT NULL,
+    create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_recommendation_exposure (user_id, article_id, session_id),
+    INDEX idx_exposure_user_time (user_id, exposed_at DESC),
+    INDEX idx_exposure_article_time (article_id, exposed_at DESC)
+) COMMENT='推荐真实曝光和训练特征快照';
 

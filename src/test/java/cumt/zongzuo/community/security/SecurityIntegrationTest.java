@@ -62,6 +62,11 @@ class SecurityIntegrationTest extends IntegrationTestSupport {
     }
 
     @Test
+    void recommendationDeadLetterQueueIsDeclared() {
+        assertThat(amqpAdmin.getQueueProperties("recommendation.event.queue.dlq")).isNotNull();
+    }
+
+    @Test
     void profileUpdateCannotEscalateRoleOrChangeAccountState() {
         HttpHeaders headers = new HttpHeaders();
         headers.setBearerAuth(jwtService.generate(1001L));

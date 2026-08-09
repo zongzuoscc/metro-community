@@ -101,3 +101,16 @@ app:
     jwt-secret: ${JWT_SECRET:}
     token-ttl: ${JWT_TOKEN_TTL:P7D}
     cors-allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173}
+
+recommendation:
+  enabled: ${RECOMMENDATION_ENABLED:false}
+  session-ttl-minutes: ${RECOMMENDATION_SESSION_TTL_MINUTES:10}
+  profile-ttl-days: ${RECOMMENDATION_PROFILE_TTL_DAYS:35}
+  profile-window-days: ${RECOMMENDATION_PROFILE_WINDOW_DAYS:30}
+  default-page-size: ${RECOMMENDATION_DEFAULT_PAGE_SIZE:10}
+  max-page-size: ${RECOMMENDATION_MAX_PAGE_SIZE:20}
+  minimum-user-events: ${RECOMMENDATION_MINIMUM_USER_EVENTS:20}
+  minimum-global-events: ${RECOMMENDATION_MINIMUM_GLOBAL_EVENTS:500}
+  model-window-days: ${RECOMMENDATION_MODEL_WINDOW_DAYS:90}
+  label-window-days: ${RECOMMENDATION_LABEL_WINDOW_DAYS:7}
+  model-directory: ${RECOMMENDATION_MODEL_DIRECTORY:data/recommendation-models}
