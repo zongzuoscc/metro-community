@@ -164,6 +164,7 @@ git commit -m "refactor(ai): remove legacy ai prototype endpoints"
 
 - Modify: `pom.xml`
 - Modify: `src/main/resources/application.yml`
+- Modify: `src/main/java/cumt/zongzuo/community/config/SecurityConfig.java`
 - Modify: `src/test/java/cumt/zongzuo/community/IntegrationTestSupport.java`
 - Create: `src/test/java/cumt/zongzuo/community/ai/NoAiStartupIntegrationTest.java`
 - Modify: `src/test/java/cumt/zongzuo/community/ai/LegacyAiSurfaceIntegrationTest.java`
@@ -205,6 +206,8 @@ spring:
 
 Replace every `spring.ai.openai.*` override in `IntegrationTestSupport` with `spring.ai.model.chat=none`, `spring.ai.model.embedding=none`, and empty business flags. Do not add a placeholder API key.
 
+Permit only `GET /actuator/health` and `GET /actuator/health/**` without authentication so the disabled/no-Key deployment gate is observable. Do not expose Prometheus or other actuator endpoints publicly.
+
 - [ ] **Step 4: Run green startup and dependency verification**
 
 Run:
@@ -219,7 +222,7 @@ Expected: PASS; tree resolves Spring AI 1.1.8/MyBatis 3.5.17, with no M5 OpenAI 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add pom.xml src/main/resources/application.yml src/test/java/cumt/zongzuo/community/IntegrationTestSupport.java src/test/java/cumt/zongzuo/community/ai
+git add pom.xml src/main/resources/application.yml src/main/java/cumt/zongzuo/community/config/SecurityConfig.java src/test/java/cumt/zongzuo/community/IntegrationTestSupport.java src/test/java/cumt/zongzuo/community/ai
 git commit -m "build(ai): upgrade spring ai foundation"
 ```
 
