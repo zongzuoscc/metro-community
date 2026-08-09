@@ -73,4 +73,85 @@ class CommunityApplicationTests {
         assertThat(output).isEqualTo(
                 "jdbc:mysql://127.0.0.1:13306/metro_community?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai");
     }
+
+    @Test
+    void documentsTheDisabledByDefaultStageAiFoundationContract() throws IOException {
+        String readme = Files.readString(Path.of("README.md"));
+        String environment = Files.readString(Path.of(".env.example"));
+        String exampleConfig = Files.readString(Path.of("src/main/resources/application-example.yml"));
+        String productionConfig = Files.readString(Path.of("src/main/resources/application.yml"));
+        String pom = Files.readString(Path.of("pom.xml"));
+        String integrationSupport = Files.readString(Path.of(
+                "src/test/java/cumt/zongzuo/community/IntegrationTestSupport.java"));
+
+        assertThat(readme).contains(
+                "Java 21、Spring Boot 3.5.16、Spring AI 1.1.8、MyBatis-Plus 3.5.17",
+                "Stage A",
+                "Provider 服务默认不会被访问",
+                "人工待审",
+                "Stage B",
+                "Stage C",
+                "Stage D",
+                "metro.ai.enabled",
+                "metro.ai.agent.enabled",
+                "metro.ai.memory.enabled",
+                "metro.ai.writing.enabled",
+                "metro.ai.moderation.enabled",
+                "metro.ai.embedding.enabled",
+                "当前 Actuator 只暴露 health",
+                "NOT RUN");
+        assertThat(environment).contains(
+                "METRO_AI_ENABLED=false",
+                "METRO_AI_AGENT_ENABLED=false",
+                "METRO_AI_MEMORY_ENABLED=false",
+                "METRO_AI_WRITING_ENABLED=false",
+                "METRO_AI_MODERATION_ENABLED=false",
+                "METRO_AI_EMBEDDING_ENABLED=false",
+                "DEEPSEEK_BASE_URL=https://api.deepseek.com",
+                "DEEPSEEK_API_KEY=",
+                "DEEPSEEK_MODEL=deepseek-v4-flash",
+                "OLLAMA_BASE_URL=http://127.0.0.1:11434",
+                "OLLAMA_EMBEDDING_MODEL=bge-m3");
+        assertThat(exampleConfig).contains(
+                "chat: none",
+                "embedding: none",
+                "max-attempts: 1",
+                "enabled: ${METRO_AI_ENABLED:false}",
+                "enabled: ${METRO_AI_AGENT_ENABLED:false}",
+                "enabled: ${METRO_AI_MEMORY_ENABLED:false}",
+                "enabled: ${METRO_AI_WRITING_ENABLED:false}",
+                "enabled: ${METRO_AI_MODERATION_ENABLED:false}",
+                "enabled: ${METRO_AI_EMBEDDING_ENABLED:false}");
+        assertThat(exampleConfig.lines().filter("spring:"::equals).count()).isEqualTo(1);
+        assertThat(productionConfig).contains(
+                "enabled: ${METRO_AI_ENABLED:false}",
+                "enabled: ${METRO_AI_AGENT_ENABLED:false}",
+                "enabled: ${METRO_AI_MEMORY_ENABLED:false}",
+                "enabled: ${METRO_AI_WRITING_ENABLED:false}",
+                "enabled: ${METRO_AI_MODERATION_ENABLED:false}",
+                "enabled: ${METRO_AI_EMBEDDING_ENABLED:false}");
+        assertThat(pom).contains(
+                "<version>3.5.16</version>",
+                "<version>1.1.8</version>",
+                "<version>3.5.17</version>");
+        assertThat(integrationSupport).contains(
+                "\"metro.ai.enabled=false\"",
+                "\"metro.ai.agent.enabled=false\"",
+                "\"metro.ai.memory.enabled=false\"",
+                "\"metro.ai.writing.enabled=false\"",
+                "\"metro.ai.moderation.enabled=false\"",
+                "\"metro.ai.embedding.enabled=false\"",
+                "\"DEEPSEEK_API_KEY=\"");
+        assertThat(readme + environment + exampleConfig)
+                .doesNotContain("AI_CHAT_ENABLED")
+                .doesNotContain("/api/ai/")
+                .doesNotContain("ChatUtils")
+                .doesNotContain("MetroAiService")
+                .doesNotContain("AiToolConfig")
+                .doesNotContain("9999")
+                .doesNotContain("1.0.0-M5")
+                .doesNotContain("spring-ai-openai-spring-boot-starter")
+                .doesNotContain("MILVUS_")
+                .doesNotContain("图片和音频模型");
+    }
 }

@@ -4,7 +4,8 @@
 
 ## 技术栈
 
-- Java 21、Spring Boot 3、Spring Security、MyBatis-Plus
+- Java 21、Spring Boot 3.5.16、Spring AI 1.1.8、MyBatis-Plus 3.5.17
+- Spring Security、Spring MVC、Resilience4j、Micrometer
 - MySQL 8、Redis、RabbitMQ、Elasticsearch 8 + IK 中文分词
 - WebSocket、阿里云 OSS、Spring AI（默认关闭，需显式配置）
 
@@ -88,9 +89,34 @@ RabbitMQ 工作队列现在配置了 3 次有限重试与死信队列（队列�
 
 服务默认端口为 `8080`，可通过 `SERVER_PORT` 修改。
 
-## AI 模块状态
+## AI 安全底座（Stage A）
 
-当前没有可用的 AI Provider Key 时，聊天、向量、图片和音频模型均保持关闭，应用仍可正常启动。后续启用聊天模型需要设置 `DEEPSEEK_API_KEY`、`DEEPSEEK_BASE_URL`、`DEEPSEEK_MODEL` 与 `AI_CHAT_ENABLED=true`。在重新接入前，请先完成 Provider 配置与集成测试，不应把 API Key 写入配置文件。
+Stage A 只交付默认关闭的 AI 安全底座：Provider 中立的网关契约与类型化 DeepSeek/Ollama 适配器、按能力隔离的输入上限/配额/截止时间/有界线程池/重试/熔断/低基数指标，以及始终存在的人工审核降级路径。内容审核在该阶段不调用模型，文章保持人工待审，不会自动通过或拒绝。
+
+下列六个业务开关的默认值均为 `false`：
+
+```text
+METRO_AI_ENABLED=false
+METRO_AI_AGENT_ENABLED=false
+METRO_AI_MEMORY_ENABLED=false
+METRO_AI_WRITING_ENABLED=false
+METRO_AI_MODERATION_ENABLED=false
+METRO_AI_EMBEDDING_ENABLED=false
+```
+
+它们依次映射 `metro.ai.enabled`、`metro.ai.agent.enabled`、`metro.ai.memory.enabled`、`metro.ai.writing.enabled`、`metro.ai.moderation.enabled` 和 `metro.ai.embedding.enabled`。
+
+因此未配置 Key 时应用仍可启动，不创建 DeepSeek/Ollama API 或 Model Bean，Provider 服务默认不会被访问。普通社区、私信、搜索、推荐和人工审核不依赖 AI Key。
+
+Stage A 还没有生产可用的 Agent API 或前端页面，也没有 Agent 对话、桌宠、RAG、HyDE、长期记忆或写作建议实现。不可变 revision 绑定与通用 Outbox 属于 Stage B；独立运行的 Ollama/Milvus、文章分块投影与 RAG 属于 Stage C；Agent API 与 SSE 属于 Stage D。
+
+Spring AI/Ollama 依赖只是客户端与运行时基础，不表示本机已运行 Ollama 或已下载 `bge-m3`。`deepseek-v4-flash` 也只是可配置默认值，在显式验收前不代表模型可用性或质量结论。Prometheus registry 的依赖存在也不代表已公开 scrape endpoint 或交付 Dashboard；当前 Actuator 只暴露 health。
+
+### 隔离环境的 Provider 验证
+
+仅在非生产、隔离的验收环境中，才可把所需的 `METRO_AI_*_ENABLED` 开关显式改为 `true`，并注入 `DEEPSEEK_BASE_URL`、`DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL`、`OLLAMA_BASE_URL` 和 `OLLAMA_EMBEDDING_MODEL`。密钥不得写入 YAML、Git 或测试报告。Stage A 没有公开调用入口，该 opt-in 只用于受控的 Provider adapter 验收。
+
+真实 Provider smoke 不属于常规 CI。如果没有专用 Key，结果必须记为 `NOT RUN`，不能记为 PASS；无论是否执行，都不记录凭据、prompt、模型原始输出或 Provider 错误体。
 
 ## 测试
 

@@ -16,6 +16,12 @@ spring:
     port: 5672
     username: metro
     password: replace-with-a-local-password
+  ai:
+    model:
+      chat: none
+      embedding: none
+    retry:
+      max-attempts: 1
 
 app:
   security:
@@ -24,6 +30,27 @@ app:
       - http://localhost:5173
   websocket:
     ticket-ttl: PT30S
+
+metro:
+  ai:
+    enabled: ${METRO_AI_ENABLED:false}
+    agent:
+      enabled: ${METRO_AI_AGENT_ENABLED:false}
+    memory:
+      enabled: ${METRO_AI_MEMORY_ENABLED:false}
+    writing:
+      enabled: ${METRO_AI_WRITING_ENABLED:false}
+    moderation:
+      enabled: ${METRO_AI_MODERATION_ENABLED:false}
+    embedding:
+      enabled: ${METRO_AI_EMBEDDING_ENABLED:false}
+    deep-seek:
+      base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
+      api-key: ${DEEPSEEK_API_KEY:}
+      model: ${DEEPSEEK_MODEL:deepseek-v4-flash}
+    ollama:
+      base-url: ${OLLAMA_BASE_URL:http://127.0.0.1:11434}
+      model: ${OLLAMA_EMBEDDING_MODEL:bge-m3}
 
 recommendation:
   training-exposure-scan-limit: 200000

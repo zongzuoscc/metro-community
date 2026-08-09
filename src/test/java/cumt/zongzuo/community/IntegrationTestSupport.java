@@ -26,7 +26,17 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Stream;
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@SpringBootTest(
+        webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+        properties = {
+                "metro.ai.enabled=false",
+                "metro.ai.agent.enabled=false",
+                "metro.ai.memory.enabled=false",
+                "metro.ai.writing.enabled=false",
+                "metro.ai.moderation.enabled=false",
+                "metro.ai.embedding.enabled=false",
+                "DEEPSEEK_API_KEY="
+        })
 public abstract class IntegrationTestSupport {
 
     private static final AtomicBoolean SCHEMA_INITIALIZED = new AtomicBoolean();
