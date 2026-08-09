@@ -333,6 +333,11 @@ git commit -m "feat(ai): add typed capability provider gateways"
 - Create: `src/main/java/cumt/zongzuo/community/ai/runtime/RedisAiQuotaService.java`
 - Create: `src/main/java/cumt/zongzuo/community/ai/runtime/AiMetrics.java`
 - Create: `src/main/java/cumt/zongzuo/community/ai/runtime/AiExecutionException.java`
+- Create: `src/main/java/cumt/zongzuo/community/ai/runtime/AiExecutionErrorReason.java`
+- Create: `src/main/java/cumt/zongzuo/community/ai/runtime/AiCapabilityPolicy.java`
+- Create: `src/main/java/cumt/zongzuo/community/ai/runtime/AiCapabilityPolicyResolver.java`
+- Create: `src/main/java/cumt/zongzuo/community/ai/runtime/AiProviderExceptionClassifier.java`
+- Create: `src/main/java/cumt/zongzuo/community/ai/runtime/AiTokenUsageExtractor.java`
 - Create: `src/main/java/cumt/zongzuo/community/ai/config/AiRuntimeConfiguration.java`
 - Modify: `src/main/resources/application.yml`
 - Create: `src/test/java/cumt/zongzuo/community/ai/runtime/AiCapabilityExecutorTest.java`
@@ -354,7 +359,11 @@ public interface AiQuotaService {
 
 - [ ] **Step 1: Write red tests for hard limits and real Redis quota atomicity**
 
-Cover: 4,001-character Agent input rejected before operation; expired deadline rejected; Agent ninth request in one minute and 101st in one day rejected; concurrent Redis acquisition cannot exceed eight; a full Agent bulkhead rejects immediately; 429/connect/selected 5xx retries once for interactive calls; validation/4xx/oversize never retries; background retry is capped at three; metrics have only `capability/provider/model/outcome` tags and never userId/request text.
+Cover executor behavior: 4,001-character Agent input rejected before quota and operation; expired deadline rejected; quota acquired exactly once even when the Provider is retried; interactive calls make at most two total attempts for connection failure, 429 and selected 500/502/503/504; background calls make at most three total attempts; timeout, malformed/empty/truncated response, non-retryable 4xx, validation, oversize, bulkhead rejection, circuit-open and cancellation never retry. Prove a short remaining deadline prevents a second attempt, timeout interrupts the worker, caller interruption cancels the worker and preserves the interrupt flag, saturation rejects deterministically, one saturated capability does not block another, and shutdown leaves no `ai-*` threads.
+
+Cover real Redis quota behavior: Agent permits exactly eight concurrent acquisitions in a 60-second fixed window and rejects the ninth; HyDE shares the Agent quota group; Article Summary uses `5/60s` and `30/day`; Writing uses `10/600s` and `60/day`; a short-window rejection does not consume the daily allowance; the 101st Agent daily request is tested with the short-window limit raised; bucket rollover, TTL and `retryAfterSeconds` are exact; Redis null/malformed replies or connection failure fail closed before operation. Use a random test namespace and never `FLUSHDB`, so recommendation tests can run concurrently.
+
+Cover metrics: only `capability/provider/model/outcome` are permitted tags; arbitrary userId, requestId, articleId, prompt and URL never enter meter identifiers; request metrics are once per executor invocation, Provider metrics once per real attempt, tokens only on successful chat results, and the circuit gauge is registered once per capability.
 
 - [ ] **Step 2: Run red runtime tests**
 
@@ -364,15 +373,32 @@ Expected: FAIL because the runtime boundary does not exist.
 
 - [ ] **Step 3: Implement bounded policies**
 
-Use Redis Lua for minute/day quota increments plus TTL in one atomic operation. Configure bounded per-capability executors/bulkheads with initial concurrency `AGENT=8`, `MODERATION=2`, `MEMORY_EXTRACTION=2`, `EMBEDDING=4`; no `Executors.newCachedThreadPool`, raw `new Thread`, or unbounded queue. Enforce total timeouts `AGENT=45s`, `ARTICLE_SUMMARY=60s`, `WRITING=60s`, `HYDE=8s`, moderation block `20s`, moderation task `90s`. Apply Resilience4j retry/circuit breaker/time limiter outside the gateway and always cap work by `context.deadline()`.
+Use one Redis Lua hash per `{quotaGroup:userId}`. The script obtains Redis `TIME`, computes a 60-second or 600-second fixed short bucket plus the Asia/Shanghai day bucket, checks both limits before incrementing either counter, refreshes a bounded TTL, and returns `allowed/reason/retryAfterSeconds`. HyDE resolves to the Agent quota group. Capabilities with system budgets and no user quota must bypass user quota rather than interpret zero as reject-all. Redis failures map to `AGENT_RUNTIME_UNAVAILABLE`; unlike the recommendation feed limiter, this boundary is fail closed.
 
-Record `ai.request.count/latency/tokens`, `ai.quota.rejected`, `ai.bulkhead.rejected`, `ai.circuit.state`, `provider.timeout/429/5xx`. Redis quota failure must fail the AI admission, not unrelated endpoints.
+Configure one fixed `ThreadPoolExecutor` per capability with `corePoolSize == maximumPoolSize == bulkhead limit`, `SynchronousQueue`, `AbortPolicy`, capability-named threads and bounded shutdown. Pair it with a Resilience4j semaphore `Bulkhead` whose `maxWaitDuration` is zero. Initial limits remain `AGENT=8`, `MODERATION=2`, `MEMORY_EXTRACTION=2`, `EMBEDDING=4`; every other capability limit must be an explicit tested configuration default. Do not use `ThreadPoolBulkhead`, `CompletionStage` TimeLimiter, `Executors.newCachedThreadPool`, raw `new Thread`, or any unbounded queue.
+
+For each invocation, validate first, acquire quota once, then compose the actual attempt in this order:
+
+```text
+Retry (outer; interactive maxAttempts=2, background maxAttempts=3)
+  -> CircuitBreaker
+  -> Semaphore Bulkhead(maxWait=0)
+  -> Future TimeLimiter(cancelRunningFuture=true)
+  -> bounded capability executor
+  -> typed gateway
+```
+
+`Retry.maxAttempts` includes the initial call. Each attempt computes `min(context.deadline, invocationStart + capabilityTimeout) - Clock.instant()` and creates a short-lived Future TimeLimiter from the remaining duration; an exhausted deadline never submits new work. The TimeLimiter must cancel the worker future, and interrupt/cancellation must never be misreported as the last Provider error. Quota and input validation stay outside Retry. Programmatically compose these policies; do not use static Resilience4j annotations or AOP because timeout and retry policy depend on the invocation deadline and foreground/background mode.
+
+Enforce total timeouts `AGENT=45s`, `ARTICLE_SUMMARY=60s`, `WRITING=60s`, `HYDE=8s`; a moderation block is 20 seconds while the moderation orchestrator carries a separate 90-second absolute task deadline. Gateway connect/read timeouts must remain below the effective capability deadline. Add a distinct typed `TIMEOUT` reason. Retry only connection failure, rate limiting, and selected 500/502/503/504 failures; timeout, caller cancellation, disabled/unavailable Provider, malformed/empty output, validation, ACL, quota, bulkhead, circuit-open and non-retryable 4xx never retry. Circuit breakers record Provider connection/timeout/429/retryable 5xx/malformed/empty failures and ignore caller/input/admission failures; thresholds and windows are explicit configuration with small-window tests, not hidden Resilience4j defaults.
+
+Record `ai.request.count/latency/tokens`, `ai.quota.rejected`, `ai.bulkhead.rejected`, `ai.circuit.state`, `provider.timeout/429/5xx`. Derive provider/model labels from trusted server configuration/results, never request data. Disable Resilience4j automatic metric binders and expose only the constrained `AiMetrics` meters. Redis quota failure must fail only the AI admission, not unrelated endpoints.
 
 - [ ] **Step 4: Run green tests and inspect threads/metrics**
 
 Run: `./mvnw -Dtest=AiCapabilityExecutorTest,AiQuotaServiceIntegrationTest,AiMetricsTest test`
 
-Expected: PASS; operation counters equal the allowed retry ceilings, queue-capacity tests reject deterministically, and meter tags contain no high-cardinality identity/content.
+Expected: PASS; operation counters equal the total attempt ceilings, timeout tests observe worker interruption, Redis tests prove the 600-second Writing window and fail-closed behavior, queue-capacity tests reject deterministically, shutdown leaves no worker threads, and meter tags contain no high-cardinality identity/content.
 
 - [ ] **Step 5: Commit**
 
