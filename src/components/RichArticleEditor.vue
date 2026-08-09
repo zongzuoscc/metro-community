@@ -199,6 +199,25 @@
       </div>
     </BubbleMenu>
 
+    <div v-if="legacyProtected" class="article-editor__legacy-warning" role="alert">
+      <strong>原文保护已开启</strong>
+      <p>
+        该文章含有当前编辑器无法无损处理的原始 HTML。自动保存和发布已暂停，请先展开并备份原始 Markdown。
+      </p>
+      <details>
+        <summary>查看并复制原始 Markdown</summary>
+        <textarea :value="legacySource" readonly aria-label="原始 Markdown"></textarea>
+      </details>
+      <button
+        type="button"
+        class="article-editor__legacy-convert"
+        data-testid="convert-legacy-markdown"
+        @click="convertLegacyContent"
+      >
+        我已备份，转换后继续编辑
+      </button>
+    </div>
+
     <EditorContent :editor="editor" class="article-editor__content" />
 
     <p class="article-editor__notice">
@@ -221,7 +240,7 @@ import TableHeader from '@tiptap/extension-table-header'
 import TableCell from '@tiptap/extension-table-cell'
 import Underline from '@tiptap/extension-underline'
 import Placeholder from '@tiptap/extension-placeholder'
-import { sanitizeMarkdownImageDestinations } from '../utils/articleMarkdown'
+import { hasUnsupportedRawHtml, sanitizeMarkdownImageDestinations } from '../utils/articleMarkdown'
 
 const props = defineProps({
   modelValue: {
@@ -230,8 +249,11 @@ const props = defineProps({
   },
 })
 
-const emit = defineEmits(['update:modelValue', 'upload-image', 'word-count'])
+const emit = defineEmits(['update:modelValue', 'upload-image', 'word-count', 'legacy-protection'])
 const imageInput = ref(null)
+const initialMarkdown = sanitizeMarkdownImageDestinations(props.modelValue)
+const legacySource = ref(initialMarkdown)
+const legacyProtected = ref(hasUnsupportedRawHtml(initialMarkdown))
 
 function countWords(editorInstance) {
   const text = editorInstance.getText().trim()
@@ -247,12 +269,12 @@ function countWords(editorInstance) {
 }
 
 function emitEditorValue(editorInstance) {
-  emit('update:modelValue', editorInstance.getMarkdown())
   emit('word-count', countWords(editorInstance))
+  if (!legacyProtected.value) emit('update:modelValue', editorInstance.getMarkdown())
 }
 
 const editor = useEditor({
-  content: sanitizeMarkdownImageDestinations(props.modelValue),
+  content: initialMarkdown,
   contentType: 'markdown',
   extensions: [
     StarterKit.configure({
@@ -288,6 +310,7 @@ const editor = useEditor({
   },
   onCreate: ({ editor: editorInstance }) => {
     emit('word-count', countWords(editorInstance))
+    emit('legacy-protection', legacyProtected.value)
   },
   onUpdate: ({ editor: editorInstance }) => {
     emitEditorValue(editorInstance)
@@ -298,6 +321,13 @@ watch(
   () => props.modelValue,
   value => {
     const sanitizedValue = sanitizeMarkdownImageDestinations(value)
+    const nextLegacyProtected = hasUnsupportedRawHtml(sanitizedValue)
+
+    legacySource.value = sanitizedValue
+    if (legacyProtected.value !== nextLegacyProtected) {
+      legacyProtected.value = nextLegacyProtected
+      emit('legacy-protection', nextLegacyProtected)
+    }
 
     if (!editor.value || sanitizedValue === editor.value.getMarkdown()) return
 
@@ -308,6 +338,19 @@ watch(
     emit('word-count', countWords(editor.value))
   },
 )
+
+function convertLegacyContent() {
+  if (!editor.value || !legacyProtected.value) return
+
+  const accepted = window.confirm(
+    '转换后，当前编辑器不支持的 HTML 和媒体标记将从文章中移除。请确认你已备份原始 Markdown。',
+  )
+  if (!accepted) return
+
+  legacyProtected.value = false
+  emit('legacy-protection', false)
+  emitEditorValue(editor.value)
+}
 
 function setLink() {
   if (!editor.value) return
@@ -374,6 +417,53 @@ function insertImage(url) {
   background: var(--paper-muted);
   scrollbar-width: thin;
   scrollbar-color: var(--line) transparent;
+}
+
+.article-editor__legacy-warning {
+  margin: var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid #d29a50;
+  border-radius: var(--radius-sm);
+  background: #fff8eb;
+  color: #704817;
+
+  p {
+    margin: var(--space-2) 0;
+    line-height: 1.7;
+  }
+
+  details {
+    margin: var(--space-3) 0;
+  }
+
+  summary {
+    cursor: pointer;
+    font-weight: 600;
+  }
+
+  textarea {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 140px;
+    margin-top: var(--space-2);
+    padding: var(--space-3);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--paper);
+    color: var(--ink);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    resize: vertical;
+  }
+}
+
+.article-editor__legacy-convert {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid currentColor;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
 }
 
 .article-editor__tool-group {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   estimateReadingMinutes,
+  hasUnsupportedRawHtml,
   normalizeMarkdown,
   sanitizeMarkdownImageDestinations,
 } from './articleMarkdown'
@@ -40,6 +41,17 @@ describe('article Markdown helpers', () => {
     ].join('\n\n')
 
     expect(sanitizeMarkdownImageDestinations(markdown)).toBe(markdown)
+  })
+
+  it('detects raw HTML that the rich editor cannot safely round-trip', () => {
+    expect(hasUnsupportedRawHtml('before\n\n<iframe src="https://video.example/embed"></iframe>')).toBe(true)
+    expect(hasUnsupportedRawHtml('<style>.legacy { color: red; }</style>\n\ntext')).toBe(true)
+    expect(hasUnsupportedRawHtml('inline <span class="legacy">text</span>')).toBe(true)
+  })
+
+  it('does not treat fenced HTML examples as unsupported raw HTML', () => {
+    expect(hasUnsupportedRawHtml('```html\n<iframe src="https://video.example/embed"></iframe>\n```')).toBe(false)
+    expect(hasUnsupportedRawHtml('## 标题\n\n只有 **Markdown**')).toBe(false)
   })
 
   it('preserves escaped image literals and Markdown code examples verbatim', () => {

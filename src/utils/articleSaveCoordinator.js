@@ -3,6 +3,7 @@ import { nextTick, reactive } from 'vue'
 export function createArticleSaveCoordinator({
   autoSaveDelay,
   hasRequiredContent,
+  canPersist = () => true,
   buildPayload,
   saveDraft,
   publish,
@@ -15,6 +16,7 @@ export function createArticleSaveCoordinator({
     hydrating: false,
     saving: false,
     publishing: false,
+    publishOutdated: false,
     disposed: false,
   })
 
@@ -35,7 +37,7 @@ export function createArticleSaveCoordinator({
   function scheduleAutoSave() {
     clearAutoSaveTimer()
 
-    if (state.disposed || state.hydrating || state.saving || publishRequested || !hasRequiredContent()) return
+    if (state.disposed || state.hydrating || state.saving || publishRequested || !canPersist() || !hasRequiredContent()) return
 
     autoSaveTimer = globalThis.setTimeout(() => {
       autoSaveTimer = undefined
@@ -70,7 +72,7 @@ export function createArticleSaveCoordinator({
   }
 
   async function saveCurrentDraft() {
-    if (state.disposed || state.saving || publishRequested || inFlightPublish || !hasRequiredContent()) return false
+    if (state.disposed || state.saving || publishRequested || inFlightPublish || !canPersist() || !hasRequiredContent()) return false
 
     clearAutoSaveTimer()
     const requestVersion = changeVersion
@@ -112,7 +114,8 @@ export function createArticleSaveCoordinator({
       savedVersion = requestVersion
       state.dirty = changeVersion !== savedVersion
       state.failed = false
-      return true
+      state.publishOutdated = state.dirty
+      return !state.publishOutdated
     } catch (error) {
       state.failed = true
       state.dirty = true
@@ -121,9 +124,12 @@ export function createArticleSaveCoordinator({
   }
 
   function requestPublish() {
-    if (state.disposed || inFlightPublish || !hasRequiredContent()) return inFlightPublish || Promise.resolve(false)
+    if (state.disposed || inFlightPublish || !canPersist() || !hasRequiredContent()) {
+      return inFlightPublish || Promise.resolve(false)
+    }
 
     clearAutoSaveTimer()
+    state.publishOutdated = false
     publishRequested = true
     state.publishing = true
     const currentPublish = (async () => {

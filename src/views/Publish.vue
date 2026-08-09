@@ -80,6 +80,7 @@
           v-model="form.content"
           @upload-image="uploadInlineImage"
           @word-count="wordCount = $event"
+          @legacy-protection="legacyContentProtected = $event"
         />
       </main>
     </div>
@@ -124,6 +125,7 @@ const router = useRouter()
 const isEdit = ref(false)
 const wordCount = ref(0)
 const hotTags = ref([])
+const legacyContentProtected = ref(false)
 
 const form = reactive({
   id: null,
@@ -157,6 +159,7 @@ function buildPayload() {
 const saveCoordinator = createArticleSaveCoordinator({
   autoSaveDelay: AUTO_SAVE_DELAY,
   hasRequiredContent,
+  canPersist: () => !legacyContentProtected.value,
   buildPayload,
   saveDraft,
   publish: (payload) => publishArticle({ ...payload, isPublish: true }),
@@ -175,17 +178,31 @@ const draftStatus = computed(() => nextDraftState(
 ))
 
 async function handleSaveDraft() {
+  if (legacyContentProtected.value) {
+    ElMessage.warning('原文保护中：请先备份原始 Markdown，再确认转换')
+    return
+  }
+
   const saved = await saveCoordinator.saveCurrentDraft()
   if (saved) ElMessage.success('草稿已保存')
 }
 
 async function handlePublish() {
+  if (legacyContentProtected.value) {
+    ElMessage.warning('原文保护中：请先备份原始 Markdown，再确认转换')
+    return
+  }
+
   if (!hasRequiredContent()) {
     ElMessage.warning('请先填写标题和正文')
     return
   }
 
   const published = await saveCoordinator.requestPublish()
+  if (saveCoordinator.state.publishOutdated) {
+    ElMessage.warning('已发布提交时的版本，发布期间的新修改仍在编辑器中，请再次发布')
+    return
+  }
   if (published) {
     ElMessage.success('文章已发布')
     await router.push('/home')

@@ -16,6 +16,17 @@ function visitMarkdownNodes(node, visitor) {
   }
 }
 
+export function hasUnsupportedRawHtml(value = '') {
+  const tree = markdownParser.parse(value)
+  let found = false
+
+  visitMarkdownNodes(tree, node => {
+    if (node.type === 'html') found = true
+  })
+
+  return found
+}
+
 function sourceRange(node) {
   const start = node.position?.start.offset
   const end = node.position?.end.offset

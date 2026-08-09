@@ -174,4 +174,77 @@ describe('article save coordinator', () => {
     publishGate.resolve({ data: true })
     await expect(publishing).resolves.toBe(true)
   })
+
+  it('keeps edits made during a deferred publication dirty and requires another publish', async () => {
+    const firstPublish = deferred()
+    const publishedPayloads = []
+    const form = { title: '标题', content: '提交时的正文' }
+    const coordinator = createArticleSaveCoordinator({
+      autoSaveDelay: 10_000,
+      hasRequiredContent: () => Boolean(form.title && form.content),
+      buildPayload: () => ({ ...form }),
+      saveDraft: async () => ({ data: 1 }),
+      publish: (payload) => {
+        publishedPayloads.push(payload)
+        return firstPublish.promise
+      },
+    })
+
+    coordinator.markChanged()
+    const publishing = coordinator.requestPublish()
+    await Promise.resolve()
+
+    form.content = '发布期间新增的内容'
+    coordinator.markChanged()
+    firstPublish.resolve({ data: true })
+
+    await expect(publishing).resolves.toBe(false)
+    expect(publishedPayloads).toEqual([{ title: '标题', content: '提交时的正文' }])
+    expect(coordinator.state.publishOutdated).toBe(true)
+    expect(coordinator.state.dirty).toBe(true)
+
+    await expect(coordinator.requestPublish()).resolves.toBe(true)
+    expect(publishedPayloads).toEqual([
+      { title: '标题', content: '提交时的正文' },
+      { title: '标题', content: '发布期间新增的内容' },
+    ])
+    expect(coordinator.state.publishOutdated).toBe(false)
+    expect(coordinator.state.dirty).toBe(false)
+    coordinator.dispose()
+  })
+
+  it('blocks autosave and publication while persistence is protected', async () => {
+    const savedPayloads = []
+    const publishedPayloads = []
+    const form = { title: '旧文章', content: '<iframe src="https://video.example/embed"></iframe>' }
+    let protectedContent = true
+    const coordinator = createArticleSaveCoordinator({
+      autoSaveDelay: 5,
+      hasRequiredContent: () => Boolean(form.title && form.content),
+      canPersist: () => !protectedContent,
+      buildPayload: () => ({ ...form }),
+      saveDraft: async (payload) => {
+        savedPayloads.push(payload)
+        return { data: 1 }
+      },
+      publish: async (payload) => {
+        publishedPayloads.push(payload)
+        return { data: true }
+      },
+    })
+
+    coordinator.markChanged()
+    await wait(15)
+
+    await expect(coordinator.saveCurrentDraft()).resolves.toBe(false)
+    await expect(coordinator.requestPublish()).resolves.toBe(false)
+    expect(savedPayloads).toEqual([])
+    expect(publishedPayloads).toEqual([])
+
+    protectedContent = false
+    coordinator.markChanged()
+    await wait(10)
+    expect(savedPayloads).toEqual([{ title: '旧文章', content: '<iframe src="https://video.example/embed"></iframe>' }])
+    coordinator.dispose()
+  })
 })
