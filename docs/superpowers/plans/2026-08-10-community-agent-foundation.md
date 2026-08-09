@@ -519,7 +519,7 @@ Expected: PASS; AI test routes use RFC 9457 and all existing endpoints retain `R
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/main/java/cumt/zongzuo/community/ai/web src/main/java/cumt/zongzuo/community/config/SecurityConfig.java src/test/java/cumt/zongzuo/community/ai/web src/test/java/cumt/zongzuo/community/security/SecurityIntegrationTest.java
+git add src/main/java/cumt/zongzuo/community/ai/web src/main/java/cumt/zongzuo/community/config/SecurityConfig.java src/main/java/cumt/zongzuo/community/exception/GlobalExceptionHandler.java src/test/java/cumt/zongzuo/community/ai/web src/test/java/cumt/zongzuo/community/security/SecurityIntegrationTest.java
 git commit -m "feat(ai-api): add scoped problem details and cors contract"
 ```
 
@@ -536,7 +536,7 @@ git commit -m "feat(ai-api): add scoped problem details and cors contract"
 
 - [ ] **Step 1: Write failing documentation assertions**
 
-Assert README and examples name the exact baselines/flags, state no-Key startup and manual-review fallback, state Provider services are not contacted by default, and do not mention `AI_CHAT_ENABLED`, old GET routes, robot 9999, M5 or the OpenAI starter.
+Assert README and examples name the exact baselines/flags, state no-Key startup and manual-review fallback, state Provider services are not contacted by default, and do not mention `AI_CHAT_ENABLED`, old GET routes, robot 9999, M5 or the OpenAI starter. Assert the all-off context has six disabled business switches, no DeepSeek/Ollama API or Model beans, disabled gateways, health `UP`, and only the health Actuator endpoint discovered; exercise ordinary private-message persistence and at least one public article endpoint so 401/403 cannot masquerade as health.
 
 - [ ] **Step 2: Run red documentation test**
 
@@ -546,7 +546,11 @@ Expected: FAIL because current docs still describe `AI_CHAT_ENABLED` and the old
 
 - [ ] **Step 3: Update docs/examples without secrets**
 
-Document how to keep all capabilities off and how an isolated non-production environment opts in. State explicitly: Stage A moderation is manual-only; revision binding/Outbox arrive in B; Ollama/Milvus runtime in C; Agent API/SSE in D. Do not add Milvus ports, migration SQL, Agent endpoints, or quality claims to Stage A configuration.
+Document how to keep all capabilities off and how an isolated non-production environment opts in. `.env.example` contains the six `METRO_AI_*_ENABLED=false` flags plus DeepSeek base URL/key/model and Ollama base URL/model, but no obsolete chat flag or Milvus variable. Merge `spring.ai.model.*=none`, retry-attempts 1 and the disabled `metro.ai` block into the existing `application-example.yml`; do not create a second top-level `spring` key.
+
+State explicitly: Stage A contains only provider-neutral adapters, runtime limits/resilience/metrics and an unconditional manual moderation path; it has no public Agent API or page. Revision binding/Outbox arrive in B; independently operated Ollama/Milvus runtime, chunk projection and RAG arrive in C; Agent API/SSE in D. Do not add Milvus ports, migration SQL, Compose services, Agent endpoints, image/audio features or model quality/availability claims to Stage A configuration. Spring AI/Ollama dependencies do not imply an Ollama server or downloaded `bge-m3`; `deepseek-v4-flash` is only a configurable default until an opt-in live smoke is actually run. Prometheus registry presence does not imply a public scrape endpoint or dashboard.
+
+Document optional live Provider smoke as outside regular CI and report `NOT RUN` when no Key is available; never call a skipped smoke PASS and never record credentials, prompts, model output or Provider error bodies.
 
 - [ ] **Step 4: Run focused and full verification**
 
@@ -554,15 +558,19 @@ Run:
 
 ```bash
 ./mvnw -Dtest=PrivateMessageIntegrationTest,NoAiStartupIntegrationTest,ModerationFallbackIntegrationTest test
-./mvnw -Dtest=DeepSeekAiChatGatewayContractTest,OllamaEmbeddingGatewayContractTest,AiCapabilityExecutorTest,AiQuotaServiceIntegrationTest test
+./mvnw -Dtest=LegacyAiSurfaceIntegrationTest,CommunityApplicationTests test
+./mvnw -Dtest=DeepSeekAiChatGatewayContractTest,OllamaEmbeddingGatewayContractTest,AiCapabilityExecutorTest,AiQuotaServiceIntegrationTest,AiMetricsTest test
 ./mvnw -Dtest=AiProblemDetailIntegrationTest,AiCorsIntegrationTest,SecurityIntegrationTest test
 ./mvnw test
 ./mvnw -DskipTests package
+./mvnw dependency:tree -Dverbose
+docker compose --env-file .env.example config
 git diff --check
-rg -n "ChatUtils|MetroAiService|AiToolConfig|toId == 9999|spring-ai-openai-spring-boot-starter|1.0.0-M5|spring-milestones|AI_CHAT_ENABLED" src pom.xml README.md .env.example
+if rg -n "ChatUtils|MetroAiService|AiToolConfig|9999L?|/api/ai/" src/main README.md .env.example; then exit 1; fi
+if rg -n "spring-ai-openai-spring-boot-starter|1\\.0\\.0-M5|spring-milestones|AI_CHAT_ENABLED" pom.xml README.md .env.example; then exit 1; fi
 ```
 
-Expected: every Maven command exits 0; the final `rg` exits 1 with no matches; all default integration tests use isolated Testcontainers and make zero live Provider calls.
+Expected: every Maven/configuration command exits 0; both guarded scans find no production/docs matches without falsely matching the legacy-removal test fixtures; all default integration tests use isolated Testcontainers and make zero live Provider calls. Rabbit tests exercise real bounded retry/DLQ, CORS assertions inspect allowed/exposed header values rather than only OPTIONS status, and no unauthorized response is accepted as an Actuator or ordinary-endpoint success.
 
 - [ ] **Step 5: Commit**
 
