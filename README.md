@@ -17,7 +17,7 @@ Metro Community 的 Vue 3 前端。它面向桌面端内容创作与社区浏览
 - Node.js：建议使用项目锁定依赖可支持的当前 LTS 版本。
 - 已启动 Metro Community Java 21 后端及其依赖服务。项目的隔离本地配置让后端监听 `http://localhost:18080`，启动方式与 MySQL、Redis、RabbitMQ、Elasticsearch 的环境变量说明见[后端 README](https://github.com/zongzuoscc/metro-community/blob/master/README.md)。
 
-Axios 从 `VITE_API_BASE_URL` 读取后端地址，默认值为 `http://localhost:18080`。WebSocket 会从同一地址派生 `ws://localhost:18080/im/{token}`，HTTPS 环境会自动改用 `wss`，不再依赖硬编码的 8080 端口。`vite.config.js` 的开发代理由 `VITE_PROXY_TARGET` 控制。
+Axios 从 `VITE_API_BASE_URL` 读取后端地址，默认值为 `http://localhost:18080`。WebSocket 连接前会用登录 JWT 调用 `POST /api/ws/ticket`，再从同一地址派生 `ws://localhost:18080/im/{ticket}`；JWT 不会出现在 WebSocket URI 中。HTTPS 环境会自动改用 `wss`，不再依赖硬编码的 8080 端口。`vite.config.js` 的开发代理由 `VITE_PROXY_TARGET` 控制。
 
 前端隔离端口为 `15173`。后端启动时应设置 `CORS_ALLOWED_ORIGINS=http://localhost:15173,http://127.0.0.1:15173`；若修改前端端口，需要同步修改该配置。
 
@@ -36,7 +36,7 @@ cp .env.example .env
 npm run dev -- --host 127.0.0.1
 ```
 
-在浏览器打开 `http://localhost:15173`。登录后，前端会从 `localStorage` 读取既有 `token` 并通过 `token` 请求头发送给后端，同时建立同源配置的 WebSocket 连接。退出登录、密码重置或收到 401 时会主动关闭连接并取消重连。后端也兼容标准的 Bearer Token，但前端不会自行生成认证信息。
+在浏览器打开 `http://localhost:15173`。登录后，前端会从 `localStorage` 读取既有 `token`：普通 REST 请求继续使用现有 `token` 请求头，WebSocket 只在 ticket 签发请求的 `Authorization: Bearer` 中使用它。每次初始连接或断线重连都会申请新的一次性 ticket，网络或 HTTP 503 故障最多重试 5 次； ticket 请求返回 401 时立即清理登录态并跳转登录页，不会继续重试。退出登录、密码重置或账号切换会主动关闭连接，且已在途中的 ticket 响应不能重新打开旧账号连接。
 
 ## 首页推荐与最新流
 
