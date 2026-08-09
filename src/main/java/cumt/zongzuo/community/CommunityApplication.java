@@ -10,7 +10,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.scheduling.annotation.EnableScheduling;
 
 @SpringBootApplication(exclude = UserDetailsServiceAutoConfiguration.class)
-@MapperScan("cumt.zongzuo.community.mapper")
+@MapperScan({"cumt.zongzuo.community.mapper", "cumt.zongzuo.community.recommendation.mapper"})
 @EnableScheduling
 @EnableConfigurationProperties({SecurityProperties.class, RecommendationProperties.class})
 public class CommunityApplication {

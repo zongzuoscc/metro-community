@@ -11,11 +11,12 @@ import cumt.zongzuo.community.mapper.FollowMapper;
 import cumt.zongzuo.community.mapper.UserMapper;
 import cumt.zongzuo.community.recommendation.dto.RecommendationEventCommand;
 import cumt.zongzuo.community.recommendation.entity.RecommendationEventType;
-import cumt.zongzuo.community.recommendation.service.RecommendationEventPublisher;
+import cumt.zongzuo.community.recommendation.service.RecommendationEventOutboxService;
 import cumt.zongzuo.community.service.FollowService;
 import cumt.zongzuo.community.service.MessageService;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -41,7 +42,7 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
     private RabbitTemplate rabbitTemplate;
 
     @Autowired
-    private RecommendationEventPublisher recommendationEventPublisher;
+    private RecommendationEventOutboxService recommendationEventOutboxService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -71,31 +72,32 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
             follow.setFollowedId(followedId);
             follow.setCreateTime(LocalDateTime.now());
 
+            boolean saved;
             try {
-                boolean saved = save(follow);
-                if (saved) {
-                    recommendationEventPublisher.publishAfterCommit(new RecommendationEventCommand(
-                            followerId,
-                            null,
-                            followedId,
-                            RecommendationEventType.FOLLOW_AUTHOR,
-                            LocalDateTime.now(),
-                            "follow:" + follow.getId(),
-                            "follow"));
-                }
-                // 【修改】异步发送通知
-                NotificationMsgDTO msg = new NotificationMsgDTO();
-                msg.setFromId(followerId);
-                msg.setToId(followedId);
-                msg.setType(3); // 关注
-                msg.setTargetId(followerId); // 点击跳转到粉丝主页
-
-                // 发送到 MQ
-                rabbitTemplate.convertAndSend("message.notify.queue", msg);
-            } catch (Exception e) {
-                // 忽略唯一索引冲突
+                saved = save(follow);
+            } catch (DuplicateKeyException e) {
+                // A stale Redis miss can race with an already committed follow.
                 return;
             }
+            if (saved) {
+                recommendationEventOutboxService.enqueue(new RecommendationEventCommand(
+                        followerId,
+                        null,
+                        followedId,
+                        RecommendationEventType.FOLLOW_AUTHOR,
+                        LocalDateTime.now(),
+                        "follow:" + follow.getId(),
+                        "follow"));
+            }
+            // 【修改】异步发送通知
+            NotificationMsgDTO msg = new NotificationMsgDTO();
+            msg.setFromId(followerId);
+            msg.setToId(followedId);
+            msg.setType(3); // 关注
+            msg.setTargetId(followerId); // 点击跳转到粉丝主页
+
+            // 发送到 MQ
+            rabbitTemplate.convertAndSend("message.notify.queue", msg);
             redisTemplate.opsForSet().add(key, followedId.toString());
         }
     }

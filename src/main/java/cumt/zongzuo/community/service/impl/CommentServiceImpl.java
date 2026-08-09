@@ -15,7 +15,7 @@ import cumt.zongzuo.community.mapper.CommentMapper;
 import cumt.zongzuo.community.mapper.UserMapper;
 import cumt.zongzuo.community.recommendation.dto.RecommendationEventCommand;
 import cumt.zongzuo.community.recommendation.entity.RecommendationEventType;
-import cumt.zongzuo.community.recommendation.service.RecommendationEventPublisher;
+import cumt.zongzuo.community.recommendation.service.RecommendationEventOutboxService;
 import cumt.zongzuo.community.service.CommentService;
 import cumt.zongzuo.community.service.MessageService;
 import cumt.zongzuo.community.service.UserService;
@@ -50,7 +50,7 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
     private ArticleMapper articleMapper;
 
     @Autowired
-    private RecommendationEventPublisher recommendationEventPublisher;
+    private RecommendationEventOutboxService recommendationEventOutboxService;
 
     @Override
     @Transactional(rollbackFor = Exception.class) // 建议加上事务
@@ -73,7 +73,7 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
         boolean saved = save(comment);
 
         if (saved) {
-            recommendationEventPublisher.publishAfterCommit(new RecommendationEventCommand(
+            recommendationEventOutboxService.enqueue(new RecommendationEventCommand(
                     userId,
                     comment.getArticleId(),
                     null,

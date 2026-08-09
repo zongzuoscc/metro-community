@@ -9,6 +9,9 @@ import cumt.zongzuo.community.entity.LikeRecord;
 import cumt.zongzuo.community.mapper.ArticleMapper;
 import cumt.zongzuo.community.mapper.CommentMapper;
 import cumt.zongzuo.community.mapper.LikeRecordMapper;
+import cumt.zongzuo.community.recommendation.dto.RecommendationEventCommand;
+import cumt.zongzuo.community.recommendation.entity.RecommendationEventType;
+import cumt.zongzuo.community.recommendation.service.RecommendationEventOutboxService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.amqp.rabbit.annotation.RabbitHandler;
@@ -33,6 +36,8 @@ public class LikeConsumer {
     private CommentMapper commentMapper;
     @Autowired
     private RabbitTemplate rabbitTemplate;
+    @Autowired
+    private RecommendationEventOutboxService recommendationEventOutboxService;
 
     @RabbitHandler
     @Transactional
@@ -56,6 +61,16 @@ public class LikeConsumer {
                 } catch (DuplicateKeyException e) {
                     // A redelivered message whose database transaction already completed.
                     return;
+                }
+                if (targetType == 1) {
+                    recommendationEventOutboxService.enqueue(new RecommendationEventCommand(
+                            userId,
+                            targetId,
+                            null,
+                            RecommendationEventType.LIKE,
+                            record.getCreateTime(),
+                            "like:" + record.getId(),
+                            "article_detail"));
                 }
 
                 // 2. 更新计数 + 发送通知

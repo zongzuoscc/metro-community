@@ -200,6 +200,26 @@ CREATE TABLE user_article_event (
     INDEX idx_article_event_time (article_id, occurred_at DESC)
 ) COMMENT='个性化推荐行为事实';
 
+CREATE TABLE recommendation_event_outbox (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    article_id BIGINT NULL,
+    target_author_id BIGINT NULL,
+    event_type VARCHAR(32) NOT NULL,
+    occurred_at DATETIME NOT NULL,
+    dedupe_key VARCHAR(160) NOT NULL,
+    source VARCHAR(64) NOT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+    retry_count INT NOT NULL DEFAULT 0,
+    next_attempt_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_error VARCHAR(500) NULL,
+    create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    sent_time DATETIME NULL,
+    UNIQUE KEY uk_recommendation_outbox_dedupe (dedupe_key),
+    INDEX idx_recommendation_outbox_dispatch (status, next_attempt_at, id)
+) COMMENT='推荐事件事务 Outbox';
+
 CREATE TABLE recommendation_exposure (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     user_id BIGINT NOT NULL,
@@ -217,4 +237,3 @@ CREATE TABLE recommendation_exposure (
     INDEX idx_exposure_user_time (user_id, exposed_at DESC),
     INDEX idx_exposure_article_time (article_id, exposed_at DESC)
 ) COMMENT='推荐真实曝光和训练特征快照';
-

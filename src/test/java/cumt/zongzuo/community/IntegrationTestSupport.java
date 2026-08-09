@@ -22,11 +22,14 @@ import cumt.zongzuo.community.security.JwtService;
 
 import javax.sql.DataSource;
 import java.nio.file.Path;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Stream;
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 public abstract class IntegrationTestSupport {
+
+    private static final AtomicBoolean SCHEMA_INITIALIZED = new AtomicBoolean();
 
     static final MySQLContainer<?> MYSQL = new MySQLContainer<>("mysql:8.0");
 
@@ -82,6 +85,8 @@ public abstract class IntegrationTestSupport {
         registry.add("spring.rabbitmq.addresses", RABBIT::getAmqpUrl);
         registry.add("spring.rabbitmq.username", RABBIT::getAdminUsername);
         registry.add("spring.rabbitmq.password", RABBIT::getAdminPassword);
+        registry.add("spring.rabbitmq.listener.simple.auto-startup", () -> "false");
+        registry.add("recommendation.outbox.dispatch-enabled", () -> "false");
         registry.add("spring.elasticsearch.uris", ELASTICSEARCH::getHttpHostAddress);
         registry.add("app.security.jwt-secret", () -> "test-secret-with-at-least-thirty-two-characters");
         registry.add("app.security.token-ttl", () -> "PT30M");
@@ -96,7 +101,9 @@ public abstract class IntegrationTestSupport {
 
     @BeforeAll
     void initializeSchema() {
-        new ResourceDatabasePopulator(new FileSystemResource("script.sql")).execute(dataSource);
+        if (SCHEMA_INITIALIZED.compareAndSet(false, true)) {
+            new ResourceDatabasePopulator(new FileSystemResource("script.sql")).execute(dataSource);
+        }
     }
 
     protected String url(String path) {
