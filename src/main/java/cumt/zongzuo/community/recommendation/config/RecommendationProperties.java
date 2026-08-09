@@ -17,5 +17,7 @@ public class RecommendationProperties {
     private int minimumGlobalEvents = 500;
     private int modelWindowDays = 90;
     private int labelWindowDays = 7;
+    private int modelMaxAgeDays = 7;
+    private int trainingSampleLimit = 50_000;
     private String modelDirectory = "data/recommendation-models";
 }

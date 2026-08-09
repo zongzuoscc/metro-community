@@ -9,6 +9,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.dao.DataAccessException;
 
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
@@ -74,11 +75,20 @@ public class RecommendationProfileService {
     }
 
     public Map<String, Double> profileTags(Long userId, int limit) {
-        return readProfile(tagKey(userId), limit, value -> value);
+        return readProfileForServing(tagKey(userId), limit, value -> value);
     }
 
     public Map<Long, Double> profileAuthors(Long userId, int limit) {
-        return readProfile(authorKey(userId), limit, Long::valueOf);
+        return readProfileForServing(authorKey(userId), limit, Long::valueOf);
+    }
+
+    private <T> Map<T, Double> readProfileForServing(String key, int limit,
+                                                      java.util.function.Function<String, T> memberMapper) {
+        try {
+            return readProfile(key, limit, memberMapper);
+        } catch (DataAccessException redisFailure) {
+            throw new RecommendationServingUnavailableException("Recommendation profile Redis unavailable", redisFailure);
+        }
     }
 
     private void rebuildWhileLocked(Long userId) {

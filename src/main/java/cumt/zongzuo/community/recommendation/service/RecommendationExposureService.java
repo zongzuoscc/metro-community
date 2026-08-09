@@ -4,18 +4,30 @@ import cumt.zongzuo.community.recommendation.dto.RecommendationExposureDraft;
 import cumt.zongzuo.community.recommendation.dto.RecommendationFeatureSnapshot;
 import cumt.zongzuo.community.recommendation.entity.RecommendationExposure;
 import cumt.zongzuo.community.recommendation.mapper.RecommendationExposureMapper;
-import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.List;
 
 @Service
-@RequiredArgsConstructor
 public class RecommendationExposureService {
 
     private final RecommendationExposureMapper mapper;
+    private final Clock clock;
+
+    @Autowired
+    public RecommendationExposureService(RecommendationExposureMapper mapper, ObjectProvider<Clock> clockProvider) {
+        this(mapper, clockProvider.getIfAvailable(Clock::systemDefaultZone));
+    }
+
+    RecommendationExposureService(RecommendationExposureMapper mapper, Clock clock) {
+        this.mapper = mapper;
+        this.clock = clock;
+    }
 
     @Transactional
     public List<Long> recordPage(String sessionId, Long userId,
@@ -41,7 +53,8 @@ public class RecommendationExposureService {
         exposure.setSourceTag(snapshot.sourceTag());
         exposure.setSourceSimilar(snapshot.sourceSimilar());
         exposure.setSourceExplore(snapshot.sourceExplore());
-        LocalDateTime now = LocalDateTime.now().withNano(0);
+        exposure.setBaselineScore(draft.baselineScore());
+        LocalDateTime now = LocalDateTime.now(clock).withNano(0);
         exposure.setExposedAt(now);
         exposure.setCreateTime(now);
         mapper.insertIfAbsent(exposure);

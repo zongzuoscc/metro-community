@@ -12,6 +12,12 @@ import java.util.List;
 @Mapper
 public interface UserArticleEventMapper extends BaseMapper<UserArticleEvent> {
 
+    @Select("SELECT COUNT(*) FROM user_article_event WHERE user_id = #{userId} AND occurred_at >= #{since}")
+    long countUserFactsSince(@Param("userId") Long userId, @Param("since") LocalDateTime since);
+
+    @Select("SELECT COUNT(*) FROM user_article_event WHERE occurred_at >= #{since}")
+    long countGlobalFactsSince(@Param("since") LocalDateTime since);
+
     @Select("SELECT article_id FROM user_article_event " +
             "WHERE user_id = #{userId} AND article_id IS NOT NULL " +
             "AND event_type IN ('VIEW', 'COLLECT') AND occurred_at >= #{since} " +

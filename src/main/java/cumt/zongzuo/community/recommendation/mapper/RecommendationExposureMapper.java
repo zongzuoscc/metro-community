@@ -14,13 +14,13 @@ public interface RecommendationExposureMapper extends BaseMapper<RecommendationE
             INSERT INTO recommendation_exposure
                 (user_id, article_id, session_id, source, tag_affinity, author_affinity,
                  similar_score, heat_score, freshness_score, source_follow, source_tag,
-                 source_similar, source_explore, exposed_at, create_time)
+                 source_similar, source_explore, baseline_score, exposed_at, create_time)
             VALUES
                 (#{exposure.userId}, #{exposure.articleId}, #{exposure.sessionId}, #{exposure.source},
                  #{exposure.tagAffinity}, #{exposure.authorAffinity}, #{exposure.similarScore},
                  #{exposure.heatScore}, #{exposure.freshnessScore}, #{exposure.sourceFollow},
                  #{exposure.sourceTag}, #{exposure.sourceSimilar}, #{exposure.sourceExplore},
-                 #{exposure.exposedAt}, #{exposure.createTime})
+                 #{exposure.baselineScore}, #{exposure.exposedAt}, #{exposure.createTime})
             ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)
             """)
     int insertIfAbsent(@Param("exposure") RecommendationExposure exposure);

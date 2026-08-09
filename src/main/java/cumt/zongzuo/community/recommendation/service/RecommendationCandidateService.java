@@ -7,6 +7,7 @@ import cumt.zongzuo.community.mapper.ArticleTagMapper;
 import cumt.zongzuo.community.mapper.TagMapper;
 import cumt.zongzuo.community.recommendation.mapper.UserArticleEventMapper;
 import cumt.zongzuo.community.recommendation.service.RecommendationCandidate.Source;
+import cumt.zongzuo.community.recommendation.training.RecommendationModel;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.elasticsearch.core.ElasticsearchOperations;
@@ -62,9 +63,10 @@ public class RecommendationCandidateService {
                                           UserArticleEventMapper eventMapper,
                                           RecommendationProfileService profileService,
                                           ElasticsearchOperations elasticsearchOperations,
-                                          RecommendationRankingService rankingService) {
+                                          RecommendationRankingService rankingService,
+                                          org.springframework.beans.factory.ObjectProvider<Clock> clockProvider) {
         this(articleMapper, articleTagMapper, tagMapper, eventMapper, profileService,
-                elasticsearchOperations, rankingService, Clock.systemDefaultZone());
+                elasticsearchOperations, rankingService, clockProvider.getIfAvailable(Clock::systemDefaultZone));
     }
 
     public RecommendationCandidateService(ArticleMapper articleMapper,
@@ -86,12 +88,21 @@ public class RecommendationCandidateService {
     }
 
     public List<RecommendationCandidate> recallAndRank(Long userId, Set<Long> shownArticleIds, int limit) {
-        if (userId == null || limit <= 0) {
+        List<RecommendationCandidate> featured = recallAndAssemble(userId, shownArticleIds);
+        if (featured.isEmpty() || limit <= 0) return List.of();
+        return rankingService.diversify(rankingService.rank(userId, featured,
+                normalizedArticleIds(shownArticleIds)), limit);
+    }
+
+    public List<RecommendationCandidate> recallAndAssemble(Long userId, Set<Long> shownArticleIds) {
+        if (userId == null) {
             return List.of();
         }
         Set<Long> shown = normalizedArticleIds(shownArticleIds);
-        Map<String, Double> tagProfile = safeMap(profileService.profileTags(userId, PROFILE_TAG_LIMIT));
-        Map<Long, Double> authorProfile = safeMap(profileService.profileAuthors(userId, PROFILE_AUTHOR_LIMIT));
+        Map<String, Double> tagProfile;
+        Map<Long, Double> authorProfile;
+        tagProfile = safeMap(profileService.profileTags(userId, PROFILE_TAG_LIMIT));
+        authorProfile = safeMap(profileService.profileAuthors(userId, PROFILE_AUTHOR_LIMIT));
 
         List<Article> follow = safeList(articleMapper.selectPublishedByFollowedAuthors(
                 userId, userId, shown, FOLLOW_LIMIT));
@@ -103,12 +114,15 @@ public class RecommendationCandidateService {
         LocalDateTime cutoff = LocalDateTime.now(clock).minusDays(READ_WINDOW_DAYS);
         Set<Long> recentlyInteracted = new HashSet<>(safeList(
                 eventMapper.selectRecentlyInteractedArticleIds(userId, cutoff)));
-        List<RecommendationCandidate> featured = recalled.stream()
+        return recalled.stream()
                 .map(candidate -> assembleFeatures(candidate, tagProfile, authorProfile, recentlyInteracted))
                 .toList();
+    }
 
-        List<RecommendationCandidate> ranked = rankingService.rank(userId, featured, shown);
-        return rankingService.diversify(ranked, limit);
+    public List<RecommendationCandidate> rankWithModel(Long userId, List<RecommendationCandidate> candidates,
+                                                       Set<Long> shownArticleIds, int limit, RecommendationModel model) {
+        return rankingService.diversify(rankingService.rankWithModel(userId, candidates,
+                normalizedArticleIds(shownArticleIds), model), limit);
     }
 
     public RecommendationCandidate assembleFeatures(Long userId, Article article) {

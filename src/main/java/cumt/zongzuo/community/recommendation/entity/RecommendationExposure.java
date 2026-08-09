@@ -26,6 +26,7 @@ public class RecommendationExposure {
     private Double sourceTag;
     private Double sourceSimilar;
     private Double sourceExplore;
+    private Double baselineScore;
     private LocalDateTime exposedAt;
     private LocalDateTime createTime;
 }

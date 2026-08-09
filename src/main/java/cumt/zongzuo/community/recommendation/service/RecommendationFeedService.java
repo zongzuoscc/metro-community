@@ -15,6 +15,9 @@ import cumt.zongzuo.community.recommendation.dto.RecommendationSessionItem;
 import cumt.zongzuo.community.recommendation.dto.RecommendationViewRequest;
 import cumt.zongzuo.community.recommendation.entity.RecommendationEventType;
 import cumt.zongzuo.community.recommendation.entity.RecommendationExposure;
+import cumt.zongzuo.community.recommendation.training.RecommendationModel;
+import cumt.zongzuo.community.recommendation.training.RecommendationModelLoadResult;
+import cumt.zongzuo.community.recommendation.training.RecommendationModelStore;
 import cumt.zongzuo.community.service.UserService;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -46,9 +49,12 @@ public class RecommendationFeedService {
     private final RecommendationSessionStore sessionStore;
     private final ArticleMapper articleMapper;
     private final RecommendationCandidateService candidateService;
+    private final RecommendationRankingService rankingService;
     private final RecommendationExposureService exposureService;
     private final UserService userService;
     private final RecommendationEventOutboxService outboxService;
+    private final RecommendationEligibilityService eligibilityService;
+    private final RecommendationModelStore modelStore;
     private final Clock clock;
 
     @Autowired
@@ -56,31 +62,49 @@ public class RecommendationFeedService {
                                      RecommendationSessionStore sessionStore,
                                      ArticleMapper articleMapper,
                                      RecommendationCandidateService candidateService,
+                                     RecommendationRankingService rankingService,
                                      RecommendationExposureService exposureService,
                                      UserService userService,
                                      RecommendationEventOutboxService outboxService,
-                                     ObjectProvider<Clock> clockProvider) {
-        this(properties, sessionStore, articleMapper, candidateService, exposureService,
+                                     ObjectProvider<Clock> clockProvider,
+                                     ObjectProvider<RecommendationEligibilityService> eligibilityProvider,
+                                     ObjectProvider<RecommendationModelStore> modelStoreProvider) {
+        this(properties, sessionStore, articleMapper, candidateService, rankingService, exposureService,
                 userService, outboxService,
-                clockProvider.getIfAvailable(() -> Clock.system(SHANGHAI)));
+                clockProvider.getIfAvailable(() -> Clock.system(SHANGHAI)),
+                eligibilityProvider.getIfAvailable(), modelStoreProvider.getIfAvailable());
     }
 
     public RecommendationFeedService(RecommendationProperties properties,
                                      RecommendationSessionStore sessionStore,
                                      ArticleMapper articleMapper,
                                      RecommendationCandidateService candidateService,
+                                     RecommendationRankingService rankingService,
                                      RecommendationExposureService exposureService,
                                      UserService userService,
                                      RecommendationEventOutboxService outboxService,
                                      Clock clock) {
+        this(properties, sessionStore, articleMapper, candidateService, rankingService, exposureService, userService,
+                outboxService, clock, null, null);
+    }
+
+    public RecommendationFeedService(RecommendationProperties properties,
+                                     RecommendationSessionStore sessionStore, ArticleMapper articleMapper,
+                                     RecommendationCandidateService candidateService, RecommendationRankingService rankingService,
+                                     RecommendationExposureService exposureService,
+                                     UserService userService, RecommendationEventOutboxService outboxService, Clock clock,
+                                     RecommendationEligibilityService eligibilityService, RecommendationModelStore modelStore) {
         this.properties = properties;
         this.sessionStore = sessionStore;
         this.articleMapper = articleMapper;
         this.candidateService = candidateService;
+        this.rankingService = rankingService;
         this.exposureService = exposureService;
         this.userService = userService;
         this.outboxService = outboxService;
         this.clock = clock;
+        this.eligibilityService = eligibilityService;
+        this.modelStore = modelStore;
     }
 
     public RecommendationFeedResponse feed(Long userId, String cursor, int requestedSize) {
@@ -92,18 +116,55 @@ public class RecommendationFeedService {
             return cursor == null || cursor.isBlank()
                     ? createSession(userId, size)
                     : pageSession(userId, cursor, size);
-        } catch (InvalidSessionCursorException | RecommendationSessionUnavailableException exception) {
+        } catch (InvalidSessionCursorException | RecommendationSessionUnavailableException
+                 | RecommendationServingUnavailableException exception) {
             return fallback(userId, cursor, size);
         }
     }
 
     private RecommendationFeedResponse createSession(Long userId, int size) {
+        if (eligibilityService != null && modelStore != null && eligibilityService.isEligible(userId)) {
+            RecommendationModelLoadResult loaded = modelStore.loadActive(clock.instant());
+            if (loaded.status() == RecommendationModelLoadResult.Status.IO_FAILURE) {
+                throw new RecommendationServingUnavailableException("Recommendation model store unavailable");
+            }
+            if (loaded.model().isPresent()) {
+                List<RecommendationCandidate> candidates = candidateService.recallAndAssemble(userId, Set.of());
+                List<RecommendationCandidate> ranked;
+                try {
+                    ranked = candidateService.rankWithModel(userId, candidates, Set.of(),
+                            SESSION_CANDIDATE_LIMIT, loaded.model().get());
+                } catch (IllegalArgumentException | IllegalStateException modelFailure) {
+                    throw new RecommendationServingUnavailableException("Recommendation model inference failed", modelFailure);
+                }
+                if (ranked.size() >= size) return personalizedSession(userId, size, ranked);
+            }
+        }
         List<Long> articleIds = articleMapper.selectPublishedChronologicalIds(SESSION_CANDIDATE_LIMIT);
         List<RecommendationSessionItem> items = articleIds.stream()
                 .map(articleId -> new RecommendationSessionItem(articleId, null, CHRONOLOGICAL))
                 .toList();
         String sessionId = UUID.randomUUID().toString();
         RecommendationSession session = new RecommendationSession(userId, items, RecommendationMode.COLD_START);
+        sessionStore.save(sessionId, session);
+        return sliceAndExpose(sessionId, userId, session, 0, size);
+    }
+
+    private RecommendationFeedResponse personalizedSession(Long userId, int size,
+                                                            List<RecommendationCandidate> candidates) {
+        List<RecommendationSessionItem> items = candidates.stream().map(candidate -> {
+            RecommendationFeatureSnapshot snapshot = new RecommendationFeatureSnapshot(
+                    candidate.tagAffinity(), candidate.authorAffinity(), candidate.similarScore(), candidate.heatScore(),
+                    candidate.freshnessScore(), candidate.sources().contains(RecommendationCandidate.Source.FOLLOW) ? 1D : 0D,
+                    candidate.sources().contains(RecommendationCandidate.Source.TAG) ? 1D : 0D,
+                    candidate.sources().contains(RecommendationCandidate.Source.SIMILAR) ? 1D : 0D,
+                    candidate.sources().contains(RecommendationCandidate.Source.EXPLORE) ? 1D : 0D);
+            return new RecommendationSessionItem(candidate.articleId(), candidate.reason(),
+                    rankingService.winningSource(candidate), snapshot,
+                    rankingService.ruleScore(candidate));
+        }).toList();
+        String sessionId = UUID.randomUUID().toString();
+        RecommendationSession session = new RecommendationSession(userId, items, RecommendationMode.PERSONALIZED);
         sessionStore.save(sessionId, session);
         return sliceAndExpose(sessionId, userId, session, 0, size);
     }
@@ -152,9 +213,7 @@ public class RecommendationFeedService {
         enrichAuthors(articles);
         String pageSessionId = fallbackPageSessionId(userId, visitNonce, position);
         List<HydratedRecommendationItem> hydrated = articles.stream()
-                .map(article -> new HydratedRecommendationItem(
-                        new RecommendationItem(article, null, CHRONOLOGICAL, null),
-                        chronologicalSnapshot(article)))
+                .map(article -> chronology(new RecommendationItem(article, null, CHRONOLOGICAL, null)))
                 .toList();
         List<RecommendationItem> exposed = exposePage(pageSessionId, userId, hydrated);
         String nextCursor = null;
@@ -170,7 +229,7 @@ public class RecommendationFeedService {
                                                 List<HydratedRecommendationItem> items) {
         List<RecommendationExposureDraft> drafts = items.stream()
                 .map(item -> new RecommendationExposureDraft(
-                        item.item().article().getId(), item.item().source(), item.snapshot()))
+                        item.item().article().getId(), item.item().source(), item.snapshot(), item.baselineScore()))
                 .toList();
         List<Long> exposureIds = exposureService.recordPage(sessionId, userId, drafts);
         return java.util.stream.IntStream.range(0, items.size())
@@ -179,18 +238,21 @@ public class RecommendationFeedService {
     }
 
     private HydratedRecommendationItem hydrate(RecommendationSessionItem sessionItem, Article article) {
-        RecommendationFeatureSnapshot snapshot = sessionItem.snapshot() == null
-                ? chronologicalSnapshot(article)
-                : sessionItem.snapshot();
+        RecommendationItem item = new RecommendationItem(article, sessionItem.reason(), sessionItem.source(), null);
+        if (sessionItem.snapshot() == null) {
+            return chronology(item);
+        }
         return new HydratedRecommendationItem(
-                new RecommendationItem(article, sessionItem.reason(), sessionItem.source(), null), snapshot);
+                item, sessionItem.snapshot(), sessionItem.baselineScore());
     }
 
-    private RecommendationFeatureSnapshot chronologicalSnapshot(Article article) {
+    private HydratedRecommendationItem chronology(RecommendationItem item) {
+        Article article = item.article();
         RecommendationCandidate candidate = candidateService.assembleChronologicalFeatures(article);
-        return new RecommendationFeatureSnapshot(
+        RecommendationFeatureSnapshot snapshot = new RecommendationFeatureSnapshot(
                 candidate.tagAffinity(), candidate.authorAffinity(), candidate.similarScore(),
                 candidate.heatScore(), candidate.freshnessScore(), 0D, 0D, 0D, 0D);
+        return new HydratedRecommendationItem(item, snapshot, rankingService.ruleScore(candidate));
     }
 
     private void enrichAuthors(List<Article> articles) {
@@ -306,7 +368,8 @@ public class RecommendationFeedService {
 
     private record HydratedRecommendationItem(
             RecommendationItem item,
-            RecommendationFeatureSnapshot snapshot) {
+            RecommendationFeatureSnapshot snapshot,
+            Double baselineScore) {
     }
 
     private static class InvalidSessionCursorException extends RuntimeException {

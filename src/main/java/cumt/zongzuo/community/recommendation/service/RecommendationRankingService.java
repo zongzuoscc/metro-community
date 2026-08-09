@@ -1,6 +1,8 @@
 package cumt.zongzuo.community.recommendation.service;
 
 import cumt.zongzuo.community.recommendation.service.RecommendationCandidate.Source;
+import cumt.zongzuo.community.recommendation.training.RecommendationFeatureVector;
+import cumt.zongzuo.community.recommendation.training.RecommendationModel;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -25,6 +27,41 @@ public class RecommendationRankingService {
                 .sorted(Comparator.comparingDouble(RecommendationCandidate::score).reversed()
                         .thenComparing(RecommendationCandidate::articleId))
                 .toList();
+    }
+
+    public List<RecommendationCandidate> rankWithModel(Long userId, List<RecommendationCandidate> candidates,
+                                                       Set<Long> shownArticleIds, RecommendationModel model) {
+        Set<Long> shown = shownArticleIds == null ? Set.of() : shownArticleIds;
+        return candidates.stream()
+                .filter(candidate -> eligible(userId, candidate, shown))
+                .map(candidate -> candidate.withRanking(model.score(featureVector(candidate))
+                        + candidate.freshnessScore() * .05D, reason(candidate)))
+                .sorted(Comparator.comparingDouble(RecommendationCandidate::score).reversed()
+                        .thenComparing(RecommendationCandidate::articleId))
+                .toList();
+    }
+
+    public RecommendationFeatureVector featureVector(RecommendationCandidate candidate) {
+        return new RecommendationFeatureVector(candidate.tagAffinity(), candidate.authorAffinity(),
+                candidate.similarScore(), candidate.heatScore(), candidate.freshnessScore(),
+                candidate.sources().contains(Source.FOLLOW) ? 1D : 0D,
+                candidate.sources().contains(Source.TAG) ? 1D : 0D,
+                candidate.sources().contains(Source.SIMILAR) ? 1D : 0D,
+                candidate.sources().contains(Source.EXPLORE) ? 1D : 0D);
+    }
+
+    public double ruleScore(RecommendationCandidate candidate) {
+        return candidate.tagAffinity() * 3D + candidate.authorAffinity() * 2.5D
+                + candidate.similarScore() * 2D + candidate.heatScore() + candidate.freshnessScore()
+                - candidate.readPenalty();
+    }
+
+    public String winningSource(RecommendationCandidate candidate) {
+        Source source = candidate.sources().stream()
+                .sorted(Comparator.comparingDouble((Source value) -> sourceContribution(candidate, value)).reversed()
+                        .thenComparingInt(Enum::ordinal))
+                .findFirst().orElse(null);
+        return source == null ? "CHRONOLOGICAL" : source.name();
     }
 
     public List<RecommendationCandidate> diversify(List<RecommendationCandidate> rankedCandidates, int limit) {
@@ -78,19 +115,13 @@ public class RecommendationRankingService {
     }
 
     private RecommendationCandidate score(RecommendationCandidate candidate) {
-        double score = candidate.tagAffinity() * 3D
-                + candidate.authorAffinity() * 2.5D
-                + candidate.similarScore() * 2D
-                + candidate.heatScore()
-                + candidate.freshnessScore()
-                - candidate.readPenalty();
-        return candidate.withRanking(score, reason(candidate));
+        return candidate.withRanking(ruleScore(candidate), reason(candidate));
     }
 
     private String reason(RecommendationCandidate candidate) {
         Source winningSource = candidate.sources().stream()
-                .max(Comparator.comparingDouble(source -> sourceContribution(candidate, source)))
-                .orElse(null);
+                .filter(source -> source.name().equals(winningSource(candidate)))
+                .findFirst().orElse(null);
         if (winningSource == null) {
             return null;
         }

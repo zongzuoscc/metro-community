@@ -35,3 +35,4 @@ build/
 application-local.yml
 .worktrees/
 .superpowers/
+/data/recommendation-models/

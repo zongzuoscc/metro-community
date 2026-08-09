@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import cumt.zongzuo.community.IntegrationTestSupport;
 import cumt.zongzuo.community.mapper.ArticleMapper;
+import cumt.zongzuo.community.mapper.ArticleTagMapper;
+import cumt.zongzuo.community.mapper.TagMapper;
 import cumt.zongzuo.community.recommendation.config.RecommendationProperties;
 import cumt.zongzuo.community.recommendation.dto.RecommendationFeedResponse;
 import cumt.zongzuo.community.recommendation.dto.RecommendationExposureDraft;
@@ -21,14 +23,22 @@ import cumt.zongzuo.community.recommendation.service.RecommendationCandidate;
 import cumt.zongzuo.community.recommendation.service.RecommendationExposureService;
 import cumt.zongzuo.community.recommendation.service.RecommendationEventOutboxService;
 import cumt.zongzuo.community.recommendation.service.RecommendationFeedService;
+import cumt.zongzuo.community.recommendation.service.RecommendationEligibilityService;
+import cumt.zongzuo.community.recommendation.service.RecommendationRankingService;
+import cumt.zongzuo.community.recommendation.service.RecommendationProfileService;
 import cumt.zongzuo.community.recommendation.service.RecommendationSessionStore;
 import cumt.zongzuo.community.recommendation.task.RecommendationOutboxDispatcher;
+import cumt.zongzuo.community.recommendation.training.RecommendationFeatureVector;
+import cumt.zongzuo.community.recommendation.training.RecommendationModel;
+import cumt.zongzuo.community.recommendation.training.RecommendationModelStore;
+import cumt.zongzuo.community.recommendation.mapper.UserArticleEventMapper;
 import cumt.zongzuo.community.service.UserService;
 import io.lettuce.core.ClientOptions;
 import io.lettuce.core.SocketOptions;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.amqp.core.AmqpAdmin;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -41,6 +51,7 @@ import org.springframework.data.redis.RedisConnectionFailureException;
 import org.springframework.data.redis.connection.lettuce.LettuceClientConfiguration;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.elasticsearch.core.ElasticsearchOperations;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
@@ -49,6 +60,8 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 
 import java.net.ServerSocket;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -96,6 +109,10 @@ class RecommendationFeedIntegrationTest extends IntegrationTestSupport {
     @Autowired
     private RecommendationCandidateService candidateService;
     @Autowired
+    private RecommendationRankingService rankingService;
+    @Autowired
+    private RecommendationEligibilityService eligibilityService;
+    @Autowired
     private RecommendationFeedService feedService;
     @Autowired
     private RecommendationEventOutboxMapper outboxMapper;
@@ -109,6 +126,14 @@ class RecommendationFeedIntegrationTest extends IntegrationTestSupport {
     private AmqpAdmin amqpAdmin;
     @Autowired
     private ArticleMapper articleMapper;
+    @Autowired
+    private ArticleTagMapper articleTagMapper;
+    @Autowired
+    private TagMapper tagMapper;
+    @Autowired
+    private UserArticleEventMapper eventMapper;
+    @Autowired
+    private ElasticsearchOperations elasticsearchOperations;
     @Autowired
     private UserService userService;
     @Autowired
@@ -188,6 +213,99 @@ class RecommendationFeedIntegrationTest extends IntegrationTestSupport {
             assertThat(item.path("snapshot").isNull()).isTrue();
         });
         assertThat(redisTemplate.getExpire("recommendation:session:" + sessionId)).isBetween(500L, 600L);
+    }
+
+    @Test
+    void realEligibleModelPathPersistsScoredSnapshotBaselineAndKeepsCursorStableAfterModelChange(@TempDir Path modelDirectory) {
+        insertArticles(6);
+        seedEligibilityFacts();
+        RecommendationModelStore store = new RecommendationModelStore(modelDirectory, objectMapper, 7);
+        assertThat(store.publish(model("first", NOW, 0D)).published()).isTrue();
+        RecommendationFeedService modelFeed = new RecommendationFeedService(properties, sessionStore, articleMapper,
+                candidateService, rankingService, exposureService, userService, outboxService, clock,
+                eligibilityService, store);
+
+        RecommendationFeedResponse first = modelFeed.feed(USER_ID, null, 3);
+
+        assertThat(first.mode()).isEqualTo(RecommendationMode.PERSONALIZED);
+        assertThat(first.items()).hasSize(3).allSatisfy(item -> {
+            assertThat(item.source()).isEqualTo("EXPLORE");
+            assertThat(item.reason()).isEqualTo("社区近期热议");
+        });
+        List<java.util.Map<String, Object>> firstExposures = jdbcTemplate.queryForList("""
+                SELECT tag_affinity,author_affinity,similar_score,heat_score,freshness_score,
+                       source_follow,source_tag,source_similar,source_explore,baseline_score
+                FROM recommendation_exposure ORDER BY id
+                """);
+        assertThat(firstExposures).hasSize(3).allSatisfy(row -> {
+            assertThat(((Number) row.get("tag_affinity")).doubleValue()).isZero();
+            assertThat(((Number) row.get("author_affinity")).doubleValue()).isZero();
+            assertThat(((Number) row.get("similar_score")).doubleValue()).isZero();
+            assertThat(((Number) row.get("source_follow")).doubleValue()).isZero();
+            assertThat(((Number) row.get("source_tag")).doubleValue()).isZero();
+            assertThat(((Number) row.get("source_similar")).doubleValue()).isZero();
+            assertThat(((Number) row.get("source_explore")).doubleValue()).isEqualTo(1D);
+            assertThat(((Number) row.get("baseline_score")).doubleValue()).isEqualTo(
+                    ((Number) row.get("heat_score")).doubleValue() + ((Number) row.get("freshness_score")).doubleValue());
+        });
+        assertThat(store.publish(model("replacement", NOW, 1D)).published()).isTrue();
+
+        RecommendationFeedResponse second = modelFeed.feed(USER_ID, first.nextCursor(), 3);
+
+        assertThat(second.mode()).isEqualTo(RecommendationMode.PERSONALIZED);
+        assertThat(articleIds(second)).doesNotContainAnyElementsOf(articleIds(first));
+        assertThat(exposureCount()).isEqualTo(6);
+    }
+
+    @Test
+    void eligibleAbsentInvalidOrExpiredModelUsesColdStartButOperationalModelFailuresUseFallback(@TempDir Path modelDirectory) throws Exception {
+        insertArticles(4);
+        seedEligibilityFacts();
+        RecommendationModelStore store = new RecommendationModelStore(modelDirectory, objectMapper, 7);
+        RecommendationFeedService modelFeed = new RecommendationFeedService(properties, sessionStore, articleMapper,
+                candidateService, rankingService, exposureService, userService, outboxService, clock,
+                eligibilityService, store);
+
+        assertThat(modelFeed.feed(USER_ID, null, 2).mode()).isEqualTo(RecommendationMode.COLD_START);
+        Files.writeString(modelDirectory.resolve("active-model.json"), "{invalid");
+        assertThat(modelFeed.feed(USER_ID, null, 2).mode()).isEqualTo(RecommendationMode.COLD_START);
+        Files.delete(modelDirectory.resolve("active-model.json"));
+        assertThat(store.publish(model("expired", NOW.minus(Duration.ofDays(8)), 0D)).published()).isTrue();
+        assertThat(modelFeed.feed(USER_ID, null, 2).mode()).isEqualTo(RecommendationMode.COLD_START);
+        Files.delete(modelDirectory.resolve("active-model.json"));
+        Files.createDirectory(modelDirectory.resolve("active-model.json"));
+        assertThat(modelFeed.feed(USER_ID, null, 2).mode()).isEqualTo(RecommendationMode.FALLBACK);
+    }
+
+    @Test
+    void nonFiniteInferenceAndARealClosedProfileRedisPortUseFallback(@TempDir Path modelDirectory) throws Exception {
+        insertArticles(4);
+        seedEligibilityFacts();
+        RecommendationModelStore store = new RecommendationModelStore(modelDirectory, objectMapper, 7);
+        assertThat(store.publish(extremeHeatModel()).published()).isTrue();
+        RecommendationFeedService modelFeed = new RecommendationFeedService(properties, sessionStore, articleMapper,
+                candidateService, rankingService, exposureService, userService, outboxService, clock,
+                eligibilityService, store);
+
+        assertThat(modelFeed.feed(USER_ID, null, 2).mode()).isEqualTo(RecommendationMode.FALLBACK);
+
+        assertThat(store.publish(model("healthy", NOW, 0D)).published()).isTrue();
+        int closedPort = reserveThenClosePort();
+        LettuceConnectionFactory failingFactory = failingRedisFactory(closedPort);
+        try {
+            RecommendationCandidateService redisFailingCandidates = new RecommendationCandidateService(articleMapper,
+                    articleTagMapper, tagMapper, eventMapper,
+                    new RecommendationProfileService(jdbcTemplate, new StringRedisTemplate(failingFactory), properties),
+                    elasticsearchOperations, rankingService, clock);
+            RecommendationFeedService redisFailingFeed = new RecommendationFeedService(properties, sessionStore,
+                    articleMapper, redisFailingCandidates, rankingService, exposureService, userService, outboxService,
+                    clock, eligibilityService, store);
+
+            assertThat(redisFailingFeed.feed(USER_ID, null, 2).mode()).isEqualTo(RecommendationMode.FALLBACK);
+            assertThat(redisTemplate.opsForValue().setIfAbsent("shared-redis-still-alive-after-profile-failure", "yes")).isTrue();
+        } finally {
+            failingFactory.destroy();
+        }
     }
 
     @Test
@@ -337,7 +455,7 @@ class RecommendationFeedIntegrationTest extends IntegrationTestSupport {
             RecommendationSessionStore failingStore = new RecommendationSessionStore(
                     new StringRedisTemplate(failingFactory), objectMapper, properties);
             RecommendationFeedService serviceWithFailingSessionStore = new RecommendationFeedService(
-                    properties, failingStore, articleMapper, candidateService, exposureService,
+                    properties, failingStore, articleMapper, candidateService, rankingService, exposureService,
                     userService, outboxService, clock);
 
             RecommendationFeedResponse response = serviceWithFailingSessionStore.feed(USER_ID, null, 2);
@@ -360,7 +478,7 @@ class RecommendationFeedIntegrationTest extends IntegrationTestSupport {
                 .thenThrow(new RedisConnectionFailureException("profile cache unavailable"));
         when(redisUnavailableUsers.listByIds(anyCollection())).thenReturn(authors);
         RecommendationFeedService service = new RecommendationFeedService(
-                properties, sessionStore, articleMapper, candidateService, exposureService,
+                properties, sessionStore, articleMapper, candidateService, rankingService, exposureService,
                 redisUnavailableUsers, outboxService, clock);
 
         RecommendationFeedResponse response = service.feed(USER_ID, null, 3);
@@ -547,6 +665,45 @@ class RecommendationFeedIntegrationTest extends IntegrationTestSupport {
                 INSERT INTO sys_user (id, username, password, email, avatar, role, status, deleted)
                 VALUES (?, ?, 'unused', ?, ?, 0, 0, 0)
                 """, id, username, username + "@example.com", avatar);
+    }
+
+    private void seedEligibilityFacts() {
+        LocalDateTime now = LocalDateTime.ofInstant(NOW, SHANGHAI).withNano(0);
+        for (int index = 0; index < 20; index++) {
+            jdbcTemplate.update("INSERT INTO user_article_event (user_id,event_type,occurred_at,dedupe_key,source,create_time) VALUES (?, 'VIEW', ?, ?, 'recommendation', ?)",
+                    USER_ID, now.minusDays(30), "eligible-user-" + index, now);
+        }
+        for (int index = 0; index < 480; index++) {
+            jdbcTemplate.update("INSERT INTO user_article_event (user_id,event_type,occurred_at,dedupe_key,source,create_time) VALUES (?, 'VIEW', ?, ?, 'recommendation', ?)",
+                    OTHER_USER_ID, now.minusDays(90), "eligible-global-" + index, now);
+        }
+    }
+
+    private static RecommendationModel model(String version, Instant trainedAt, double tagWeight) {
+        List<Double> zeros = List.of(0D, 0D, 0D, 0D, 0D, 0D, 0D, 0D, 0D);
+        List<Double> weights = List.of(tagWeight, 0D, 0D, 0D, 0D, 0D, 0D, 0D, 0D);
+        List<Double> standardDeviations = List.of(1D, 1D, 1D, 1D, 1D, 1D, 1D, 1D, 1D);
+        return new RecommendationModel(version, trainedAt, RecommendationFeatureVector.FEATURE_NAMES,
+                zeros, standardDeviations, weights, 0D, .75D, .6D);
+    }
+
+    private static RecommendationModel extremeHeatModel() {
+        List<Double> zeros = List.of(0D, 0D, 0D, 0D, 0D, 0D, 0D, 0D, 0D);
+        List<Double> weights = List.of(0D, 0D, 0D, Double.MAX_VALUE, Double.MAX_VALUE, 0D, 0D, 0D, 0D);
+        List<Double> standardDeviations = List.of(1D, 1D, 1D, 1D, 1D, 1D, 1D, 1D, 1D);
+        return new RecommendationModel("extreme", NOW, RecommendationFeatureVector.FEATURE_NAMES,
+                zeros, standardDeviations, weights, 0D, .75D, .6D);
+    }
+
+    private static LettuceConnectionFactory failingRedisFactory(int port) {
+        RedisStandaloneConfiguration redis = new RedisStandaloneConfiguration("127.0.0.1", port);
+        SocketOptions socketOptions = SocketOptions.builder().connectTimeout(Duration.ofMillis(100)).build();
+        LettuceClientConfiguration client = LettuceClientConfiguration.builder()
+                .clientOptions(ClientOptions.builder().socketOptions(socketOptions).build())
+                .commandTimeout(Duration.ofMillis(100)).shutdownTimeout(Duration.ZERO).build();
+        LettuceConnectionFactory factory = new LettuceConnectionFactory(redis, client);
+        factory.afterPropertiesSet();
+        return factory;
     }
 
     private int reserveThenClosePort() throws Exception {

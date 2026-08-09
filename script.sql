@@ -197,7 +197,9 @@ CREATE TABLE user_article_event (
     create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT uk_user_article_event_dedupe UNIQUE (dedupe_key),
     INDEX idx_user_event_time (user_id, occurred_at DESC),
-    INDEX idx_article_event_time (article_id, occurred_at DESC)
+    INDEX idx_article_event_time (article_id, occurred_at DESC),
+    INDEX idx_user_article_event_at (user_id, article_id, occurred_at DESC, id DESC),
+    INDEX idx_user_author_event_at (user_id, target_author_id, occurred_at DESC, id DESC)
 ) COMMENT='个性化推荐行为事实';
 
 CREATE TABLE recommendation_event_outbox (
@@ -235,11 +237,13 @@ CREATE TABLE recommendation_exposure (
     source_tag TINYINT NOT NULL DEFAULT 0,
     source_similar TINYINT NOT NULL DEFAULT 0,
     source_explore TINYINT NOT NULL DEFAULT 0,
+    baseline_score DOUBLE NULL,
     exposed_at DATETIME NOT NULL,
     create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uk_recommendation_exposure (user_id, article_id, session_id),
     INDEX idx_exposure_user_time (user_id, exposed_at DESC),
-    INDEX idx_exposure_article_time (article_id, exposed_at DESC)
+    INDEX idx_exposure_article_time (article_id, exposed_at DESC),
+    INDEX idx_exposure_training (exposed_at DESC, id DESC)
 ) COMMENT='推荐真实曝光和训练特征快照';
 
 CREATE INDEX idx_article_recommendation_feed

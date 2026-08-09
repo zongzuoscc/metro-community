@@ -115,4 +115,6 @@ recommendation:
   minimum-global-events: ${RECOMMENDATION_MINIMUM_GLOBAL_EVENTS:500}
   model-window-days: ${RECOMMENDATION_MODEL_WINDOW_DAYS:90}
   label-window-days: ${RECOMMENDATION_LABEL_WINDOW_DAYS:7}
+  model-max-age-days: ${RECOMMENDATION_MODEL_MAX_AGE_DAYS:7}
+  training-sample-limit: ${RECOMMENDATION_TRAINING_SAMPLE_LIMIT:50000}
   model-directory: ${RECOMMENDATION_MODEL_DIRECTORY:data/recommendation-models}
