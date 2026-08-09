@@ -78,6 +78,36 @@ class SecurityIntegrationTest extends IntegrationTestSupport {
                 url("/api/auth/login"), new org.springframework.http.HttpEntity<>("{}", headers), String.class);
 
         assertThat(response.getStatusCode().value()).isEqualTo(400);
+        assertThat(response.getHeaders().getContentType()).isNotNull();
+        assertThat(response.getHeaders().getContentType().isCompatibleWith(MediaType.APPLICATION_JSON)).isTrue();
+        assertThat(response.getBody()).contains("\"code\":400", "\"msg\"", "\"data\"");
+    }
+
+    @Test
+    void aiSecurityContractIsStrictlyPathScoped() {
+        ResponseEntity<String> unauthenticatedAgent = restTemplate.getForEntity(
+                url("/api/agent"), String.class);
+        ResponseEntity<String> ordinaryUserModeration = restTemplate.exchange(
+                url("/api/admin/moderation"), HttpMethod.GET,
+                new org.springframework.http.HttpEntity<>(bearerHeaders(1001L)), String.class);
+        ResponseEntity<String> nearbyLegacyPath = restTemplate.exchange(
+                url("/api/agent-old/missing"), HttpMethod.GET,
+                new org.springframework.http.HttpEntity<>(bearerHeaders(1001L)), String.class);
+
+        assertThat(unauthenticatedAgent.getStatusCode().value()).isEqualTo(401);
+        assertThat(unauthenticatedAgent.getHeaders().getContentType())
+                .isEqualTo(MediaType.APPLICATION_PROBLEM_JSON);
+        assertThat(unauthenticatedAgent.getBody())
+                .contains("\"code\":\"AUTHENTICATION_REQUIRED\"", "\"requestId\"");
+        assertThat(ordinaryUserModeration.getStatusCode().value()).isEqualTo(403);
+        assertThat(ordinaryUserModeration.getHeaders().getContentType())
+                .isEqualTo(MediaType.APPLICATION_PROBLEM_JSON);
+        assertThat(ordinaryUserModeration.getBody()).contains("\"code\":\"ADMIN_ROLE_REQUIRED\"");
+        assertThat(nearbyLegacyPath.getStatusCode().value()).isEqualTo(404);
+        assertThat(nearbyLegacyPath.getHeaders().getContentType()).isNotNull();
+        assertThat(nearbyLegacyPath.getHeaders().getContentType()
+                .isCompatibleWith(MediaType.APPLICATION_JSON)).isTrue();
+        assertThat(nearbyLegacyPath.getBody()).contains("\"code\":404", "\"msg\"");
     }
 
     @Test

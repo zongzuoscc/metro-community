@@ -1,7 +1,12 @@
 package cumt.zongzuo.community.exception;
 
+import cumt.zongzuo.community.ai.web.AiProblemDetails;
 import cumt.zongzuo.community.common.Result;
+import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -19,8 +24,26 @@ import org.springframework.web.servlet.resource.NoResourceFoundException;
 public class GlobalExceptionHandler {
 
     @ExceptionHandler(NoResourceFoundException.class)
-    public ResponseEntity<Result<String>> handleNoResourceFoundException(NoResourceFoundException e) {
+    public ResponseEntity<?> handleNoResourceFoundException(NoResourceFoundException e,
+                                                             HttpServletRequest request) {
+        if (AiProblemDetails.isAiPath(request)) {
+            return AiProblemDetails.response(request, HttpStatus.NOT_FOUND, "RESOURCE_NOT_FOUND",
+                    false, null, java.util.List.of());
+        }
         return ResponseEntity.status(404).body(Result.error(404, "资源不存在"));
+    }
+
+    @ExceptionHandler({HttpRequestMethodNotSupportedException.class, HttpMediaTypeNotSupportedException.class})
+    public Object handleFrameworkMethodOrMediaType(Exception e, HttpServletRequest request) {
+        if (AiProblemDetails.isAiPath(request)) {
+            HttpStatus status = e instanceof HttpRequestMethodNotSupportedException
+                    ? HttpStatus.METHOD_NOT_ALLOWED : HttpStatus.UNSUPPORTED_MEDIA_TYPE;
+            String code = e instanceof HttpRequestMethodNotSupportedException
+                    ? "METHOD_NOT_ALLOWED" : "UNSUPPORTED_MEDIA_TYPE";
+            return AiProblemDetails.response(request, status, code, false, null, java.util.List.of());
+        }
+        log.error("系统未知异常: ", e);
+        return Result.error("服务器开小差了，请稍后再试");
     }
 
     @ExceptionHandler({HttpMessageNotReadableException.class, MethodArgumentTypeMismatchException.class})

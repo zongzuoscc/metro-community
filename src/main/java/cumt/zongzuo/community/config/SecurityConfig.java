@@ -1,12 +1,14 @@
 package cumt.zongzuo.community.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import cumt.zongzuo.community.ai.web.AiProblemDetails;
 import cumt.zongzuo.community.common.Result;
 import cumt.zongzuo.community.security.JwtAuthenticationFilter;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -47,8 +49,24 @@ public class SecurityConfig {
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .exceptionHandling(exceptions -> exceptions
-                        .authenticationEntryPoint((request, response, exception) -> writeError(response, 401, "未登录或登录已过期"))
-                        .accessDeniedHandler((request, response, exception) -> writeError(response, 403, "无权访问该资源")))
+                        .authenticationEntryPoint((request, response, exception) -> {
+                            if (AiProblemDetails.isAiPath(request)) {
+                                AiProblemDetails.write(request, response, objectMapper, HttpStatus.UNAUTHORIZED,
+                                        "AUTHENTICATION_REQUIRED", false, null);
+                            }
+                            else {
+                                writeError(response, 401, "未登录或登录已过期");
+                            }
+                        })
+                        .accessDeniedHandler((request, response, exception) -> {
+                            if (AiProblemDetails.isAiPath(request)) {
+                                AiProblemDetails.write(request, response, objectMapper, HttpStatus.FORBIDDEN,
+                                        "ADMIN_ROLE_REQUIRED", false, null);
+                            }
+                            else {
+                                writeError(response, 403, "无权访问该资源");
+                            }
+                        }))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         .requestMatchers("/api/auth/**", "/error", "/im/**").permitAll()
@@ -60,6 +78,7 @@ public class SecurityConfig {
                                 "/api/article/hot-feed", "/api/article/{id}/similar",
                                 "/api/comment/list/**", "/api/follow/following/**", "/api/follow/fans/**",
                                 "/api/user/profile/**", "/api/user/search").permitAll()
+                        .requestMatchers("/api/admin/moderation", "/api/admin/moderation/**").hasRole("ADMIN")
                         .requestMatchers("/api/article/admin/**", "/api/user/admin/**", "/api/report/admin/**").hasRole("ADMIN")
                         .requestMatchers("/api/**").authenticated()
                         .anyRequest().denyAll())
@@ -72,9 +91,10 @@ public class SecurityConfig {
     CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
         configuration.setAllowedOrigins(securityProperties.corsAllowedOrigins());
-        configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
-        configuration.setAllowedHeaders(List.of("Authorization", "token", "Content-Type"));
-        configuration.setExposedHeaders(List.of("Authorization"));
+        configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
+        configuration.setAllowedHeaders(List.of(
+                "Authorization", "token", "Content-Type", "Last-Event-ID", "Idempotency-Key"));
+        configuration.setExposedHeaders(List.of("Authorization", "Retry-After"));
         configuration.setAllowCredentials(false);
         configuration.setMaxAge(3600L);
 
