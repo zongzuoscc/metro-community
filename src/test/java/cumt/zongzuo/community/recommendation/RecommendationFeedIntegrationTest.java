@@ -301,6 +301,7 @@ class RecommendationFeedIntegrationTest extends IntegrationTestSupport {
         RecommendationFeedResponse repeatedFirst = getFeed(USER_ID, null, 3);
         RecommendationFeedResponse second = getFeed(USER_ID, first.nextCursor(), 3);
         RecommendationFeedResponse repeatedSecond = getFeed(USER_ID, first.nextCursor(), 3);
+        RecommendationFeedResponse otherVisitSecond = getFeed(USER_ID, repeatedFirst.nextCursor(), 3);
 
         assertThat(first.mode()).isEqualTo(RecommendationMode.FALLBACK);
         assertThat(second.mode()).isEqualTo(RecommendationMode.FALLBACK);
@@ -308,12 +309,15 @@ class RecommendationFeedIntegrationTest extends IntegrationTestSupport {
         assertThat(second.items()).hasSize(3);
         assertThat(articleIds(repeatedFirst)).containsExactlyElementsOf(articleIds(first));
         assertThat(exposureIds(repeatedFirst)).doesNotContainAnyElementsOf(exposureIds(first));
+        assertThat(repeatedFirst.nextCursor()).isNotEqualTo(first.nextCursor());
         assertThat(articleIds(first)).doesNotContainAnyElementsOf(articleIds(second));
         assertThat(articleIds(repeatedSecond)).containsExactlyElementsOf(articleIds(second));
         assertThat(exposureIds(repeatedSecond)).containsExactlyElementsOf(exposureIds(second));
-        assertThat(exposureCount()).isEqualTo(9);
+        assertThat(articleIds(otherVisitSecond)).containsExactlyElementsOf(articleIds(second));
+        assertThat(exposureIds(otherVisitSecond)).doesNotContainAnyElementsOf(exposureIds(second));
+        assertThat(exposureCount()).isEqualTo(12);
         assertThat(jdbcTemplate.queryForObject(
-                "SELECT COUNT(DISTINCT session_id) FROM recommendation_exposure", Integer.class)).isEqualTo(3);
+                "SELECT COUNT(DISTINCT session_id) FROM recommendation_exposure", Integer.class)).isEqualTo(4);
     }
 
     @Test

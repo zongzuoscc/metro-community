@@ -145,11 +145,12 @@ public class RecommendationFeedService {
 
     private RecommendationFeedResponse fallback(Long userId, String cursor, int size) {
         FallbackCursor position = decodeFallbackCursor(cursor, userId);
+        String visitNonce = position == null ? UUID.randomUUID().toString() : position.visitNonce();
         List<Article> articles = articleMapper.selectPublishedChronological(
                 position == null ? null : position.createTime(),
                 position == null ? null : position.articleId(), size);
         enrichAuthors(articles);
-        String pageSessionId = fallbackPageSessionId(userId, position);
+        String pageSessionId = fallbackPageSessionId(userId, visitNonce, position);
         List<HydratedRecommendationItem> hydrated = articles.stream()
                 .map(article -> new HydratedRecommendationItem(
                         new RecommendationItem(article, null, CHRONOLOGICAL, null),
@@ -159,7 +160,8 @@ public class RecommendationFeedService {
         String nextCursor = null;
         if (articles.size() == size && !articles.isEmpty()) {
             Article last = articles.getLast();
-            nextCursor = encode("fallback|" + userId + "|" + last.getCreateTime() + "|" + last.getId());
+            nextCursor = encode("fallback|" + userId + "|" + visitNonce + "|"
+                    + last.getCreateTime() + "|" + last.getId());
         }
         return new RecommendationFeedResponse(exposed, nextCursor, RecommendationMode.FALLBACK);
     }
@@ -264,11 +266,12 @@ public class RecommendationFeedService {
                 return null;
             }
             String[] parts = decoded.split("\\|", -1);
-            if (parts.length != 4 || !"fallback".equals(parts[0])
+            if (parts.length != 5 || !"fallback".equals(parts[0])
                     || !userId.equals(Long.valueOf(parts[1]))) {
                 return null;
             }
-            return new FallbackCursor(LocalDateTime.parse(parts[2]), Long.valueOf(parts[3]));
+            String visitNonce = UUID.fromString(parts[2]).toString();
+            return new FallbackCursor(visitNonce, LocalDateTime.parse(parts[3]), Long.valueOf(parts[4]));
         } catch (IllegalArgumentException exception) {
             return null;
         }
@@ -279,11 +282,12 @@ public class RecommendationFeedService {
                 .encodeToString(value.getBytes(StandardCharsets.UTF_8));
     }
 
-    private static String fallbackPageSessionId(Long userId, FallbackCursor position) {
+    private static String fallbackPageSessionId(Long userId, String visitNonce, FallbackCursor position) {
         if (position == null) {
-            return UUID.randomUUID().toString();
+            return visitNonce;
         }
-        String pageIdentity = "fallback:" + userId + ":" + position.createTime() + ":" + position.articleId();
+        String pageIdentity = "fallback:" + userId + ":" + visitNonce + ":"
+                + position.createTime() + ":" + position.articleId();
         return UUID.nameUUIDFromBytes(pageIdentity.getBytes(StandardCharsets.UTF_8)).toString();
     }
 
@@ -297,7 +301,7 @@ public class RecommendationFeedService {
     private record SessionCursor(String sessionId, int offset) {
     }
 
-    private record FallbackCursor(LocalDateTime createTime, Long articleId) {
+    private record FallbackCursor(String visitNonce, LocalDateTime createTime, Long articleId) {
     }
 
     private record HydratedRecommendationItem(
