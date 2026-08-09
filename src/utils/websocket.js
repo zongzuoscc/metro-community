@@ -5,6 +5,8 @@ const DEFAULT_API_BASE_URL = 'http://localhost:18080'
 const MAX_RETRIES = 5
 const RETRY_DELAY_MS = 3000
 const STABLE_CONNECTION_MS = 30_000
+const REPLACED_CLOSE_CODE = 1000
+const REPLACED_CLOSE_REASON = 'Replaced by a new connection'
 
 let websocket = null
 let retryCount = 0
@@ -108,7 +110,7 @@ const openWebSocket = (ticket, token, generation) => {
         }
     }
 
-    socket.onclose = () => {
+    socket.onclose = (event) => {
         if (stableConnectionOwner === socket) {
             if (stableConnectionTimer != null) window.clearTimeout(stableConnectionTimer)
             stableConnectionTimer = null
@@ -116,6 +118,7 @@ const openWebSocket = (ticket, token, generation) => {
         }
         if (!isCurrentLifecycle(token, generation) || websocket !== socket) return
         websocket = null
+        if (event?.code === REPLACED_CLOSE_CODE && event?.reason === REPLACED_CLOSE_REASON) return
         scheduleReconnect(token, generation)
     }
 

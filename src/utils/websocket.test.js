@@ -168,6 +168,42 @@ describe('WebSocket one-time ticket lifecycle', () => {
     ])
   })
 
+  it('treats the backend replacement CloseEvent as terminal', async () => {
+    mocks.requestTicket.mockResolvedValueOnce('replacement-ticket')
+    initWebSocket('valid.jwt')
+    await flushAsync()
+
+    TestWebSocket.instances[0].onclose?.(new CloseEvent('close', {
+      code: 1000,
+      reason: 'Replaced by a new connection',
+      wasClean: true
+    }))
+    vi.advanceTimersByTime(30_000)
+    await flushAsync()
+
+    expect(mocks.requestTicket).toHaveBeenCalledOnce()
+    expect(TestWebSocket.instances).toHaveLength(1)
+  })
+
+  it('still retries an ordinary server or network CloseEvent', async () => {
+    mocks.requestTicket
+      .mockResolvedValueOnce('initial-ticket')
+      .mockResolvedValueOnce('retry-ticket')
+    initWebSocket('valid.jwt')
+    await flushAsync()
+
+    TestWebSocket.instances[0].onclose?.(new CloseEvent('close', {
+      code: 1011,
+      reason: 'temporary server failure',
+      wasClean: false
+    }))
+    vi.advanceTimersByTime(3000)
+    await flushAsync()
+
+    expect(mocks.requestTicket).toHaveBeenCalledTimes(2)
+    expect(TestWebSocket.instances[1].url).toBe('ws://localhost:18080/im/retry-ticket')
+  })
+
   it('treats ticket HTTP 401 as terminal and clears the authenticated session', async () => {
     localStorage.setItem('token', 'expired.jwt')
     localStorage.setItem('user', JSON.stringify({ id: 1 }))
@@ -197,6 +233,28 @@ describe('WebSocket one-time ticket lifecycle', () => {
     }
 
     expect(mocks.requestTicket).toHaveBeenCalledTimes(6)
+    expect(TestWebSocket.instances).toHaveLength(0)
+  })
+
+  it('aborts an in-flight ticket request on close without scheduling a retry', async () => {
+    let requestSignal
+    mocks.requestTicket.mockImplementationOnce((_token, { signal }) => {
+      requestSignal = signal
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => {
+          reject(new DOMException('Aborted', 'AbortError'))
+        }, { once: true })
+      })
+    })
+    initWebSocket('valid.jwt')
+
+    closeWebSocket()
+    await flushAsync()
+    vi.advanceTimersByTime(30_000)
+    await flushAsync()
+
+    expect(requestSignal.aborted).toBe(true)
+    expect(mocks.requestTicket).toHaveBeenCalledOnce()
     expect(TestWebSocket.instances).toHaveLength(0)
   })
 

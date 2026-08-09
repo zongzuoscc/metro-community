@@ -36,7 +36,7 @@ cp .env.example .env
 npm run dev -- --host 127.0.0.1
 ```
 
-在浏览器打开 `http://localhost:15173`。登录后，前端会从 `localStorage` 读取既有 `token`：普通 REST 请求继续使用现有 `token` 请求头，WebSocket 只在 ticket 签发请求的 `Authorization: Bearer` 中使用它。每次初始连接或断线重连都会申请新的一次性 ticket，网络或 HTTP 503 故障最多重试 5 次； ticket 请求返回 401 时立即清理登录态并跳转登录页，不会继续重试。退出登录、密码重置或账号切换会主动关闭连接，且已在途中的 ticket 响应不能重新打开旧账号连接。
+在浏览器打开 `http://localhost:15173`。登录后，前端会从 `localStorage` 读取既有 `token`：普通 REST 请求继续使用现有 `token` 请求头，WebSocket 只在 ticket 签发请求的 `Authorization: Bearer` 中使用它。每次初始连接或断线重连都会申请新的一次性 ticket，单次请求 10 秒超时，网络、超时或 HTTP 503 故障最多重试 5 次； ticket 请求返回 401 时立即清理登录态并跳转登录页，不会继续重试。退出登录、密码重置或账号切换会主动关闭连接，且已在途中的 ticket 响应不能重新打开旧账号连接。同一账号在新标签页建立连接时，后端对旧连接的 replacement 关闭不会触发两个页面循环互踢。
 
 ## 首页推荐与最新流
 
