@@ -1,119 +1,119 @@
 package cumt.zongzuo.community.websocket;
 
-import com.fasterxml.jackson.databind.ObjectMapper; // 使用 Jackson
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import cumt.zongzuo.community.utils.JwtUtils;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Component;
-
-import jakarta.websocket.*; // Spring Boot 3 必须用 jakarta
+import jakarta.websocket.CloseReason;
+import jakarta.websocket.OnClose;
+import jakarta.websocket.OnError;
+import jakarta.websocket.OnMessage;
+import jakarta.websocket.OnOpen;
+import jakarta.websocket.Session;
 import jakarta.websocket.server.PathParam;
-import jakarta.websocket.server.ServerEndpoint;
+import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
-import java.util.concurrent.ConcurrentHashMap;
 
-/**
- * WebSocket 服务端
- * 访问地址: ws://localhost:8080/im/{token}
- */
-@ServerEndpoint("/im/{token}")
-@Component
 @Slf4j
 public class WebSocketServer {
 
-    // 静态变量，用来记录当前在线连接数
-    private static ConcurrentHashMap<Long, Session> sessionMap = new ConcurrentHashMap<>();
+    private static final CloseReason POLICY_VIOLATION = new CloseReason(
+            CloseReason.CloseCodes.VIOLATED_POLICY, "Authentication failed");
+    private static final CloseReason SESSION_REPLACED = new CloseReason(
+            CloseReason.CloseCodes.NORMAL_CLOSURE, "Replaced by a new connection");
 
-    // Jackson 的 ObjectMapper，用于 JSON 解析
-    private static ObjectMapper objectMapper = new ObjectMapper();
+    private final WebSocketTicketService ticketService;
+    private final WebSocketSessionRegistry sessionRegistry;
+    private final ObjectMapper objectMapper;
 
     private Long userId;
 
-    /**
-     * 连接建立成功调用的方法
-     */
+    public WebSocketServer(WebSocketTicketService ticketService,
+                           WebSocketSessionRegistry sessionRegistry,
+                           ObjectMapper objectMapper) {
+        this.ticketService = ticketService;
+        this.sessionRegistry = sessionRegistry;
+        this.objectMapper = objectMapper;
+    }
+
     @OnOpen
-    public void onOpen(Session session, @PathParam("token") String token) {
+    public void onOpen(Session session, @PathParam("ticket") String ticket) {
+        Long authenticatedUserId;
         try {
-            // 1. 解析 Token 获取 userId
-            this.userId = JwtUtils.getUserId(token);
+            authenticatedUserId = ticketService.consume(ticket);
+        } catch (WebSocketTicketStoreException exception) {
+            log.warn("WebSocket authentication unavailable");
+            closeQuietly(session, POLICY_VIOLATION);
+            return;
+        }
+        if (authenticatedUserId == null) {
+            log.warn("WebSocket authentication rejected");
+            closeQuietly(session, POLICY_VIOLATION);
+            return;
+        }
 
-            if (this.userId != null) {
-                sessionMap.put(this.userId, session);
-                log.info("用户上线: {}, 当前在线人数: {}", this.userId, sessionMap.size());
-            } else {
-                session.close();
-            }
-        } catch (Exception e) {
-            log.error("WebSocket认证失败", e);
-            try {
-                session.close();
-            } catch (IOException ex) {
-                ex.printStackTrace();
-            }
+        this.userId = authenticatedUserId;
+        Session previous = sessionRegistry.replace(authenticatedUserId, session);
+        log.info("用户上线: {}, 当前在线人数: {}", authenticatedUserId, sessionRegistry.size());
+        if (previous != null && previous != session && previous.isOpen()) {
+            closeQuietly(previous, SESSION_REPLACED);
         }
     }
 
-    /**
-     * 连接关闭调用的方法
-     */
     @OnClose
-    public void onClose() {
-        if (this.userId != null) {
-            sessionMap.remove(this.userId);
-            log.info("用户下线: {}", this.userId);
+    public void onClose(Session session) {
+        if (userId != null && sessionRegistry.remove(userId, session)) {
+            log.info("用户下线: {}", userId);
         }
     }
 
-    /**
-     * 收到客户端消息后调用的方法
-     * 格式: { "toId": 2, "content": "你好" }
-     */
     @OnMessage
     public void onMessage(String message, Session session) {
-        log.info("收到用户{}的消息: {}", this.userId, message);
+        if (userId == null) {
+            closeQuietly(session, POLICY_VIOLATION);
+            return;
+        }
+        log.debug("收到用户{}的 WebSocket 消息", userId);
         try {
-            // 使用 Jackson 解析 JSON
             ObjectNode msgObj = (ObjectNode) objectMapper.readTree(message);
             Long toId = msgObj.get("toId").asLong();
             String content = msgObj.get("content").asText();
 
             if (toId == 9999L) {
-                // 1. 用户的提问先正常入库保存
-                ChatUtils.saveMessageAsync(this.userId, toId, content);
-
-                // 2. 唤醒 AI 异步思考并回复
-                ChatUtils.handleAiChatAsync(this.userId, content, session, objectMapper);
-
-                return; // 直接结束，不需要走后续普通用户的发送逻辑
+                ChatUtils.saveMessageAsync(userId, toId, content);
+                ChatUtils.handleAiChatAsync(userId, content, session, objectMapper);
+                return;
             }
 
-            // 1. 发送给接收者 (如果在线)
-            Session toSession = sessionMap.get(toId);
+            Session toSession = sessionRegistry.find(toId);
             if (toSession != null && toSession.isOpen()) {
-                // 构造推送数据
                 ObjectNode pushMsg = objectMapper.createObjectNode();
-                pushMsg.put("fromId", this.userId);
+                pushMsg.put("fromId", userId);
                 pushMsg.put("content", content);
                 pushMsg.put("type", "chat");
-
-                // 异步发送
                 toSession.getAsyncRemote().sendText(pushMsg.toString());
             } else {
                 log.info("用户{}不在线", toId);
             }
 
-            // 2. 异步存库
-            ChatUtils.saveMessageAsync(this.userId, toId, content);
-
-        } catch (Exception e) {
-            log.error("消息处理异常", e);
+            ChatUtils.saveMessageAsync(userId, toId, content);
+        } catch (Exception exception) {
+            log.warn("WebSocket message processing failed: {}", exception.getClass().getSimpleName());
         }
     }
 
     @OnError
     public void onError(Session session, Throwable error) {
-        log.error("WebSocket发生错误", error);
+        String errorType = error == null ? "Unknown" : error.getClass().getSimpleName();
+        log.warn("WebSocket connection error: {}", errorType);
+    }
+
+    private void closeQuietly(Session session, CloseReason reason) {
+        try {
+            if (session.isOpen()) {
+                session.close(reason);
+            }
+        } catch (IOException exception) {
+            log.warn("WebSocket close failed: {}", exception.getClass().getSimpleName());
+        }
     }
 }

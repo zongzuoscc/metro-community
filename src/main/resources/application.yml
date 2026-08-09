@@ -103,6 +103,8 @@ app:
     jwt-secret: ${JWT_SECRET:}
     token-ttl: ${JWT_TOKEN_TTL:P7D}
     cors-allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173}
+  websocket:
+    ticket-ttl: ${WEBSOCKET_TICKET_TTL:PT30S}
 
 recommendation:
   enabled: ${RECOMMENDATION_ENABLED:false}

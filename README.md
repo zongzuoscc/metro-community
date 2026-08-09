@@ -11,6 +11,7 @@
 ## 已实现能力
 
 - JWT 无状态认证：支持标准 `Authorization: Bearer <token>`，同时兼容现有前端的 `token` 请求头。
+- WebSocket 一次性凭证：长期 JWT 仅用于申请 30 秒 ticket，不再出现在 WebSocket URI 中。
 - 角色保护：文章、用户和举报管理接口需要管理员角色。
 - 内容社区闭环：文章状态流转、评论、点赞、收藏、关注、系统通知与私信。
 - Elasticsearch 全文检索、相似文章，以及 RabbitMQ 驱动的异步索引同步。
@@ -45,6 +46,13 @@ set -a && source .env && set +a
 ```
 
 默认 CORS 仅允许 `http://localhost:5173`；生产环境请通过 `CORS_ALLOWED_ORIGINS` 设置前端正式域名。
+
+WebSocket 连接前，已登录客户端需要用 JWT 调用 `POST /api/ws/ticket`，然后仅用返回的 ticket 建立 `/im/{ticket}` 连接。ticket 默认 30 秒过期且只能消费一次；断线重连必须重新申请，不能复用。可通过 `WEBSOCKET_TICKET_TTL` 调整过期时间，建议保持秒级。Redis 不可用时签发返回 HTTP 503，握手验证也会 fail-closed，不降级为 JWT URI 或匿名连接。
+
+```bash
+curl -X POST http://localhost:18080/api/ws/ticket \
+  -H 'Authorization: Bearer <login-jwt>'
+```
 
 推荐排序 Serving 默认关闭（`RECOMMENDATION_ENABLED=false`），但训练任务仍按 Asia/Shanghai 每日 02:15 运行，且不受 Serving 开关影响。模型目录应是应用进程可写的持久化绝对路径。Serving 关闭时返回 chronology `FALLBACK`；启用 Serving 但尚无可用模型时，符合条件的用户收到 chronology `COLD_START`。完整可调参数见 `.env.example`。
 

@@ -22,3 +22,5 @@ app:
     jwt-secret: replace-with-a-random-32-byte-minimum-secret
     cors-allowed-origins:
       - http://localhost:5173
+  websocket:
+    ticket-ttl: PT30S
