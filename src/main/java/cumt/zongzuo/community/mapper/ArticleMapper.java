@@ -23,12 +23,18 @@ public interface ArticleMapper extends BaseMapper<Article> {
     List<Article> selectArticlesByFolderId(Long folderId);
 
     List<Article> selectPublishedByFollowedAuthors(@Param("userId") Long userId,
+                                                   @Param("excludedAuthorId") Long excludedAuthorId,
+                                                   @Param("shownArticleIds") Collection<Long> shownArticleIds,
                                                    @Param("limit") int limit);
 
     List<Article> selectPublishedByTagIds(@Param("tagIds") Collection<Long> tagIds,
+                                          @Param("excludedAuthorId") Long excludedAuthorId,
+                                          @Param("shownArticleIds") Collection<Long> shownArticleIds,
                                           @Param("limit") int limit);
 
-    List<Article> selectPublishedHotFresh(@Param("limit") int limit);
+    List<Article> selectPublishedHotFresh(@Param("excludedAuthorId") Long excludedAuthorId,
+                                          @Param("shownArticleIds") Collection<Long> shownArticleIds,
+                                          @Param("limit") int limit);
 
     List<Article> selectPublishedByIds(@Param("articleIds") Collection<Long> articleIds);
 }

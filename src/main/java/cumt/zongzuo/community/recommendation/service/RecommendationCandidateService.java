@@ -27,6 +27,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -43,6 +44,7 @@ public class RecommendationCandidateService {
     private static final int PROFILE_AUTHOR_LIMIT = 100;
     private static final int SIMILAR_SEED_LIMIT = 5;
     private static final int READ_WINDOW_DAYS = 30;
+    private static final int MAX_SIMILAR_SEARCH_LIMIT = SIMILAR_LIMIT * 2;
 
     private final ArticleMapper articleMapper;
     private final ArticleTagMapper articleTagMapper;
@@ -87,13 +89,15 @@ public class RecommendationCandidateService {
         if (userId == null || limit <= 0) {
             return List.of();
         }
+        Set<Long> shown = normalizedArticleIds(shownArticleIds);
         Map<String, Double> tagProfile = safeMap(profileService.profileTags(userId, PROFILE_TAG_LIMIT));
         Map<Long, Double> authorProfile = safeMap(profileService.profileAuthors(userId, PROFILE_AUTHOR_LIMIT));
 
-        List<Article> follow = safeList(articleMapper.selectPublishedByFollowedAuthors(userId, FOLLOW_LIMIT));
-        List<Article> tag = recallByTags(tagProfile.keySet());
-        List<Article> similar = recallSimilar(userId);
-        List<Article> explore = safeList(articleMapper.selectPublishedHotFresh(EXPLORE_LIMIT));
+        List<Article> follow = safeList(articleMapper.selectPublishedByFollowedAuthors(
+                userId, userId, shown, FOLLOW_LIMIT));
+        List<Article> tag = recallByTags(tagProfile.keySet(), userId, shown);
+        List<Article> similar = recallSimilar(userId, shown);
+        List<Article> explore = safeList(articleMapper.selectPublishedHotFresh(userId, shown, EXPLORE_LIMIT));
         List<RecommendationCandidate> recalled = mergeRecallSources(follow, tag, similar, explore);
 
         LocalDateTime cutoff = LocalDateTime.now(clock).minusDays(READ_WINDOW_DAYS);
@@ -103,7 +107,7 @@ public class RecommendationCandidateService {
                 .map(candidate -> assembleFeatures(candidate, tagProfile, authorProfile, recentlyInteracted))
                 .toList();
 
-        List<RecommendationCandidate> ranked = rankingService.rank(userId, featured, shownArticleIds);
+        List<RecommendationCandidate> ranked = rankingService.rank(userId, featured, shown);
         return rankingService.diversify(ranked, limit);
     }
 
@@ -122,12 +126,18 @@ public class RecommendationCandidateService {
     }
 
     public List<Article> recallSimilar(Long userId) {
+        return recallSimilar(userId, Set.of());
+    }
+
+    public List<Article> recallSimilar(Long userId, Set<Long> shownArticleIds) {
         LocalDateTime cutoff = LocalDateTime.now(clock).minusDays(READ_WINDOW_DAYS);
         List<Long> seedIds = safeList(eventMapper.selectRecentSeedArticleIds(
                 userId, cutoff, SIMILAR_SEED_LIMIT)).stream().limit(SIMILAR_SEED_LIMIT).toList();
         if (seedIds.isEmpty()) {
             return List.of();
         }
+        Set<Long> excludedArticleIds = new LinkedHashSet<>(seedIds);
+        excludedArticleIds.addAll(normalizedArticleIds(shownArticleIds));
         String likeDocuments = seedIds.stream()
                 .map(id -> "{\"_index\":\"article\",\"_id\":\"" + id + "\"}")
                 .collect(Collectors.joining(","));
@@ -135,8 +145,13 @@ public class RecommendationCandidateService {
                 + "\"fields\":[\"title\",\"summary\",\"content\"],"
                 + "\"like\":[" + likeDocuments + "],"
                 + "\"min_term_freq\":1,\"max_query_terms\":25}}";
-        StringQuery query = new StringQuery(mltQueryJson);
-        query.setPageable(PageRequest.of(0, SIMILAR_LIMIT));
+        String excludedIdsJson = excludedArticleIds.stream().map(String::valueOf)
+                .collect(Collectors.joining(","));
+        String queryJson = "{\"bool\":{\"must\":[" + mltQueryJson + "],\"must_not\":["
+                + "{\"ids\":{\"values\":[" + excludedIdsJson + "]}},"
+                + "{\"term\":{\"authorId\":" + userId + "}}]}}";
+        StringQuery query = new StringQuery(queryJson);
+        query.setPageable(PageRequest.of(0, similarSearchLimit(excludedArticleIds.size() + 1)));
         SearchHits<ArticleDoc> hits;
         try {
             hits = elasticsearchOperations.search(query, ArticleDoc.class);
@@ -146,17 +161,24 @@ public class RecommendationCandidateService {
         }
         List<Long> hitIds = hits.stream()
                 .map(SearchHit::getContent)
+                .filter(Objects::nonNull)
+                .filter(document -> document.getId() != null
+                        && !excludedArticleIds.contains(document.getId())
+                        && !userId.equals(document.getAuthorId()))
                 .map(ArticleDoc::getId)
-                .filter(id -> id != null && !seedIds.contains(id))
                 .distinct()
-                .limit(SIMILAR_LIMIT)
+                .limit(query.getPageable().getPageSize())
                 .toList();
         if (hitIds.isEmpty()) {
             return List.of();
         }
         Map<Long, Article> publishedById = safeList(articleMapper.selectPublishedByIds(hitIds)).stream()
                 .collect(Collectors.toMap(Article::getId, article -> article, (first, ignored) -> first));
-        return hitIds.stream().map(publishedById::get).filter(java.util.Objects::nonNull).toList();
+        return hitIds.stream().map(publishedById::get)
+                .filter(Objects::nonNull)
+                .filter(RecommendationCandidateService::isPublishedAndVisible)
+                .limit(SIMILAR_LIMIT)
+                .toList();
     }
 
     public static List<RecommendationCandidate> mergeRecallSources(List<Article> follow,
@@ -189,7 +211,8 @@ public class RecommendationCandidateService {
         return List.copyOf(merged.values());
     }
 
-    private List<Article> recallByTags(Collection<String> tagNames) {
+    private List<Article> recallByTags(Collection<String> tagNames, Long excludedAuthorId,
+                                       Set<Long> shownArticleIds) {
         if (tagNames.isEmpty()) {
             return List.of();
         }
@@ -197,7 +220,7 @@ public class RecommendationCandidateService {
         if (tagIds.isEmpty()) {
             return List.of();
         }
-        return safeList(articleMapper.selectPublishedByTagIds(tagIds, TAG_LIMIT));
+        return safeList(articleMapper.selectPublishedByTagIds(tagIds, excludedAuthorId, shownArticleIds, TAG_LIMIT));
     }
 
     private RecommendationCandidate assembleFeatures(RecommendationCandidate candidate,
@@ -265,5 +288,23 @@ public class RecommendationCandidateService {
 
     private static <K> Map<K, Double> safeMap(Map<K, Double> values) {
         return values == null ? Map.of() : values;
+    }
+
+    private static Set<Long> normalizedArticleIds(Collection<Long> articleIds) {
+        if (articleIds == null || articleIds.isEmpty()) {
+            return Set.of();
+        }
+        return articleIds.stream().filter(Objects::nonNull)
+                .collect(Collectors.toUnmodifiableSet());
+    }
+
+    private static int similarSearchLimit(int knownExclusionCount) {
+        return Math.min(MAX_SIMILAR_SEARCH_LIMIT,
+                SIMILAR_LIMIT + Math.max(0, knownExclusionCount));
+    }
+
+    private static boolean isPublishedAndVisible(Article article) {
+        return Integer.valueOf(1).equals(article.getStatus())
+                && Integer.valueOf(0).equals(article.getIsDeleted());
     }
 }

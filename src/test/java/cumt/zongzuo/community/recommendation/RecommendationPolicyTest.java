@@ -13,10 +13,12 @@ import cumt.zongzuo.community.recommendation.service.RecommendationCandidateServ
 import cumt.zongzuo.community.recommendation.service.RecommendationProfileService;
 import cumt.zongzuo.community.recommendation.service.RecommendationRankingService;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.data.elasticsearch.core.ElasticsearchOperations;
 import org.springframework.data.elasticsearch.core.SearchHit;
 import org.springframework.data.elasticsearch.core.SearchHits;
 import org.springframework.data.elasticsearch.core.query.Query;
+import org.springframework.data.elasticsearch.core.query.StringQuery;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -36,6 +38,7 @@ import static org.assertj.core.api.Assertions.within;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class RecommendationPolicyTest {
@@ -221,9 +224,10 @@ class RecommendationPolicyTest {
         UserArticleEventMapper eventMapper = mock(UserArticleEventMapper.class);
         RecommendationProfileService profileService = mock(RecommendationProfileService.class);
         ElasticsearchOperations elasticsearchOperations = mock(ElasticsearchOperations.class);
-        when(articleMapper.selectPublishedByFollowedAuthors(USER_ID, 20)).thenReturn(List.of());
+        when(articleMapper.selectPublishedByFollowedAuthors(eq(USER_ID), eq(USER_ID), any(), eq(20)))
+                .thenReturn(List.of());
         Article explore = article(9, 90, 1, 0);
-        when(articleMapper.selectPublishedHotFresh(20)).thenReturn(List.of(explore));
+        when(articleMapper.selectPublishedHotFresh(eq(USER_ID), any(), eq(20))).thenReturn(List.of(explore));
         when(articleTagMapper.selectTagNamesByArticleId(9L)).thenReturn(List.of());
         when(profileService.profileTags(USER_ID, 40)).thenReturn(Map.of());
         when(profileService.profileAuthors(USER_ID, 100)).thenReturn(Map.of());
@@ -272,6 +276,43 @@ class RecommendationPolicyTest {
                 .hasMessage("MySQL unavailable");
     }
 
+    @Test
+    @SuppressWarnings("unchecked")
+    void similarOverfetchesAndBackfillsAfterFilteringSeedShownAndSelfHits() {
+        ArticleMapper articleMapper = mock(ArticleMapper.class);
+        ArticleTagMapper articleTagMapper = mock(ArticleTagMapper.class);
+        TagMapper tagMapper = mock(TagMapper.class);
+        UserArticleEventMapper eventMapper = mock(UserArticleEventMapper.class);
+        RecommendationProfileService profileService = mock(RecommendationProfileService.class);
+        ElasticsearchOperations elasticsearchOperations = mock(ElasticsearchOperations.class);
+        SearchHits<ArticleDoc> hits = mock(SearchHits.class);
+        List<SearchHit<ArticleDoc>> orderedHits = Stream.concat(
+                Stream.of(hit(900L, 20L), hit(901L, 21L), hit(902L, USER_ID)),
+                IntStream.rangeClosed(903, 932).mapToObj(id -> hit((long) id, 30L + id))).toList();
+        when(hits.stream()).thenReturn(orderedHits.stream());
+        when(eventMapper.selectRecentSeedArticleIds(eq(USER_ID), any(LocalDateTime.class), eq(5)))
+                .thenReturn(List.of(900L));
+        when(elasticsearchOperations.search(any(Query.class), eq(ArticleDoc.class))).thenReturn(hits);
+        List<Article> hydrated = IntStream.rangeClosed(903, 932)
+                .mapToObj(id -> article(id, 30L + id, 1, 0)).toList();
+        when(articleMapper.selectPublishedByIds(any())).thenReturn(hydrated);
+        RecommendationCandidateService candidateService = new RecommendationCandidateService(
+                articleMapper, articleTagMapper, tagMapper, eventMapper, profileService,
+                elasticsearchOperations, rankingService, CLOCK);
+
+        List<Article> result = candidateService.recallSimilar(USER_ID, Set.of(901L));
+
+        assertThat(result).extracting(Article::getId)
+                .containsExactlyElementsOf(IntStream.rangeClosed(903, 932).mapToObj(Long::valueOf).toList());
+        verify(articleMapper).selectPublishedByIds(
+                IntStream.rangeClosed(903, 932).mapToObj(Long::valueOf).toList());
+        ArgumentCaptor<Query> queryCaptor = ArgumentCaptor.forClass(Query.class);
+        verify(elasticsearchOperations).search(queryCaptor.capture(), eq(ArticleDoc.class));
+        assertThat(queryCaptor.getValue().getPageable().getPageSize()).isEqualTo(33);
+        assertThat(((StringQuery) queryCaptor.getValue()).getSource())
+                .contains("must_not", "authorId", "900", "901");
+    }
+
     private static RecommendationCandidate candidate(Article article, Set<Source> sources, Set<String> tags,
                                                       double tagAffinity, double authorAffinity,
                                                       double similarScore, double heatScore,
@@ -292,6 +333,16 @@ class RecommendationPolicyTest {
         article.setCollectCount(0);
         article.setCommentCount(0);
         return article;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static SearchHit<ArticleDoc> hit(long id, long authorId) {
+        SearchHit<ArticleDoc> hit = mock(SearchHit.class);
+        ArticleDoc document = new ArticleDoc();
+        document.setId(id);
+        document.setAuthorId(authorId);
+        when(hit.getContent()).thenReturn(document);
+        return hit;
     }
 
     private static List<Article> articles(int firstId, int count) {

@@ -9,6 +9,13 @@
         WHERE f.follower_id = #{userId}
           AND a.status = 1
           AND a.is_deleted = 0
+          AND a.author_id &lt;&gt; #{excludedAuthorId}
+        <if test="shownArticleIds != null and !shownArticleIds.isEmpty()">
+          AND a.id NOT IN
+            <foreach collection="shownArticleIds" item="shownArticleId" open="(" separator="," close=")">
+                #{shownArticleId}
+            </foreach>
+        </if>
         ORDER BY a.create_time DESC, a.id DESC
         LIMIT #{limit}
     </select>
@@ -23,6 +30,13 @@
         </foreach>
           AND a.status = 1
           AND a.is_deleted = 0
+          AND a.author_id &lt;&gt; #{excludedAuthorId}
+        <if test="shownArticleIds != null and !shownArticleIds.isEmpty()">
+          AND a.id NOT IN
+            <foreach collection="shownArticleIds" item="shownArticleId" open="(" separator="," close=")">
+                #{shownArticleId}
+            </foreach>
+        </if>
         ORDER BY a.create_time DESC, a.id DESC
         LIMIT #{limit}
     </select>
@@ -32,6 +46,13 @@
         FROM article a
         WHERE a.status = 1
           AND a.is_deleted = 0
+          AND a.author_id &lt;&gt; #{excludedAuthorId}
+        <if test="shownArticleIds != null and !shownArticleIds.isEmpty()">
+          AND a.id NOT IN
+            <foreach collection="shownArticleIds" item="shownArticleId" open="(" separator="," close=")">
+                #{shownArticleId}
+            </foreach>
+        </if>
         ORDER BY (a.create_time &gt;= DATE_SUB(NOW(), INTERVAL 7 DAY)) DESC,
                  (COALESCE(a.view_count, 0)
                     + COALESCE(a.like_count, 0) * 3
