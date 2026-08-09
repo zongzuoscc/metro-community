@@ -1,9 +1,15 @@
 package cumt.zongzuo.community.ai;
 
 import cumt.zongzuo.community.IntegrationTestSupport;
+import cumt.zongzuo.community.ai.provider.AiChatGateway;
+import cumt.zongzuo.community.ai.provider.DisabledAiChatGateway;
+import cumt.zongzuo.community.ai.provider.DisabledEmbeddingGateway;
+import cumt.zongzuo.community.ai.provider.EmbeddingGateway;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.deepseek.DeepSeekChatModel;
+import org.springframework.ai.deepseek.api.DeepSeekApi;
 import org.springframework.ai.ollama.OllamaEmbeddingModel;
+import org.springframework.ai.ollama.api.OllamaApi;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationContext;
 import org.springframework.core.env.Environment;
@@ -26,6 +32,10 @@ class NoAiStartupIntegrationTest extends IntegrationTestSupport {
         assertThat(context.getBeansOfType(DispatcherServlet.class)).hasSize(1);
         assertThat(context.getBeanNamesForType(DeepSeekChatModel.class)).isEmpty();
         assertThat(context.getBeanNamesForType(OllamaEmbeddingModel.class)).isEmpty();
+        assertThat(context.getBeanNamesForType(DeepSeekApi.class)).isEmpty();
+        assertThat(context.getBeanNamesForType(OllamaApi.class)).isEmpty();
+        assertThat(context.getBean(AiChatGateway.class)).isInstanceOf(DisabledAiChatGateway.class);
+        assertThat(context.getBean(EmbeddingGateway.class)).isInstanceOf(DisabledEmbeddingGateway.class);
         assertThat(environment.getProperty("spring.ai.model.chat")).isEqualTo("none");
         assertThat(environment.getProperty("spring.ai.model.embedding")).isEqualTo("none");
         assertThat(environment.getProperty("spring.ai.retry.max-attempts")).isEqualTo("1");

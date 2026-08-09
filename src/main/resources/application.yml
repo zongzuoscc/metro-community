@@ -89,6 +89,57 @@ app:
   websocket:
     ticket-ttl: ${WEBSOCKET_TICKET_TTL:PT30S}
 
+metro:
+  ai:
+    enabled: ${METRO_AI_ENABLED:false}
+    agent:
+      enabled: ${METRO_AI_AGENT_ENABLED:false}
+      max-input-characters: 4000
+      per-minute: 8
+      per-day: 100
+      quota-window: PT1M
+      timeout: PT45S
+      bulkhead: 8
+    article-summary:
+      max-input-characters: 100000
+      per-minute: 5
+      per-day: 30
+      quota-window: PT1M
+      timeout: PT60S
+      bulkhead: 4
+    writing:
+      enabled: ${METRO_AI_WRITING_ENABLED:false}
+      max-input-characters: 20000
+      per-minute: 10
+      per-day: 60
+      quota-window: PT10M
+      timeout: PT60S
+      bulkhead: 4
+    hyde:
+      max-output-characters: 600
+      timeout: PT8S
+      bulkhead: 8
+    moderation:
+      enabled: ${METRO_AI_MODERATION_ENABLED:false}
+      timeout: PT20S
+      task-timeout: PT90S
+      bulkhead: 2
+    memory:
+      enabled: ${METRO_AI_MEMORY_ENABLED:false}
+      timeout: PT20S
+      bulkhead: 2
+    embedding:
+      enabled: ${METRO_AI_EMBEDDING_ENABLED:false}
+      timeout: PT45S
+      bulkhead: 4
+    deep-seek:
+      base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
+      api-key: ${DEEPSEEK_API_KEY:}
+      model: ${DEEPSEEK_MODEL:deepseek-v4-flash}
+    ollama:
+      base-url: ${OLLAMA_BASE_URL:http://127.0.0.1:11434}
+      model: ${OLLAMA_EMBEDDING_MODEL:bge-m3}
+
 recommendation:
   enabled: ${RECOMMENDATION_ENABLED:false}
   session-ttl-minutes: ${RECOMMENDATION_SESSION_TTL_MINUTES:10}

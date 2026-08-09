@@ -130,8 +130,9 @@ class LegacyAiSurfaceIntegrationTest extends IntegrationTestSupport {
         assertThat(applicationConfig).contains(
                 "chat: none",
                 "embedding: none",
-                "max-attempts: 1")
-                .doesNotContain("  " + "openai:", "api-key:", "AI_" + "CHAT_ENABLED");
+                "max-attempts: 1",
+                "api-key: ${DEEPSEEK_API_KEY:}")
+                .doesNotContain("  " + "openai:", "spring.ai." + "openai", "AI_" + "CHAT_ENABLED");
         assertThat(integrationSupport).contains(
                 "spring.ai.model.chat",
                 "spring.ai.model.embedding",
