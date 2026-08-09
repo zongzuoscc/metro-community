@@ -15,7 +15,7 @@
 - 保留 `/api/article/feed`、`/api/article/hot-feed`、`/api/article/follow-feed` 和 `/api/article/{id}/similar` 的既有语义；详情相关推荐仍由 ES `more_like_this` 提供。
 - 仅登录用户调用新推荐接口；未登录推荐页和所有用户的最新页继续请求现有时间线。首页必须展示独立的“推荐”和“最新”入口。
 - 所有行为消息必须在原业务动作成功后发送；消费失败走现有 RabbitMQ retry/DLQ，不能影响点赞、收藏、评论和关注主请求。
-- 行为与曝光事实仅追加到新表，不能回填、修改或删除既有业务表历史数据；关闭 `recommendation.enabled` 必须立即让推荐页走时间线，最新页不受该开关影响。
+- 行为与曝光事实仅追加到新表，不能回填、修改或删除既有业务表历史数据；`recommendation.enabled` 只控制推荐结果，不停止行为采集，关闭后推荐页必须立即走时间线，最新页不受该开关影响。
 - 模型排序启用条件固定为：当前用户最近 30 天至少 20 条去重有效行为，并且全站最近 90 天至少 500 条去重有效行为；两者缺一不可。
 - 训练数据只来自真实推荐曝光及其后 7 天内的有效阅读、点赞、收藏、评论或关注后的内容互动。验证集不优于规则基线的模型不得发布。
 - 本地端口继续使用既有隔离配置：后端 18080、Redis 16379、RabbitMQ 15673、Elasticsearch 19200；不得占用其他项目的默认端口。
@@ -33,13 +33,16 @@
 - `src/main/java/cumt/zongzuo/community/recommendation/entity/RecommendationEventType.java`：五类行为及初始权重。
 - `src/main/java/cumt/zongzuo/community/recommendation/mapper/UserArticleEventMapper.java`：行为事实 MyBatis-Plus mapper。
 - `src/main/java/cumt/zongzuo/community/recommendation/mapper/RecommendationExposureMapper.java`：曝光 MyBatis-Plus mapper。
+- `src/main/java/cumt/zongzuo/community/recommendation/entity/RecommendationEventOutbox.java`：与业务事务共同提交的待投递事件。
+- `src/main/java/cumt/zongzuo/community/recommendation/mapper/RecommendationEventOutboxMapper.java`：Outbox 持久化与状态更新 mapper。
 - `src/main/java/cumt/zongzuo/community/recommendation/dto/RecommendationEventCommand.java`：跨 RabbitMQ 的不可变事件消息。
 - `src/main/java/cumt/zongzuo/community/recommendation/dto/RecommendationItem.java`：文章和可解释原因。
 - `src/main/java/cumt/zongzuo/community/recommendation/dto/RecommendationFeedResponse.java`：稳定游标分页响应。
 - `src/main/java/cumt/zongzuo/community/recommendation/dto/RecommendationSession.java`：Redis 中的用户绑定、有序会话。
 - `src/main/java/cumt/zongzuo/community/recommendation/dto/RecommendationMode.java`：`COLD_START`、`PERSONALIZED`、`FALLBACK` 响应模式。
 - `src/main/java/cumt/zongzuo/community/recommendation/dto/RecommendationViewRequest.java`：可选曝光 ID 的有效阅读请求体。
-- `src/main/java/cumt/zongzuo/community/recommendation/service/RecommendationEventPublisher.java`：事务提交后投递消息。
+- `src/main/java/cumt/zongzuo/community/recommendation/service/RecommendationEventOutboxService.java`：在当前业务事务内追加待投递事件。
+- `src/main/java/cumt/zongzuo/community/recommendation/task/RecommendationOutboxDispatcher.java`：带 publisher confirm 的异步投递与退避重试。
 - `src/main/java/cumt/zongzuo/community/recommendation/service/RecommendationProfileService.java`：画像写入、重建及时间衰减。
 - `src/main/java/cumt/zongzuo/community/recommendation/service/RecommendationCandidateService.java`：四路候选召回、资格过滤、文章投影填充。
 - `src/main/java/cumt/zongzuo/community/recommendation/service/RecommendationRankingService.java`：得分、去重和多样性重排。
@@ -138,6 +141,26 @@ CREATE TABLE recommendation_exposure (
     INDEX idx_exposure_user_time (user_id, exposed_at DESC),
     INDEX idx_exposure_article_time (article_id, exposed_at DESC)
 ) COMMENT='推荐真实曝光和训练特征快照';
+
+CREATE TABLE recommendation_event_outbox (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    article_id BIGINT NULL,
+    target_author_id BIGINT NULL,
+    event_type VARCHAR(32) NOT NULL,
+    occurred_at DATETIME NOT NULL,
+    dedupe_key VARCHAR(160) NOT NULL,
+    source VARCHAR(64) NOT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+    retry_count INT NOT NULL DEFAULT 0,
+    next_attempt_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_error VARCHAR(500) NULL,
+    create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    sent_time DATETIME NULL,
+    UNIQUE KEY uk_recommendation_outbox_dedupe (dedupe_key),
+    INDEX idx_recommendation_outbox_dispatch (status, next_attempt_at, id)
+) COMMENT='推荐事件事务 Outbox';
 ```
 
 ```text
@@ -252,83 +275,122 @@ git commit -m "feat: add recommendation event foundation"
 ### Task 2: 原业务完成后采集幂等行为事件
 
 **Files:**
-- Create: `src/main/java/cumt/zongzuo/community/recommendation/service/RecommendationEventPublisher.java`
+- Create: `src/main/java/cumt/zongzuo/community/recommendation/entity/RecommendationEventOutbox.java`
+- Create: `src/main/java/cumt/zongzuo/community/recommendation/mapper/RecommendationEventOutboxMapper.java`
+- Create: `src/main/java/cumt/zongzuo/community/recommendation/service/RecommendationEventOutboxService.java`
+- Create: `src/main/java/cumt/zongzuo/community/recommendation/task/RecommendationOutboxDispatcher.java`
+- Delete: `src/main/java/cumt/zongzuo/community/recommendation/service/RecommendationEventPublisher.java`
+- Modify: `script.sql`
+- Modify: `src/main/resources/application.yml`
+- Modify: `src/main/java/cumt/zongzuo/community/mq/LikeConsumer.java`
 - Modify: `src/main/java/cumt/zongzuo/community/service/impl/LikeServiceImpl.java`
 - Modify: `src/main/java/cumt/zongzuo/community/service/impl/FavoriteServiceImpl.java`
 - Modify: `src/main/java/cumt/zongzuo/community/service/impl/CommentServiceImpl.java`
 - Modify: `src/main/java/cumt/zongzuo/community/service/impl/FollowServiceImpl.java`
-- Test: `src/test/java/cumt/zongzuo/community/recommendation/RecommendationEventPublisherTest.java`
+- Delete: `src/test/java/cumt/zongzuo/community/recommendation/RecommendationEventPublisherTest.java`
+- Test: `src/test/java/cumt/zongzuo/community/recommendation/RecommendationEventOutboxIntegrationTest.java`
 
 **Interfaces:**
 - Consumes `RecommendationEventCommand` and `recommendation.event.queue` from Task 1.
-- Produces `RecommendationEventPublisher.publishAfterCommit(RecommendationEventCommand command)` for all successful business actions and Task 5's valid-view endpoint.
+- Produces `RecommendationEventOutboxService.enqueue(RecommendationEventCommand command)` for transactional business actions and Task 5's valid-view endpoint.
+- Produces `RecommendationOutboxDispatcher.dispatchPending()` that confirms RabbitMQ persistence before marking an Outbox row sent.
 
-- [ ] **Step 1: Write failing publisher and producer behavior tests**
+- [ ] **Step 1: Write failing Outbox, business-boundary and dispatch tests**
 
 ```java
 @Test
-void publisherDefersRabbitSendUntilTransactionCommit() {
-    TransactionSynchronizationManager.initSynchronization();
-    publisher.publishAfterCommit(command);
-    verify(rabbitTemplate, never()).convertAndSend(anyString(), any());
-    TransactionSynchronizationManager.getSynchronizations()
-            .forEach(sync -> sync.afterCommit());
-    verify(rabbitTemplate).convertAndSend("recommendation.event.queue", command);
+void committedFavoritePersistsOutboxWithoutCallingRabbitInTheRequest() {
+    favoriteService.toggleFavorite(7L, 21L, 3L);
+    assertThat(outboxRows()).singleElement().satisfies(row -> {
+        assertThat(row.getEventType()).isEqualTo("COLLECT");
+        assertThat(row.getDedupeKey()).isEqualTo("collect:" + insertedFavoriteId);
+        assertThat(row.getStatus()).isEqualTo("PENDING");
+    });
+    verifyNoInteractions(rabbitTemplate);
 }
 
 @Test
-void articleLikeCreatesLikeEventButCommentLikeDoesNot() {
+void likeEventExistsOnlyAfterArticleLikeRecordWasInserted() {
     likeService.like(7L, 21L, 1);
-    verify(publisher).publishAfterCommit(argThat(event ->
-        event.eventType() == RecommendationEventType.LIKE && event.articleId().equals(21L)));
-    likeService.like(7L, 22L, 2);
-    verifyNoMoreInteractions(publisher);
+    assertThat(outboxRows()).isEmpty();
+    likeConsumer.handle(articleLikeTask(7L, 21L));
+    assertThat(outboxRows()).singleElement()
+            .extracting(RecommendationEventOutbox::getDedupeKey)
+            .isEqualTo("like:" + insertedLikeRecordId);
+}
+
+@Test
+void confirmedDispatchMarksOutboxSentAndRedeliveryRemainsIdempotent() {
+    long outboxId = insertPendingOutbox(command);
+    dispatcher.dispatchPending();
+    assertThat(outboxMapper.selectById(outboxId).getStatus()).isEqualTo("SENT");
+    assertThat(queueMessage()).isEqualTo(command);
+}
+
+@Test
+void failedDispatchLeavesBusinessCommittedAndSchedulesRetry() {
+    long outboxId = insertPendingOutbox(command);
+    broker.stop();
+    dispatcher.dispatchPending();
+    RecommendationEventOutbox row = outboxMapper.selectById(outboxId);
+    assertThat(row.getStatus()).isEqualTo("PENDING");
+    assertThat(row.getRetryCount()).isEqualTo(1);
+    assertThat(row.getNextAttemptAt()).isAfter(row.getUpdateTime());
 }
 ```
 
-Use Mockito for service dependencies and `StringRedisTemplate` set membership. Add analogous tests: only insertion in `toggleFavorite` emits `COLLECT`; `publishComment` emits `COMMENT`; only the new-follow branch emits `FOLLOW_AUTHOR` with `articleId == null` and `targetAuthorId == followedId`.
+Use Testcontainers MySQL/RabbitMQ for the persisted Outbox and confirmed delivery path. For the broker-failure branch, prefer a dispatcher-focused test with an injected Rabbit sender that throws, so stopping the shared suite container cannot destabilize later tests. Add analogous business tests: comment insertion produces `COMMENT`; only first follow produces `FOLLOW_AUTHOR` with `articleId == null`; unfavorite, uncommented rollback, unfollow, article unlike, comment like and duplicate article-like delivery do not add Outbox rows. Verify `recommendation.enabled=false` does not stop event collection because the switch controls serving only.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `./mvnw -Dtest=RecommendationEventPublisherTest test`
+Run: `./mvnw -Dtest=RecommendationEventOutboxIntegrationTest test`
 
-Expected: FAIL because publisher and producer hooks do not exist.
+Expected: FAIL because Outbox entity, mapper, service and dispatcher do not exist, and LIKE is still emitted before persistent success.
 
-- [ ] **Step 3: Implement post-commit publication and precise producer hooks**
+- [ ] **Step 3: Implement transactional Outbox and precise producer hooks**
 
 ```java
 @Service
 @RequiredArgsConstructor
-public class RecommendationEventPublisher {
-    public static final String QUEUE = "recommendation.event.queue";
-    private final RabbitTemplate rabbitTemplate;
+public class RecommendationEventOutboxService {
+    private final RecommendationEventOutboxMapper mapper;
 
-    public void publishAfterCommit(RecommendationEventCommand command) {
-        Runnable send = () -> rabbitTemplate.convertAndSend(QUEUE, command);
-        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
-            send.run();
-            return;
-        }
-        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-            @Override public void afterCommit() { send.run(); }
-        });
+    public void enqueue(RecommendationEventCommand command) {
+        mapper.insert(RecommendationEventOutbox.pending(command));
     }
 }
 ```
 
-Create action keys that have deterministic business identity and cannot collide: `like:{userId}:article:{articleId}:{yyyyMMddHHmmssSSS}` only when `isLike` is true; `collect:{favoriteId}` after insert; `comment:{commentId}` after `save`; `follow:{followId}` after `save`; view keys are implemented in Task 5. Pass `source` as `article_detail`, `favorite`, `comment`, or `follow`. Keep existing notification and business queues unchanged. Do not emit inverse events for unlikes, unfavorites or unfollows in V1.
+Append the exact `recommendation_event_outbox` DDL from the data-contract section to `script.sql`. Enable correlated confirms and returned messages:
+
+```yaml
+spring:
+  rabbitmq:
+    publisher-confirm-type: correlated
+    publisher-returns: true
+```
+
+`RecommendationOutboxDispatcher` runs every second, selects up to 100 eligible `PENDING` rows, and claims each with a conditional update from `PENDING` to `SENDING`; only the caller whose update count is one sends it. It also returns `SENDING` rows older than five minutes to `PENDING` to recover process crashes. Send with `CorrelationData`, wait no more than five seconds for the confirm future, and mark `SENT` only for an ack. On nack, return, timeout or exception, restore `PENDING`, increment `retry_count`, save a 500-character error, and set `next_attempt_at` to `now + min(300, 2^retryCount)` seconds. A crash after broker ack but before `SENT` may resend; the Task 3 unique `dedupe_key` is the correctness boundary.
+
+For favorite, comment and follow, call `enqueue` after the real insert while their existing database transaction is active. Narrow `FollowServiceImpl`'s duplicate-follow catch to `DuplicateKeyException`; an Outbox insert error must propagate and roll back the follow. Create keys `collect:{favoriteId}`, `comment:{commentId}`, and `follow:{followId}`.
+
+Remove recommendation publication from `LikeServiceImpl`. In the existing transactional `LikeConsumer`, after a new `LikeRecord` has been inserted and only when `targetType == 1`, call `enqueue` with key `like:{likeRecordId}`. Duplicate delivery returns before enqueue because the unique `like_record` insert fails; comment likes and unlike messages never enqueue. Keep existing `like.task.queue`, notification queue and user-facing Redis toggle behavior unchanged.
+
+Task 5 valid views also call `enqueue` inside a short transaction. Do not condition event collection on `recommendation.enabled`.
 
 - [ ] **Step 4: Run focused tests to verify they pass**
 
-Run: `./mvnw -Dtest=RecommendationEventPublisherTest test`
+Run: `./mvnw -Dtest=RecommendationEventOutboxIntegrationTest test`
 
-Expected: PASS; direct non-transaction callers send immediately, transactional callers only send after commit.
+Expected: PASS; business requests write only the Outbox, article LIKE follows actual persistence, confirms mark sent, failures retry, and inverse/duplicate actions produce no event.
 
-- [ ] **Step 5: Commit producer integration**
+- [ ] **Step 5: Run the complete Java 21 suite and commit the reliability correction**
 
 ```bash
-git add src/main/java/cumt/zongzuo/community/recommendation/service/RecommendationEventPublisher.java src/main/java/cumt/zongzuo/community/service/impl/LikeServiceImpl.java src/main/java/cumt/zongzuo/community/service/impl/FavoriteServiceImpl.java src/main/java/cumt/zongzuo/community/service/impl/CommentServiceImpl.java src/main/java/cumt/zongzuo/community/service/impl/FollowServiceImpl.java src/test/java/cumt/zongzuo/community/recommendation/RecommendationEventPublisherTest.java
-git commit -m "feat: collect recommendation behavior events"
+./mvnw test
+git diff --check
+git add script.sql src/main/resources/application.yml src/main/java/cumt/zongzuo/community/mq/LikeConsumer.java src/main/java/cumt/zongzuo/community/service/impl/LikeServiceImpl.java src/main/java/cumt/zongzuo/community/service/impl/FavoriteServiceImpl.java src/main/java/cumt/zongzuo/community/service/impl/CommentServiceImpl.java src/main/java/cumt/zongzuo/community/service/impl/FollowServiceImpl.java src/main/java/cumt/zongzuo/community/recommendation src/test/java/cumt/zongzuo/community/recommendation
+git commit -m "fix: deliver recommendation events through outbox"
 ```
 
 ### Task 3: 幂等消费、Redis 画像和可恢复性
@@ -348,8 +410,8 @@ git commit -m "feat: collect recommendation behavior events"
 @Test
 void duplicateRabbitDeliveryCreatesOneFactAndAddsProfileOnce() {
     RecommendationEventCommand event = view(1001L, articleId, "view:1001:" + articleId + ":2026-08-09");
-    rabbitTemplate.convertAndSend(RecommendationEventPublisher.QUEUE, event);
-    rabbitTemplate.convertAndSend(RecommendationEventPublisher.QUEUE, event);
+    rabbitTemplate.convertAndSend(RecommendationOutboxDispatcher.QUEUE, event);
+    rabbitTemplate.convertAndSend(RecommendationOutboxDispatcher.QUEUE, event);
 
     await().untilAsserted(() -> {
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM user_article_event", Integer.class)).isEqualTo(1);
@@ -378,7 +440,7 @@ Expected: FAIL because no listener or profile service exists.
 Implement the listener with no swallowed exception so configured retry/DLQ remains effective:
 
 ```java
-@RabbitListener(queues = RecommendationEventPublisher.QUEUE)
+@RabbitListener(queues = RecommendationOutboxDispatcher.QUEUE)
 public void consume(RecommendationEventCommand command) {
     try {
         eventMapper.insert(toEntity(command));

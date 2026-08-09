@@ -23,7 +23,10 @@
 文章详情有效阅读、点赞、收藏、评论、关注作者
                          |
                          v
-              RabbitMQ recommendation.event.queue
+       MySQL recommendation_event_outbox
+                         |
+                         v
+       RabbitMQ recommendation.event.queue
                          |
                          v
          MySQL user_article_event  <-  可审计行为事实
@@ -63,7 +66,11 @@ Redis 标签偏好、作者亲和度          离线训练样本与特征快照
 
 新增 `user_article_event` 表，保存用户、文章、事件类型、事件发生时间、去重键与来源。它是行为事实的唯一可恢复来源。
 
-原业务写入成功后再向 `recommendation.event.queue` 发布事件。消费者先以唯一去重键写入 MySQL，再更新 Redis 画像。消费者失败由现有重试和死信队列处理，不影响点赞、收藏、评论或关注的主请求。
+收藏、评论和关注在原业务事务内同时写入 `recommendation_event_outbox`，提交成功后由后台投递器发送到 `recommendation.event.queue`。点赞沿用现有异步落库链路，只在 `LikeConsumer` 真正插入文章点赞记录后，在同一事务写入 Outbox；取消点赞、评论点赞和重复点赞不产生推荐事实。
+
+Outbox 投递使用 RabbitMQ publisher confirm。发送成功后标记完成，发送失败按退避时间继续重试，不把异常返回给已经完成的业务请求。若进程在 RabbitMQ 确认后、Outbox 标记完成前退出，消息可能重复发送，下游唯一去重键负责幂等处理。
+
+消费者先以唯一去重键写入 MySQL，再根据 MySQL 行为事实幂等重建 Redis 画像。消费者失败由现有重试和死信队列处理，不影响点赞、收藏、评论或关注的主请求。
 
 ## 用户兴趣画像
 
@@ -118,15 +125,15 @@ GET /api/recommendations/feed?cursor=<opaque>&size=10
 
 响应包含文章列表、下一页不透明游标和每篇文章的推荐原因。首次请求生成 10 分钟有效的推荐会话并在 Redis 保存排序后的文章 ID。分页只推进同一会话，避免滚动期间因热度变化而重复或跳过文章。
 
-通过 `recommendation.enabled` 配置开关控制推荐页是否调用新接口。“最新”页始终调用现有 `/api/article/feed`。推荐模块关闭、双门槛未满足、Redis 不可用、模型不可用或候选不足时，服务端直接降级调用现有 `/api/article/feed` 对应的时间线查询。首页不应因推荐失败而空白。
+`recommendation.enabled` 只控制推荐结果，不停止行为与曝光采集；关闭排序后仍持续积累真实训练数据。推荐页关闭、双门槛未满足、Redis 不可用、模型不可用或候选不足时，服务端直接降级调用现有 `/api/article/feed` 对应的时间线查询。“最新”页始终调用该时间线。首页不应因推荐失败而空白。
 
 ## 实施阶段与验收
 
 ### 阶段一：行为事实
 
-交付事件表、事件 DTO、RabbitMQ 队列与消费者，点赞、收藏、评论、关注、有效阅读均可产生幂等行为事件。首页结果不变。
+交付事件表、事务 Outbox、事件 DTO、RabbitMQ 队列与消费者，点赞、收藏、评论、关注、有效阅读均可产生幂等行为事件。首页结果不变。
 
-验收：重复事件不重复入库，消费者失败进入死信队列，业务主流程不受影响。
+验收：重复事件不重复入库；RabbitMQ 暂时不可用时 Outbox 保留并重试；消费者失败进入死信队列；业务主流程不受影响；文章点赞只有在 `like_record` 真正插入后才产生事件。
 
 ### 阶段二：画像与候选
 
@@ -155,7 +162,7 @@ GET /api/recommendations/feed?cursor=<opaque>&size=10
 ## 测试与回滚
 
 - 单元测试覆盖权重、时间衰减、去重、过滤、排序和多样性规则。
-- 集成测试使用 Testcontainers 验证 MySQL、Redis、RabbitMQ 的事件消费和幂等性。
+- 集成测试使用 Testcontainers 验证 MySQL、Redis、RabbitMQ 的 Outbox 投递、publisher confirm、事件消费和幂等性。
 - API 测试覆盖认证、游标分页、冷启动、双门槛、Redis 失效、模型加载失败和推荐开关降级。
 - 模型测试覆盖真实样本构造、时间切分、基线比较、模型版本校验和推理回退。
 - 前端测试覆盖推荐原因展示、推荐和最新页的独立游标、游标追加和服务端降级响应。
