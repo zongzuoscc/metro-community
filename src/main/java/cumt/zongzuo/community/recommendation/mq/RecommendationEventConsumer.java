@@ -3,6 +3,7 @@ package cumt.zongzuo.community.recommendation.mq;
 import cumt.zongzuo.community.recommendation.dto.RecommendationEventCommand;
 import cumt.zongzuo.community.recommendation.entity.UserArticleEvent;
 import cumt.zongzuo.community.recommendation.mapper.UserArticleEventMapper;
+import cumt.zongzuo.community.recommendation.service.RecommendationMetricsService;
 import cumt.zongzuo.community.recommendation.service.RecommendationProfileService;
 import cumt.zongzuo.community.recommendation.task.RecommendationOutboxDispatcher;
 import lombok.extern.slf4j.Slf4j;
@@ -20,20 +21,28 @@ public class RecommendationEventConsumer {
 
     private final UserArticleEventMapper eventMapper;
     private final RecommendationProfileService profileService;
+    private final RecommendationMetricsService metricsService;
 
     public RecommendationEventConsumer(UserArticleEventMapper eventMapper,
-                                       RecommendationProfileService profileService) {
+                                       RecommendationProfileService profileService,
+                                       RecommendationMetricsService metricsService) {
         this.eventMapper = eventMapper;
         this.profileService = profileService;
+        this.metricsService = metricsService;
     }
 
     @RabbitListener(id = "recommendationEventConsumer", queues = RecommendationOutboxDispatcher.EVENT_QUEUE)
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public void consume(RecommendationEventCommand command) {
+        boolean inserted = false;
         try {
             eventMapper.insert(toEntity(command));
+            inserted = true;
         } catch (DuplicateKeyException duplicate) {
             log.debug("Recommendation fact already exists: {}", command.dedupeKey());
+        }
+        if (inserted) {
+            metricsService.recordEvent(command);
         }
         profileService.rebuildProfile(command.userId());
     }

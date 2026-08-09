@@ -38,4 +38,25 @@ class CommunityApplicationTests {
                 "RECOMMENDATION_TRAINING_SAMPLE_LIMIT=50000",
                 "RECOMMENDATION_MODEL_DIRECTORY=");
     }
+
+    @Test
+    void documentsRecommendationProductModelAndObservabilityBoundaries() throws IOException {
+        String readme = Files.readString(Path.of("README.md"));
+
+        assertThat(readme).contains(
+                "“推荐”仅供已认证用户使用",
+                "“最新”始终使用按发布时间排序的时间线",
+                "最近 30 天至少 20 条去重有效行为",
+                "全站最近 90 天至少 500 条去重有效行为",
+                "COLD_START",
+                "FALLBACK",
+                "九个投递时特征",
+                "AUC",
+                "/api/recommendations/feed",
+                "40 天",
+                "FOLLOW、TAG、SIMILAR、EXPLORE、CHRONOLOGICAL",
+                "VIEW、LIKE、COLLECT、COMMENT、FOLLOW_AUTHOR",
+                "00:05",
+                "不提供公开指标 API 或 Dashboard");
+    }
 }

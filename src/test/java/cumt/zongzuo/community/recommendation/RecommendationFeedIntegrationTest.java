@@ -24,6 +24,7 @@ import cumt.zongzuo.community.recommendation.service.RecommendationExposureServi
 import cumt.zongzuo.community.recommendation.service.RecommendationEventOutboxService;
 import cumt.zongzuo.community.recommendation.service.RecommendationFeedService;
 import cumt.zongzuo.community.recommendation.service.RecommendationEligibilityService;
+import cumt.zongzuo.community.recommendation.service.RecommendationMetricsService;
 import cumt.zongzuo.community.recommendation.service.RecommendationRankingService;
 import cumt.zongzuo.community.recommendation.service.RecommendationProfileService;
 import cumt.zongzuo.community.recommendation.service.RecommendationSessionStore;
@@ -113,6 +114,8 @@ class RecommendationFeedIntegrationTest extends IntegrationTestSupport {
     private RecommendationRankingService rankingService;
     @Autowired
     private RecommendationEligibilityService eligibilityService;
+    @Autowired
+    private RecommendationMetricsService metricsService;
     @Autowired
     private RecommendationFeedService feedService;
     @Autowired
@@ -217,13 +220,60 @@ class RecommendationFeedIntegrationTest extends IntegrationTestSupport {
     }
 
     @Test
+    void personalizedTagDeliveryCountsReturnedItemsAndReplayWhileExposureIdsStayIdempotent() {
+        insertArticles(2);
+        String sessionId = UUID.randomUUID().toString();
+        RecommendationFeatureSnapshot snapshot = new RecommendationFeatureSnapshot(
+                0.4, 0.2, 0.0, 0.5, 0.8, 0D, 1D, 0D, 0D);
+        sessionStore.save(sessionId, new RecommendationSession(USER_ID, List.of(
+                new RecommendationSessionItem(60_002L, "因为你常看 Redis", "TAG", snapshot, 2.5),
+                new RecommendationSessionItem(60_001L, "因为你常看 Redis", "TAG", snapshot, 2.0)),
+                RecommendationMode.PERSONALIZED));
+        String cursor = Base64.getUrlEncoder().withoutPadding()
+                .encodeToString((sessionId + ":0").getBytes());
+
+        RecommendationFeedResponse first = getFeed(USER_ID, cursor, 2);
+        RecommendationFeedResponse replay = getFeed(USER_ID, cursor, 2);
+
+        String key = "recommendation:metrics:2026-08-09:delivery:TAG";
+        assertThat(first.mode()).isEqualTo(RecommendationMode.PERSONALIZED);
+        assertThat(first.items()).hasSize(2).allSatisfy(item -> assertThat(item.source()).isEqualTo("TAG"));
+        assertThat(exposureIds(replay)).containsExactlyElementsOf(exposureIds(first));
+        assertThat(exposureCount()).isEqualTo(2);
+        assertThat(redisTemplate.opsForValue().get(key)).isEqualTo("4");
+        assertThat(redisTemplate.getExpire(key)).isPositive()
+                .isLessThanOrEqualTo(Duration.ofDays(40).toSeconds());
+    }
+
+    @Test
+    void coldStartCountsChronologicalButDisabledAndInvalidCursorFallbacksNeverCount() {
+        insertArticles(3);
+
+        RecommendationFeedResponse coldStart = getFeed(USER_ID, null, 2);
+        String key = "recommendation:metrics:2026-08-09:delivery:CHRONOLOGICAL";
+        assertThat(coldStart.mode()).isEqualTo(RecommendationMode.COLD_START);
+        assertThat(redisTemplate.opsForValue().get(key)).isEqualTo("2");
+
+        properties.setEnabled(false);
+        assertThat(getFeed(USER_ID, null, 2).mode()).isEqualTo(RecommendationMode.FALLBACK);
+        properties.setEnabled(true);
+        assertThat(getFeed(USER_ID, "invalid-cursor", 2).mode()).isEqualTo(RecommendationMode.FALLBACK);
+
+        assertThat(redisTemplate.opsForValue().get(key)).isEqualTo("2");
+        for (String source : List.of("FOLLOW", "TAG", "SIMILAR", "EXPLORE")) {
+            assertThat(redisTemplate.opsForValue().get(
+                    "recommendation:metrics:2026-08-09:delivery:" + source)).isNull();
+        }
+    }
+
+    @Test
     void realEligibleModelPathPersistsScoredSnapshotBaselineAndKeepsCursorStableAfterModelChange(@TempDir Path modelDirectory) {
         insertArticles(6);
         seedEligibilityFacts();
         RecommendationModelStore store = new RecommendationModelStore(modelDirectory, objectMapper, 7);
         assertThat(store.publish(model("first", NOW, 0D)).published()).isTrue();
         RecommendationFeedService modelFeed = new RecommendationFeedService(properties, sessionStore, articleMapper,
-                candidateService, rankingService, exposureService, userService, outboxService, clock,
+                candidateService, rankingService, exposureService, userService, outboxService, metricsService, clock,
                 eligibilityService, store);
 
         RecommendationFeedResponse first = modelFeed.feed(USER_ID, null, 3);
@@ -264,7 +314,7 @@ class RecommendationFeedIntegrationTest extends IntegrationTestSupport {
         seedEligibilityFacts();
         RecommendationModelStore store = new RecommendationModelStore(modelDirectory, objectMapper, 7);
         RecommendationFeedService modelFeed = new RecommendationFeedService(properties, sessionStore, articleMapper,
-                candidateService, rankingService, exposureService, userService, outboxService, clock,
+                candidateService, rankingService, exposureService, userService, outboxService, metricsService, clock,
                 eligibilityService, store);
 
         assertThat(modelFeed.feed(USER_ID, null, 2).mode()).isEqualTo(RecommendationMode.COLD_START);
@@ -281,7 +331,7 @@ class RecommendationFeedIntegrationTest extends IntegrationTestSupport {
                 modelDirectory.resolve("denied-before-exists"), objectMapper, 7, Files::move,
                 path -> { throw new AccessDeniedException(path.toString()); });
         RecommendationFeedService deniedFeed = new RecommendationFeedService(properties, sessionStore, articleMapper,
-                candidateService, rankingService, exposureService, userService, outboxService, clock,
+                candidateService, rankingService, exposureService, userService, outboxService, metricsService, clock,
                 eligibilityService, deniedStore);
         assertThat(deniedFeed.feed(USER_ID, null, 2).mode()).isEqualTo(RecommendationMode.FALLBACK);
     }
@@ -293,7 +343,7 @@ class RecommendationFeedIntegrationTest extends IntegrationTestSupport {
         RecommendationModelStore store = new RecommendationModelStore(modelDirectory, objectMapper, 7);
         assertThat(store.publish(extremeHeatModel()).published()).isTrue();
         RecommendationFeedService modelFeed = new RecommendationFeedService(properties, sessionStore, articleMapper,
-                candidateService, rankingService, exposureService, userService, outboxService, clock,
+                candidateService, rankingService, exposureService, userService, outboxService, metricsService, clock,
                 eligibilityService, store);
 
         assertThat(modelFeed.feed(USER_ID, null, 2).mode()).isEqualTo(RecommendationMode.FALLBACK);
@@ -308,7 +358,7 @@ class RecommendationFeedIntegrationTest extends IntegrationTestSupport {
                     elasticsearchOperations, rankingService, clock);
             RecommendationFeedService redisFailingFeed = new RecommendationFeedService(properties, sessionStore,
                     articleMapper, redisFailingCandidates, rankingService, exposureService, userService, outboxService,
-                    clock, eligibilityService, store);
+                    metricsService, clock, eligibilityService, store);
 
             assertThat(redisFailingFeed.feed(USER_ID, null, 2).mode()).isEqualTo(RecommendationMode.FALLBACK);
             assertThat(redisTemplate.opsForValue().setIfAbsent("shared-redis-still-alive-after-profile-failure", "yes")).isTrue();
@@ -465,7 +515,7 @@ class RecommendationFeedIntegrationTest extends IntegrationTestSupport {
                     new StringRedisTemplate(failingFactory), objectMapper, properties);
             RecommendationFeedService serviceWithFailingSessionStore = new RecommendationFeedService(
                     properties, failingStore, articleMapper, candidateService, rankingService, exposureService,
-                    userService, outboxService, clock);
+                    userService, outboxService, metricsService, clock);
 
             RecommendationFeedResponse response = serviceWithFailingSessionStore.feed(USER_ID, null, 2);
 
@@ -488,7 +538,7 @@ class RecommendationFeedIntegrationTest extends IntegrationTestSupport {
         when(redisUnavailableUsers.listByIds(anyCollection())).thenReturn(authors);
         RecommendationFeedService service = new RecommendationFeedService(
                 properties, sessionStore, articleMapper, candidateService, rankingService, exposureService,
-                redisUnavailableUsers, outboxService, clock);
+                redisUnavailableUsers, outboxService, metricsService, clock);
 
         RecommendationFeedResponse response = service.feed(USER_ID, null, 3);
 

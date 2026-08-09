@@ -50,6 +50,22 @@ set -a && source .env && set +a
 
 RabbitMQ 工作队列现在配置了 3 次有限重试与死信队列（队列名后缀为 `.dlq`）。如果本地 RabbitMQ 已存在由旧版本创建的同名队列，需要先在管理界面删除这些**项目队列**后再启动，以便声明死信交换机参数；不要删除其他项目的队列。
 
+## 推荐流的产品与模型边界
+
+首页“推荐”仅供已认证用户使用，统一调用稳定的 `GET /api/recommendations/feed`；“最新”始终使用按发布时间排序的时间线，不受推荐开关、画像或模型状态影响。该接口是稳定的模型边界：后续可以更换更强的排序模型，而无需改变客户端合约。
+
+个性化排序必须同时满足两道固定门槛：当前用户最近 30 天至少 20 条去重有效行为，且全站最近 90 天至少 500 条去重有效行为。`RECOMMENDATION_ENABLED=false` 是默认值，它只关闭个性化 Serving，不停止行为采集或每日训练。
+
+`PERSONALIZED` 表示已通过双门槛并使用有效模型精排；`COLD_START` 表示 Serving 可用，但门槛未满足、可用模型缺失/无效/过期或个性化候选不足，因此返回时间线；`FALLBACK` 表示 Serving 已关闭，或者 Redis 会话/画像、模型 I/O/推理、游标等请求侧边界不可用，同样安全降级为时间线。
+
+训练数据只来自真实的 `recommendation_exposure` 曝光和去重后的 `user_article_event` 事实。曝光持久化五个连续值和四个来源 one-hot，共九个投递时特征；离线 Logistic Regression 使用 7 天归因标签，并且只在验证集模型 AUC 严格优于同一批曝光记录的规则基线 AUC 时发布。这些事实和曝光是训练与可追溯输入，不以 Redis 运维计数代替。
+
+## 推荐可观测性
+
+推荐投递与新增行为事实会写入 Redis 每日计数器，仅作为 best-effort 运维遥测，不是审计真值；任何指标 Redis 故障都不得使 feed、曝光、事件事实或画像重建失败。计数器保留 40 天，投递来源固定为 `FOLLOW、TAG、SIMILAR、EXPLORE、CHRONOLOGICAL`，事件类型固定为 `VIEW、LIKE、COLLECT、COMMENT、FOLLOW_AUTHOR`。`FALLBACK` 不统计投递；重放真实页面会再记一次投递尝试，但曝光 ID 仍独立幂等；事件只在首次插入事实时计数，日期按行为发生时间转换为 Asia/Shanghai，不使用延迟消费时间。
+
+每日 Asia/Shanghai `00:05` 记录一行固定顺序的结构化摘要。缺失 key 按0 读取；非法数值或 Redis 读取故障记为 `status=unavailable`，不伪造全 0 成功摘要。当前不提供公开指标 API 或 Dashboard，也不在运行时扫描 Redis keyspace。
+
 ### 3. 启动后端
 
 ```bash

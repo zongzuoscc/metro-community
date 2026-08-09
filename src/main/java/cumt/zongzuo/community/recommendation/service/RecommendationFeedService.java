@@ -53,6 +53,7 @@ public class RecommendationFeedService {
     private final RecommendationExposureService exposureService;
     private final UserService userService;
     private final RecommendationEventOutboxService outboxService;
+    private final RecommendationMetricsService metricsService;
     private final RecommendationEligibilityService eligibilityService;
     private final RecommendationModelStore modelStore;
     private final Clock clock;
@@ -66,11 +67,12 @@ public class RecommendationFeedService {
                                      RecommendationExposureService exposureService,
                                      UserService userService,
                                      RecommendationEventOutboxService outboxService,
+                                     RecommendationMetricsService metricsService,
                                      ObjectProvider<Clock> clockProvider,
                                      ObjectProvider<RecommendationEligibilityService> eligibilityProvider,
                                      ObjectProvider<RecommendationModelStore> modelStoreProvider) {
         this(properties, sessionStore, articleMapper, candidateService, rankingService, exposureService,
-                userService, outboxService,
+                userService, outboxService, metricsService,
                 clockProvider.getIfAvailable(Clock::systemDefaultZone),
                 eligibilityProvider.getIfAvailable(), modelStoreProvider.getIfAvailable());
     }
@@ -83,16 +85,18 @@ public class RecommendationFeedService {
                                      RecommendationExposureService exposureService,
                                      UserService userService,
                                      RecommendationEventOutboxService outboxService,
+                                     RecommendationMetricsService metricsService,
                                      Clock clock) {
         this(properties, sessionStore, articleMapper, candidateService, rankingService, exposureService, userService,
-                outboxService, clock, null, null);
+                outboxService, metricsService, clock, null, null);
     }
 
     public RecommendationFeedService(RecommendationProperties properties,
                                      RecommendationSessionStore sessionStore, ArticleMapper articleMapper,
                                      RecommendationCandidateService candidateService, RecommendationRankingService rankingService,
                                      RecommendationExposureService exposureService,
-                                     UserService userService, RecommendationEventOutboxService outboxService, Clock clock,
+                                     UserService userService, RecommendationEventOutboxService outboxService,
+                                     RecommendationMetricsService metricsService, Clock clock,
                                      RecommendationEligibilityService eligibilityService, RecommendationModelStore modelStore) {
         this.properties = properties;
         this.sessionStore = sessionStore;
@@ -102,6 +106,7 @@ public class RecommendationFeedService {
         this.exposureService = exposureService;
         this.userService = userService;
         this.outboxService = outboxService;
+        this.metricsService = metricsService;
         this.clock = clock;
         this.eligibilityService = eligibilityService;
         this.modelStore = modelStore;
@@ -113,9 +118,11 @@ public class RecommendationFeedService {
             return fallback(userId, cursor, size);
         }
         try {
-            return cursor == null || cursor.isBlank()
+            RecommendationFeedResponse response = cursor == null || cursor.isBlank()
                     ? createSession(userId, size)
                     : pageSession(userId, cursor, size);
+            metricsService.recordDeliveries(response);
+            return response;
         } catch (InvalidSessionCursorException | RecommendationSessionUnavailableException
                  | RecommendationServingUnavailableException exception) {
             return fallback(userId, cursor, size);
