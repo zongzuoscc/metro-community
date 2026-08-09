@@ -503,6 +503,8 @@ git commit -m "feat(events): add generic transactional outbox"
 
 - Create: `src/main/java/cumt/zongzuo/community/article/config/ArticleRevisionMode.java`
 - Create: `src/main/java/cumt/zongzuo/community/article/config/ArticleRevisionProperties.java`
+- Create: `src/main/java/cumt/zongzuo/community/article/model/ArticleContentSnapshot.java`
+- Create: `src/main/java/cumt/zongzuo/community/article/service/ArticleContentCanonicalizer.java`
 - Create: `src/main/java/cumt/zongzuo/community/article/service/ArticleDraftService.java`
 - Create: `src/main/java/cumt/zongzuo/community/article/service/ArticleSubmissionService.java`
 - Create: `src/main/java/cumt/zongzuo/community/article/persistence/ArticleDraftMapper.java`
@@ -545,7 +547,7 @@ Expected: FAIL because saves still overwrite `article.content` and submission ha
 
 Draft save locks/loads by `(article_id,user_id)`, checks `expectedDraftVersion`, canonicalizes content and performs one conditional update of `draft_version + lock_version`. Do not update `article_tag` during autosave; tags remain in draft JSON.
 
-SHADOW must be production-capable before Task 4 backfill starts. Both the legacy article mutation and the draft/revision/job/Outbox mirror run inside the same transaction and acquire the article row first, which serializes them with the backfill runner. Submission is one MySQL transaction:
+SHADOW must be production-capable before Task 4 backfill starts. Every legacy mutation—draft save, submit, legacy manual approve/reject, recycle, restore and scheduled cleanup—first locks the article and lazily creates/updates the canonical shadow snapshot in the same transaction. This covers a row that has not yet been reached by backfill. Both the legacy mutation and the draft/revision/job/Outbox mirror acquire the article row first, which serializes them with the backfill runner; public queries still use legacy fields/status so observed behavior is unchanged. Submission is one MySQL transaction:
 
 1. `SELECT ... FOR UPDATE` article and owner draft.
 2. Verify not deleted, exact draft version and canonical hash.
@@ -583,8 +585,8 @@ git commit -m "feat(article): freeze draft submissions as revisions"
 
 **Files:**
 
-- Create: `src/main/java/cumt/zongzuo/community/article/model/ArticleContentSnapshot.java`
-- Create: `src/main/java/cumt/zongzuo/community/article/service/ArticleContentCanonicalizer.java`
+- Reuse from Task 3: `src/main/java/cumt/zongzuo/community/article/model/ArticleContentSnapshot.java`
+- Reuse from Task 3: `src/main/java/cumt/zongzuo/community/article/service/ArticleContentCanonicalizer.java`
 - Create: `src/main/java/cumt/zongzuo/community/article/migration/StageBArticleMigrationService.java`
 - Create: `src/main/java/cumt/zongzuo/community/article/migration/StageBArticleMigrationVerifier.java`
 - Create: `src/main/java/cumt/zongzuo/community/article/migration/StageBMigrationRunner.java`
@@ -933,7 +935,7 @@ Expected: FAIL because the revision-aware admin API and promotion gate do not ex
 
 Decision transaction locks job, article and revision in stable order, then checks state, both expected versions, revision ownership and exact hash. Approve/reject use conditional updates with all checked columns in `WHERE`; affected row count zero is 409. Only the winner writes Outbox. Copy to legacy mirror and replace `article_tag` only on human approval.
 
-Convert recycle/unpublish/restore/hard-delete paths and the seven-day recycle cleaner to pointer-aware lifecycle events. “Hard delete” becomes a durable tombstone (`is_deleted=1`, incremented lifecycle epoch, `ARTICLE_DELETED`) until projection verification/retention cleanup; do not physically delete revision/audit truth in the request transaction or scheduled cleaner. Restore publishes only an existing approved pointer; otherwise returns to PRIVATE.
+Convert recycle/unpublish/restore/hard-delete paths and the seven-day recycle cleaner to pointer-aware lifecycle events. A destructive transition increments lifecycle epoch once and writes the tombstone event. A legal restore keeps that current lifecycle epoch, increments article aggregate/lock version and writes the higher-version restore/published event, allowing the projection to clear tombstone; it never reuses a pre-delete lifecycle. “Hard delete” becomes a durable tombstone (`is_deleted=1`, `ARTICLE_DELETED`) until projection verification/retention cleanup; do not physically delete revision/audit truth in the request transaction or scheduled cleaner. Restore publishes only an existing approved pointer; otherwise returns to PRIVATE.
 
 Add bounded retention: delete PUBLISHED Outbox rows older than 7 days, Inbox rows older than 30 days, and resolved DEAD/operator records only after 90 days; batch by primary key and never delete a currently leased row. Expose low-cardinality pending-age/dead counters. Retention does not delete revisions, attempts or unresolved migration issues.
 
