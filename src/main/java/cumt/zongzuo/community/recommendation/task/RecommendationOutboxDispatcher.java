@@ -20,7 +20,7 @@ import java.util.concurrent.TimeUnit;
 @Component
 public class RecommendationOutboxDispatcher {
 
-    static final String EVENT_QUEUE = "recommendation.event.queue";
+    public static final String EVENT_QUEUE = "recommendation.event.queue";
     private static final int BATCH_SIZE = 100;
 
     private final RecommendationEventOutboxMapper mapper;
