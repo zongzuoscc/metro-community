@@ -57,14 +57,13 @@ public class RecommendationProfileRecoveryService {
         jdbc.update("""
                 UPDATE recommendation_profile_checkpoint
                 SET rebuilt_event_id=GREATEST(rebuilt_event_id,LEAST(requested_event_id,?)),
-                    needs_rebuild=IF(requested_event_id<=?,0,1),
-                    retry_count=IF(requested_event_id<=?,0,retry_count),
-                    next_attempt_at=IF(requested_event_id<=?,?,next_attempt_at),
-                    last_error=IF(requested_event_id<=?,NULL,last_error),
+                    needs_rebuild=IF(rebuilt_event_id>=requested_event_id,0,1),
+                    retry_count=IF(rebuilt_event_id>=requested_event_id,0,retry_count),
+                    next_attempt_at=IF(rebuilt_event_id>=requested_event_id,?,next_attempt_at),
+                    last_error=IF(rebuilt_event_id>=requested_event_id,NULL,last_error),
                     update_time=?
                 WHERE user_id=?
-                """, rebuiltThroughEventId, rebuiltThroughEventId, rebuiltThroughEventId,
-                rebuiltThroughEventId, now, rebuiltThroughEventId, now, userId);
+                """, rebuiltThroughEventId, now, now, userId);
     }
 
     public int repairDueProfiles() {

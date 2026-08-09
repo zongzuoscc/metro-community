@@ -327,6 +327,21 @@ class RecommendationEventIntegrationTest extends IntegrationTestSupport {
     }
 
     @Test
+    void lateOlderCompletionCannotReopenAnAlreadyCompletedCheckpoint() {
+        profileRecoveryService.requestRebuild(USER_ID, 10L);
+        profileRecoveryService.requestRebuild(USER_ID, 11L);
+        profileRecoveryService.markRebuilt(USER_ID, 11L);
+
+        profileRecoveryService.markRebuilt(USER_ID, 10L);
+
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT rebuilt_event_id FROM recommendation_profile_checkpoint WHERE user_id=?
+                """, Long.class, USER_ID)).isEqualTo(11L);
+        assertThat(checkpointNeedsRebuild(USER_ID)).isFalse();
+        assertThat(profileRecoveryService.repairDueProfiles()).isZero();
+    }
+
+    @Test
     void completedCheckpointHistoryDoesNotConsumeTheBoundedPendingRepairBatch() {
         properties.setProfileRepairBatchSize(1);
         LocalDateTime old = LocalDateTime.now(clock).withNano(0).minusDays(1);
