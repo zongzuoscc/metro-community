@@ -474,16 +474,18 @@ git commit -m "fix(moderation): fail closed to manual review"
 - Create: `src/main/java/cumt/zongzuo/community/ai/web/AiProblemDetails.java`
 - Create: `src/main/java/cumt/zongzuo/community/ai/web/AiProblemDetailAdvice.java`
 - Modify: `src/main/java/cumt/zongzuo/community/config/SecurityConfig.java`
-- Do not modify response shapes in: `src/main/java/cumt/zongzuo/community/exception/GlobalExceptionHandler.java`
+- Modify only path-routed framework-error branches in: `src/main/java/cumt/zongzuo/community/exception/GlobalExceptionHandler.java`
 - Create: `src/test/java/cumt/zongzuo/community/ai/web/AiProblemDetailIntegrationTest.java`
 - Create: `src/test/java/cumt/zongzuo/community/ai/web/AiCorsIntegrationTest.java`
 - Modify: `src/test/java/cumt/zongzuo/community/security/SecurityIntegrationTest.java`
 
-**Interfaces:** `@AiApi` marks only future `/api/agent/**` and `/api/admin/moderation/**` controllers. `AiProblemDetails.create(HttpStatus, code, requestId, retryable, retryAfterSeconds, fieldErrors)` returns `ProblemDetail` with `application/problem+json`.
+**Interfaces:** `@AiApi` is a runtime, inherited, type-only marker for future `/api/agent/**` and `/api/admin/moderation/**` controllers; it does not compose `@RestController`. `AiProblemDetails.create(HttpStatus, code, requestId, retryable, retryAfterSeconds, fieldErrors)` returns `ProblemDetail` with `application/problem+json`. It also owns the strict servlet-path predicate for exactly `/api/agent`, `/api/agent/**`, `/api/admin/moderation` and `/api/admin/moderation/**`; never use a broad prefix that also matches `/api/agent-old`.
 
 - [ ] **Step 1: Write red contract tests**
 
-Register a test-only `@AiApi` controller and assert malformed JSON/validation/disabled/quota errors return real 400/503/429 with fields `type,title,status,detail,instance,code,requestId,retryable,retryAfterSeconds,fieldErrors`. Assert unauthenticated `/api/agent/test` uses ProblemDetail, while malformed `/api/auth/login` and unauthorized `/api/message/unread` keep the existing `Result {code,msg,data}` body. Send OPTIONS with requested method PATCH and headers `Authorization,Last-Event-ID,Idempotency-Key,Content-Type`; assert all are allowed.
+Use a full Spring Boot MockMvc context, real JWT filter and seeded normal/admin users; do not use standalone setup or `.with(user())`. Register only a test-source `@RestController @AiApi` controller. Assert malformed JSON, type mismatch, missing input, Bean/handler validation and every approved typed runtime error return real 400/404/409/413/429/503 with `application/problem+json` and fields `type,title,status,detail,instance,code,requestId,retryable,retryAfterSeconds,fieldErrors`. Field errors are stable sorted `{field,message}` values and never contain rejected input; `instance` excludes query parameters and requestId is generated/reused by the server rather than trusted from a request header.
+
+Assert missing/bad JWT on `/api/agent/**` is 401 ProblemDetail, a normal user on `/api/admin/moderation/**` is 403 ProblemDetail, and unknown AI paths plus unsupported method/media type are also path-routed ProblemDetails even though no marked handler may be selected. Meanwhile malformed `/api/auth/login`, unauthorized `/api/message/unread`, unknown legacy paths and legacy admin endpoints keep the existing `Result {code,msg,data}` contract. Send a real OPTIONS request with PATCH and headers `Authorization,token,Content-Type,Last-Event-ID,Idempotency-Key`; assert all are allowed. On a real cross-origin 429 response, assert the browser can read the exposed `Retry-After` header.
 
 - [ ] **Step 2: Run red HTTP tests**
 
@@ -493,7 +495,11 @@ Expected: FAIL because CORS lacks PATCH/new headers and security/global errors a
 
 - [ ] **Step 3: Implement path/annotation-scoped errors**
 
-Give `AiProblemDetailAdvice` higher precedence but restrict it with `annotations = AiApi.class`. In Spring Security entry/access-denied handlers, select `AiProblemDetails` only when the path starts `/api/agent/` or `/api/admin/moderation/`; use the existing `writeError(Result)` for every legacy path. Map stable codes/statuses from the approved spec, set `Retry-After` for applicable 429/503, and never expose stack traces/provider bodies.
+Give `AiProblemDetailAdvice` highest precedence, restrict it with `annotations = AiApi.class`, and extend `ResponseEntityExceptionHandler` for MVC binding/validation errors. It must also catch unknown exceptions for marked controllers as real HTTP 500 `INTERNAL_ERROR`, so the legacy runtime catch-all can never turn an AI failure into HTTP 200. Map the final Task 5 `AiExecutionErrorReason` and Task 4 `AiProviderErrorReason` with exhaustive enum switches so a new reason fails compilation rather than silently becoming a generic response. New AI controllers use `AiApiException` factories instead of naked `ResponseStatusException`.
+
+Use stable codes from the approved spec: 400 malformed/validation, owner-hiding 404, the named 409 conflicts, 413 input too large, 429 quota/concurrency, and 503 disabled/unavailable/runtime failures. `AI_DISABLED` is non-retryable without Retry-After; other 429/503 responses use the typed retryability and positive delay. Standard fields and extension fields are always present, with null retry delay and an empty field-error array when not applicable. Never expose Provider bodies, stack traces, rejected values, query strings or user content.
+
+In Spring Security entry/access-denied handlers, select `AiProblemDetails` only through the strict path predicate; use the existing `writeError(Result)` for every legacy path. Add `/api/admin/moderation/**.hasRole("ADMIN")` before the broad authenticated matcher. Modify `GlobalExceptionHandler` only to delegate no-handler 404 and framework 405/415 errors on strict AI paths to the shared problem writer; legacy branches preserve their existing Result shapes and behavior.
 
 Change CORS to:
 
@@ -501,6 +507,7 @@ Change CORS to:
 configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
 configuration.setAllowedHeaders(List.of(
     "Authorization", "token", "Content-Type", "Last-Event-ID", "Idempotency-Key"));
+configuration.setExposedHeaders(List.of("Authorization", "Retry-After"));
 ```
 
 - [ ] **Step 4: Run green AI and legacy contract tests**
