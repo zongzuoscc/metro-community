@@ -6,7 +6,7 @@
       </div>
     </div>
 
-    <div class="chat-container">
+    <div class="chat-container" :class="{ 'is-mobile-conversation-open': mobileConversationOpen }">
       <div class="chat-sidebar">
         <div class="sidebar-tabs">
           <span :class="{ active: activeTab === 'friend' }" @click="activeTab = 'friend'">好友</span>
@@ -57,6 +57,10 @@
         <template v-if="currentTarget">
           <div class="chat-header">
             <div class="header-info">
+              <el-button class="conversation-back" link @click="closeMobileConversation">
+                <el-icon><ArrowLeft /></el-icon>
+                <span>联系人</span>
+              </el-button>
               <span class="chat-title">{{ currentTarget.remark || currentTarget.username }}</span>
               <el-tag v-if="currentTarget.isFriend" size="small" type="success" effect="plain" class="friend-tag">好友</el-tag>
             </div>
@@ -150,6 +154,7 @@ const inputContent = ref('')
 const loadingFriends = ref(false)
 const loadingHistory = ref(false)
 const msgBoxRef = ref(null)
+const mobileConversationOpen = ref(false)
 
 // 备注相关
 const remarkDialogVisible = ref(false)
@@ -202,6 +207,7 @@ const loadContacts = async () => {
 
 // 2. 选择联系人
 const selectTarget = async (user) => {
+  mobileConversationOpen.value = true
   currentTarget.value = user
   messageList.value = []
   loadingHistory.value = true
@@ -212,6 +218,10 @@ const selectTarget = async (user) => {
   } catch(e) {} finally {
     loadingHistory.value = false
   }
+}
+
+const closeMobileConversation = () => {
+  mobileConversationOpen.value = false
 }
 
 // 3. 发送消息
@@ -404,5 +414,21 @@ onUnmounted(() => {
 .chat-main .input-area { background: #fffdf9; border-top-color: var(--line); }
 .chat-main .input-area .tool-bar .tool-btn:hover { color: var(--accent); }
 .chat-main .empty-chat { color: var(--ink-muted); }
-@media (max-width: 700px) { .chat-container { width: 100%; margin: 0; border-left: 0; border-right: 0; } .chat-sidebar { width: 218px; } }
+.conversation-back { display: none; }
+@media (max-width: 700px) {
+  .chat-container { position: relative; width: 100%; margin: 0; border-left: 0; border-right: 0; }
+  .chat-sidebar { width: 100%; border-right: 0; }
+  .chat-main { position: absolute; inset: 0; transform: translateX(100%); transition: transform 180ms ease; }
+  .chat-container.is-mobile-conversation-open .chat-main { transform: translateX(0); }
+  .chat-main .chat-header { min-width: 0; padding: 0 var(--space-3); gap: var(--space-2); }
+  .chat-main .chat-header .header-info { min-width: 0; flex: 1; gap: var(--space-2); }
+  .chat-main .chat-header .chat-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chat-main .chat-header .friend-tag { display: none; }
+  .chat-main .chat-header .header-actions { display: flex; flex-shrink: 0; }
+  .chat-main .conversation-back { display: inline-flex; flex-shrink: 0; gap: 4px; color: var(--accent); }
+  .chat-main .message-box { padding: var(--space-3); }
+  .chat-main .input-area .tool-bar { padding: 5px var(--space-3); }
+  .chat-main .input-area .chat-textarea { padding: 10px var(--space-3); }
+  .chat-main .input-area .send-btn-box { padding: 0 var(--space-3) 10px; }
+}
 </style>

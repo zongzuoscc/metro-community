@@ -703,9 +703,18 @@ onUnmounted(() => {
 @media (max-width: 760px) {
   .navbar-center, .navbar-left .nav-links { display: none; }
   .navbar-container { justify-content: space-between; }
+  .navbar-left .logo { margin-right: 0; }
+  .navbar-right .action-btns { display: none; }
+  .navbar-right .user-area { gap: var(--space-3); }
   .main-container { width: 100%; padding: 0 var(--space-3); margin-top: 70px; }
   .feed-column .article-list .feed-card { padding: var(--space-4); }
   .feed-column .article-list .feed-card .card-body { gap: var(--space-3); }
   .feed-column .article-list .feed-card .card-body .cover-box { width: 116px; height: 76px; }
+}
+@media (max-width: 400px) {
+  .navbar-container { padding: 0 12px; }
+  .navbar-left .logo { margin-right: 0; font-size: 23px; }
+  .navbar-right .user-area { gap: 10px; }
+  .navbar-right .user-area .profile-box .avatar-wrapper { width: 30px; height: 30px; }
 }
 </style>
