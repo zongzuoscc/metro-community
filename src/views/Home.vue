@@ -7,6 +7,7 @@
           <div class="logo" @click="refreshPage">Metro</div>
           <div class="nav-links">
             <span class="nav-item" :class="{ active: activeNav === 'recommend' }" @click="switchNav('recommend')">推荐</span>
+            <span class="nav-item" :class="{ active: activeNav === 'latest' }" @click="switchNav('latest')">最新</span>
             <span class="nav-item" :class="{ active: activeNav === 'hot' }" @click="switchNav('hot')">热榜</span>
             <span class="nav-item" :class="{ active: activeNav === 'follow' }" @click="switchNav('follow')">关注</span>
           </div>
@@ -122,13 +123,20 @@
              infinite-scroll-distance="50">
 
           <template v-if="activeNav !== 'search' || searchType === 'article'">
-            <el-card v-for="(article, index) in articleList" :key="article.id" class="feed-card" shadow="never" @click.native="toDetail(article.id)">
+            <el-card v-for="(article, index) in articleList" :key="article.id" class="feed-card" shadow="never" @click.native="toDetail(article)">
               <div class="card-body">
                 <div class="rank-badge" v-if="activeNav === 'hot'" :class="'rank-' + (index + 1)">
                   {{ index + 1 }}
                 </div>
 
                 <div class="text-content">
+                  <div
+                      v-if="activeNav === 'recommend' && recommendationMode === 'PERSONALIZED' && article.recommendationReason"
+                      class="recommendation-reason"
+                  >
+                    <el-icon><MagicStick /></el-icon>
+                    <span>{{ article.recommendationReason }}</span>
+                  </div>
                   <h2 class="title" v-html="highlightKeyword(article.title)"></h2>
                   <div class="content-preview">
                     <div class="text-summary">
@@ -221,18 +229,24 @@ import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
 import request from '../utils/request'
 // 【引入 searchUsers】
 import { getHotRank, getDraftCount, getHotFeed, getFollowFeed, searchArticles } from '../api/article'
+import { getRecommendationFeed, toFeedCards } from '../api/recommendation'
 import { searchUsers } from '../api/user'
+import { createLatestRequestGuard } from '../utils/latestRequestGuard'
 import {Monitor, Setting, SwitchButton, UserFilled} from '@element-plus/icons-vue'
 
 const router = useRouter()
 const route = useRoute() // 引入 route
 
 // 状态变量
-const activeNav = ref('recommend') // 'recommend', 'hot', 'follow', 'search'
+const activeNav = ref('recommend') // 'recommend', 'latest', 'hot', 'follow', 'search'
 const searchText = ref('')
 const currentSearchKeyword = ref('')
 const searchType = ref('article') // 'article' | 'user'
 const pageNo = ref(1)
+const recommendationCursor = ref(null)
+const latestCursor = ref(null)
+const recommendationMode = ref(null)
+const feedRequestGuard = createLatestRequestGuard()
 
 const unreadCount = ref(0)
 const chatUnreadCount = ref(0)
@@ -253,11 +267,13 @@ const emptyText = computed(() => {
   if (activeNav.value === 'follow') return '你还没有关注任何人，或关注的人暂无动态'
   if (activeNav.value === 'hot') return '暂无热榜数据'
   if (activeNav.value === 'search') return '没有找到相关内容'
+  if (activeNav.value === 'latest') return '暂无最新内容'
   return '暂无推荐内容'
 })
 
 const getTabTitle = () => {
   if (activeNav.value === 'recommend') return '推荐'
+  if (activeNav.value === 'latest') return '最新发布'
   if (activeNav.value === 'hot') return '🔥 7天热榜 TOP 10'
   if (activeNav.value === 'follow') return '👀 我的关注动态'
   return '列表'
@@ -307,9 +323,16 @@ const highlightKeyword = (text) => {
 }
 
 const resetList = () => {
+  feedRequestGuard.invalidate()
   articleList.value = []
   userList.value = []
   pageNo.value = 1
+  if (activeNav.value === 'recommend') {
+    recommendationCursor.value = null
+    recommendationMode.value = null
+  } else if (activeNav.value === 'latest') {
+    latestCursor.value = null
+  }
   noMore.value = false
   loading.value = false
 }
@@ -317,30 +340,57 @@ const resetList = () => {
 // --- 核心逻辑：加载数据 ---
 const loadMore = async () => {
   if (loading.value || noMore.value) return
+  const requestToken = feedRequestGuard.capture()
+  const requestedNav = activeNav.value
   loading.value = true
 
   try {
-    let res;
+    let res
+    let newArticles
 
     if (activeNav.value === 'recommend') {
-      let lastTime = null
-      if (articleList.value.length > 0) {
-        lastTime = articleList.value[articleList.value.length - 1].createTime
+      if (user.value.id && localStorage.getItem('token')) {
+        res = await getRecommendationFeed(recommendationCursor.value)
+        if (!requestToken.isCurrent() || activeNav.value !== requestedNav) return
+        const feed = res.data || {}
+        recommendationMode.value = feed.mode || null
+        recommendationCursor.value = feed.nextCursor || null
+        newArticles = toFeedCards(feed)
+        if (!feed.nextCursor) noMore.value = true
+      } else {
+        res = await request.get('/api/article/feed', {
+          params: { lastCreateTime: recommendationCursor.value || undefined }
+        })
+        if (!requestToken.isCurrent() || activeNav.value !== requestedNav) return
+        newArticles = Array.isArray(res.data) ? res.data : (res.data?.records || [])
+        recommendationCursor.value = newArticles.at(-1)?.createTime || null
+        if (newArticles.length === 0) noMore.value = true
       }
-      res = await request.get('/api/article/feed', { params: { lastCreateTime: lastTime } })
+    }
+    else if (activeNav.value === 'latest') {
+      res = await request.get('/api/article/feed', {
+        params: { lastCreateTime: latestCursor.value || undefined }
+      })
+      if (!requestToken.isCurrent() || activeNav.value !== requestedNav) return
+      newArticles = Array.isArray(res.data) ? res.data : (res.data?.records || [])
+      latestCursor.value = newArticles.at(-1)?.createTime || null
+      if (newArticles.length === 0) noMore.value = true
     }
     else if (activeNav.value === 'hot') {
       res = await getHotFeed()
+      if (!requestToken.isCurrent() || activeNav.value !== requestedNav) return
       noMore.value = true
     }
     else if (activeNav.value === 'follow') {
       res = await getFollowFeed(pageNo.value)
+      if (!requestToken.isCurrent() || activeNav.value !== requestedNav) return
       if (res.code === 200) pageNo.value++
     }
     // 【核心新增：搜索逻辑】
     else if (activeNav.value === 'search') {
       if (searchType.value === 'article') {
         res = await searchArticles(currentSearchKeyword.value, pageNo.value)
+        if (!requestToken.isCurrent() || activeNav.value !== requestedNav) return
         if (res.code === 200) {
           const newArticles = res.data?.records || []
           if (newArticles.length === 0) noMore.value = true
@@ -352,6 +402,7 @@ const loadMore = async () => {
       } else {
         // 搜索用户
         res = await searchUsers(currentSearchKeyword.value, pageNo.value)
+        if (!requestToken.isCurrent() || activeNav.value !== requestedNav) return
         if (res.code === 200) {
           const newUsers = res.data?.records || []
           if (newUsers.length === 0) noMore.value = true
@@ -361,20 +412,21 @@ const loadMore = async () => {
           }
         }
       }
-      loading.value = false // 提前结束，因为我们手动处理了数据push
       return
     }
 
     // 处理非搜索文章的数据
-    const newArticles = Array.isArray(res.data) ? res.data : (res.data?.records || [])
+    newArticles ??= Array.isArray(res.data) ? res.data : (res.data?.records || [])
     if (newArticles.length === 0) noMore.value = true
     else articleList.value.push(...newArticles)
 
   } catch (e) {
-    console.error(e)
-    noMore.value = true
+    if (requestToken.isCurrent() && activeNav.value === requestedNav) {
+      console.error(e)
+      noMore.value = true
+    }
   } finally {
-    loading.value = false
+    if (requestToken.isCurrent() && activeNav.value === requestedNav) loading.value = false
   }
 }
 
@@ -456,7 +508,17 @@ const handleGlobalMessage = (e) => {
   getChatUnread()
 }
 
-const toDetail = (id) => router.push(`/article/${id}`)
+const toDetail = (articleOrId) => {
+  const card = typeof articleOrId === 'object' && articleOrId !== null ? articleOrId : null
+  const articleId = card?.id ?? articleOrId
+  if (!articleId) return
+  const exposureId = activeNav.value === 'recommend' ? card?.recommendationExposureId : null
+  if (exposureId != null) {
+    router.push({ path: `/article/${articleId}`, query: { exposureId: String(exposureId) } })
+  } else {
+    router.push(`/article/${articleId}`)
+  }
+}
 const toUser = (id) => router.push(`/user/${id}`)
 const refreshPage = () => { window.location.reload() }
 const formatTime = (time) => {
@@ -484,6 +546,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  feedRequestGuard.invalidate()
   window.removeEventListener('on-chat-msg', handleGlobalMessage)
 })
 </script>
@@ -593,6 +656,12 @@ onUnmounted(() => {
         }
       }
       &:hover .cover-box img { transform: scale(1.05); }
+      .recommendation-reason {
+        display: inline-flex; align-items: center; gap: 5px; max-width: 100%;
+        margin-bottom: 8px; padding: 4px 9px; border-radius: 999px;
+        background: #f4e1dc; color: var(--accent); font-size: 12px; line-height: 1.4;
+        span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+      }
       .title { font-size: 18px; font-weight: 600; color: #121212; margin: 0 0 10px 0; line-height: 1.6; }
       .title:hover { color: #0066ff; }
       .content-preview {

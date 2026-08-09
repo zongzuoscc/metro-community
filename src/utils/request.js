@@ -30,12 +30,13 @@ service.interceptors.response.use(
     response => {
         const res = response.data
         if (res.code !== 200) {
-            ElMessage.error(res.msg || '系统错误')
+            if (!response.config?.silent) ElMessage.error(res.msg || '系统错误')
             return Promise.reject(new Error(res.msg || 'Error'))
         }
         return res
     },
     error => {
+        if (error.config?.silent) return Promise.reject(error)
         // 【关键】处理 401 状态码
         if (error.response && error.response.status === 401) {
             ElMessage.error('登录已过期，请重新登录')

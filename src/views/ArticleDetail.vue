@@ -356,19 +356,24 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed, watch } from 'vue'
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '../utils/request'
 
 // 【修改】引入所有需要的 API，加入 getAiSummary
 import { getArticleDetail, deleteArticle, getSimilarArticles, getAiSummary } from '../api/article'
+import { reportQualifiedView } from '../api/recommendation'
 import { getCommentList, publishComment, deleteComment } from '../api/comment'
 import { submitReport } from '../api/report'
+import { createQualifiedArticleView } from '../utils/qualifiedArticleView'
+import { createLatestRequestGuard } from '../utils/latestRequestGuard'
 
 const route = useRoute()
 const router = useRouter()
 const loading = ref(false)
+let qualifiedViewTracker = null
+const detailRequestGuard = createLatestRequestGuard()
 
 // 文章相关
 const article = ref({})
@@ -411,10 +416,39 @@ const isMe = computed(() => {
   return String(currentUser.value.id) === String(article.value.authorId)
 })
 
+const routeExposureId = () => {
+  const value = Array.isArray(route.query.exposureId)
+    ? route.query.exposureId[0]
+    : route.query.exposureId
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) return undefined
+  const parsed = Number(value)
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined
+}
+
+const resetQualifiedView = (articleId) => {
+  if (!currentUser.value.id || !localStorage.getItem('token')) return
+  if (!qualifiedViewTracker) {
+    qualifiedViewTracker = createQualifiedArticleView({
+      report: reportQualifiedView,
+      onError: (error) => console.warn('有效阅读上报失败', error)
+    })
+    qualifiedViewTracker.start(articleId, routeExposureId())
+    return
+  }
+  qualifiedViewTracker.reset(articleId, routeExposureId())
+}
+
+const isCurrentArticleRequest = (requestToken, articleId) => {
+  return requestToken.isCurrent() && String(route.params.id) === String(articleId)
+}
+
 // 1. 初始化加载
 const loadDetail = async () => {
   const id = route.params.id
   if(!id) return
+  detailRequestGuard.invalidate()
+  const requestToken = detailRequestGuard.capture()
+  qualifiedViewTracker?.reset(null, undefined)
   loading.value = true
 
   // 【新增】重置 AI 总结状态，防止从相似文章跳过来时显示旧的总结
@@ -423,53 +457,61 @@ const loadDetail = async () => {
 
   try {
     const res = await getArticleDetail(id)
+    if (!requestToken.isCurrent() || String(route.params.id) !== String(id)) return
     article.value = res.data || {}
+    if (article.value.id) resetQualifiedView(article.value.id)
 
     // 并行检查状态
-    checkLikeStatus(id)
-    checkCollectStatus(id)
+    checkLikeStatus(id, requestToken)
+    checkCollectStatus(id, requestToken)
     if (article.value.authorId) {
-      checkFollowStatus(article.value.authorId)
+      checkFollowStatus(article.value.authorId, id, requestToken)
     }
 
     // 加载评论
-    loadComments(id)
+    loadComments(id, requestToken)
 
     // 加载相似文章
-    loadSimilarArticles(id)
+    loadSimilarArticles(id, requestToken)
 
   } catch(e) {
-    ElMessage.error("加载详情失败或文章已删除")
-    router.push('/home')
+    if (requestToken.isCurrent() && String(route.params.id) === String(id)) {
+      ElMessage.error("加载详情失败或文章已删除")
+      router.push('/home')
+    }
   } finally {
-    loading.value = false
+    if (requestToken.isCurrent() && String(route.params.id) === String(id)) loading.value = false
   }
 }
 
 // 【新增】一键生成 AI 总结逻辑
 const generateSummary = async () => {
+  const articleId = article.value.id
+  const requestToken = detailRequestGuard.capture()
   aiLoading.value = true
   try {
-    const res = await getAiSummary(article.value.id)
+    const res = await getAiSummary(articleId)
+    if (!isCurrentArticleRequest(requestToken, articleId)) return
     if (res.code === 200) {
       aiSummary.value = res.data
     } else {
       ElMessage.warning(res.msg || '生成失败')
     }
   } catch(e) {
-    ElMessage.error('AI 网络拥挤，请稍后再试')
+    if (isCurrentArticleRequest(requestToken, articleId)) ElMessage.error('AI 网络拥挤，请稍后再试')
   } finally {
-    aiLoading.value = false
+    if (isCurrentArticleRequest(requestToken, articleId)) aiLoading.value = false
   }
 }
 
 // 获取相似文章逻辑
-const loadSimilarArticles = async (id) => {
+const loadSimilarArticles = async (id, requestToken = detailRequestGuard.capture()) => {
   try {
     const res = await getSimilarArticles(id)
+    if (!isCurrentArticleRequest(requestToken, id)) return
     similarArticles.value = res.data || []
   } catch(e) {
-    console.error('获取相似文章失败', e)
+    if (isCurrentArticleRequest(requestToken, id)) console.error('获取相似文章失败', e)
   }
 }
 
@@ -540,9 +582,10 @@ const confirmReport = async () => {
 
 // ---------------- 评论核心逻辑 ----------------
 
-const loadComments = async (articleId) => {
+const loadComments = async (articleId = article.value.id, requestToken = detailRequestGuard.capture()) => {
   try {
-    const res = await getCommentList(articleId || article.value.id)
+    const res = await getCommentList(articleId)
+    if (!isCurrentArticleRequest(requestToken, articleId)) return
     commentList.value = res.data || []
   } catch(e) {}
 }
@@ -626,10 +669,11 @@ const handleCommentLike = async (comment) => {
 }
 
 // ---------------- 收藏逻辑 ----------------
-const checkCollectStatus = async (articleId) => {
+const checkCollectStatus = async (articleId, requestToken = detailRequestGuard.capture()) => {
   if(!currentUser.value.id) return
   try {
     const res = await request.get(`/api/favorite/check?articleId=${articleId}`)
+    if (!isCurrentArticleRequest(requestToken, articleId)) return
     isCollected.value = res.data
   } catch(e) {}
 }
@@ -674,18 +718,21 @@ const toggleFavorite = async (folder) => {
 }
 
 // ---------------- 点赞与关注 (文章) ----------------
-const checkLikeStatus = async (targetId) => {
+const checkLikeStatus = async (targetId, requestToken = detailRequestGuard.capture()) => {
   if(!currentUser.value.id) return
   try {
     const res = await request.get(`/api/like/check?targetId=${targetId}&targetType=1`)
+    if (!isCurrentArticleRequest(requestToken, targetId)) return
     isLiked.value = res.data
   } catch(e) {}
 }
 
-const checkFollowStatus = async (authorId) => {
+const checkFollowStatus = async (authorId, articleId = article.value.id,
+                                  requestToken = detailRequestGuard.capture()) => {
   if(!currentUser.value.id) return
   try {
     const res = await request.get(`/api/follow/check/${authorId}`)
+    if (!isCurrentArticleRequest(requestToken, articleId)) return
     isFollowed.value = res.data
   } catch(e) {}
 }
@@ -748,6 +795,12 @@ const formatTimeShort = (time) => {
 
 onMounted(() => {
   loadDetail()
+})
+
+onUnmounted(() => {
+  detailRequestGuard.invalidate()
+  qualifiedViewTracker?.dispose()
+  qualifiedViewTracker = null
 })
 </script>
 
