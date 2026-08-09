@@ -121,7 +121,9 @@ CREATE TABLE user_article_event (
     create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT uk_user_article_event_dedupe UNIQUE (dedupe_key),
     INDEX idx_user_event_time (user_id, occurred_at DESC),
-    INDEX idx_article_event_time (article_id, occurred_at DESC)
+    INDEX idx_article_event_time (article_id, occurred_at DESC),
+    INDEX idx_user_article_event_at (user_id, article_id, occurred_at DESC, id DESC),
+    INDEX idx_user_author_event_at (user_id, target_author_id, occurred_at DESC, id DESC)
 ) COMMENT='个性化推荐行为事实';
 
 CREATE TABLE recommendation_exposure (
@@ -135,11 +137,17 @@ CREATE TABLE recommendation_exposure (
     similar_score DOUBLE NOT NULL,
     heat_score DOUBLE NOT NULL,
     freshness_score DOUBLE NOT NULL,
+    source_follow TINYINT NOT NULL DEFAULT 0,
+    source_tag TINYINT NOT NULL DEFAULT 0,
+    source_similar TINYINT NOT NULL DEFAULT 0,
+    source_explore TINYINT NOT NULL DEFAULT 0,
+    baseline_score DOUBLE NULL,
     exposed_at DATETIME NOT NULL,
     create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uk_recommendation_exposure (user_id, article_id, session_id),
     INDEX idx_exposure_user_time (user_id, exposed_at DESC),
-    INDEX idx_exposure_article_time (article_id, exposed_at DESC)
+    INDEX idx_exposure_article_time (article_id, exposed_at DESC),
+    INDEX idx_exposure_training (exposed_at DESC, id DESC)
 ) COMMENT='推荐真实曝光和训练特征快照';
 
 CREATE TABLE recommendation_event_outbox (
@@ -676,23 +684,44 @@ git commit -m "feat: expose resilient personalized feed"
 
 **Files:**
 - Create: `src/main/java/cumt/zongzuo/community/recommendation/service/RecommendationEligibilityService.java`
+- Create: `src/main/java/cumt/zongzuo/community/recommendation/service/RecommendationServingUnavailableException.java`
 - Create: `src/main/java/cumt/zongzuo/community/recommendation/training/RecommendationFeatureVector.java`
 - Create: `src/main/java/cumt/zongzuo/community/recommendation/training/TrainingExample.java`
+- Create: `src/main/java/cumt/zongzuo/community/recommendation/training/RecommendationTrainingDataset.java`
 - Create: `src/main/java/cumt/zongzuo/community/recommendation/training/RecommendationModel.java`
+- Create: `src/main/java/cumt/zongzuo/community/recommendation/training/RecommendationModelLoadResult.java`
 - Create: `src/main/java/cumt/zongzuo/community/recommendation/training/LogisticRegressionTrainer.java`
 - Create: `src/main/java/cumt/zongzuo/community/recommendation/training/RecommendationModelStore.java`
 - Create: `src/main/java/cumt/zongzuo/community/recommendation/training/RecommendationTrainingService.java`
 - Create: `src/main/java/cumt/zongzuo/community/recommendation/task/RecommendationTrainingTask.java`
+- Create: `docs/database/migrations/2026-08-09-recommendation-training.sql`
+- Modify: `src/main/java/cumt/zongzuo/community/recommendation/config/RecommendationProperties.java`
+- Modify: `src/main/java/cumt/zongzuo/community/recommendation/dto/RecommendationExposureDraft.java`
+- Modify: `src/main/java/cumt/zongzuo/community/recommendation/dto/RecommendationSessionItem.java`
+- Modify: `src/main/java/cumt/zongzuo/community/recommendation/entity/RecommendationExposure.java`
+- Modify: `src/main/java/cumt/zongzuo/community/recommendation/mapper/RecommendationExposureMapper.java`
+- Modify: `src/main/java/cumt/zongzuo/community/recommendation/mapper/UserArticleEventMapper.java`
+- Modify: `src/main/java/cumt/zongzuo/community/recommendation/service/RecommendationCandidateService.java`
+- Modify: `src/main/java/cumt/zongzuo/community/recommendation/service/RecommendationExposureService.java`
 - Modify: `src/main/java/cumt/zongzuo/community/recommendation/service/RecommendationRankingService.java`
 - Modify: `src/main/java/cumt/zongzuo/community/recommendation/service/RecommendationFeedService.java`
+- Modify: `src/main/java/cumt/zongzuo/community/recommendation/service/RecommendationProfileService.java`
+- Modify: `src/main/resources/application.yml`
+- Modify: `script.sql`
+- Modify: `.gitignore`
+- Modify: `README.md`
 - Test: `src/test/java/cumt/zongzuo/community/recommendation/LogisticRegressionTrainerTest.java`
+- Test: `src/test/java/cumt/zongzuo/community/recommendation/RecommendationModelStoreTest.java`
 - Test: `src/test/java/cumt/zongzuo/community/recommendation/RecommendationTrainingIntegrationTest.java`
+- Test: `src/test/java/cumt/zongzuo/community/recommendation/RecommendationFeedIntegrationTest.java`
+- Test: `src/test/java/cumt/zongzuo/community/recommendation/config/RecommendationPropertiesTest.java`
 
 **Interfaces:**
 - Consumes Task 3's durable behavior facts, Task 4 `RecommendationCandidate` feature values and Task 5 `recommendation_exposure` writes.
-- Produces `RecommendationEligibilityService.isEligible(Long userId)`, `RecommendationModelStore.loadActive()`, and `RecommendationModel.score(RecommendationFeatureVector)` for Task 6's own update of the cold-start feed.
+- Produces `RecommendationEligibilityService.isEligible(Long userId)`, a status-bearing `RecommendationModelStore.loadActive(Instant now)`, and `RecommendationModel.score(RecommendationFeatureVector)` for the recommendation feed.
+- Keeps the nine-dimensional delivery-time feature snapshot and nullable rule-baseline score immutable from ranking through Redis session serialization and exposure persistence; training must never reconstruct served features from current state.
 
-- [ ] **Step 1: Write failing model and eligibility tests**
+- [ ] **Step 1: Write failing trainer, attribution, storage and serving tests**
 
 ```java
 @Test
@@ -708,17 +737,20 @@ void trainerLearnsHigherProbabilityForASeparablePositiveFeatureVector() {
 
 @Test
 void eligibilityRequiresBothUserAndGlobalThresholds() {
-    when(eventMapper.selectCount(any())).thenReturn(20L, 499L);
+    seedUniqueFacts(1001L, 20, clock.instant().minus(30, DAYS));
+    seedGlobalUniqueFacts(499, clock.instant().minus(90, DAYS));
     assertThat(eligibilityService.isEligible(1001L)).isFalse();
-    when(eventMapper.selectCount(any())).thenReturn(20L, 500L);
+    seedOneMoreGlobalFact();
     assertThat(eligibilityService.isEligible(1001L)).isTrue();
 }
 
 @Test
-void trainingPublishesOnlyWhenValidationBeatsChronologicalBaseline() {
-    trainingService.trainAndPublish();
-    assertThat(modelStore.loadActive()).isPresent();
-    assertThat(trainingService.lastValidationMetrics().auc()).isGreaterThan(0.5D);
+void trainingPublishesOnlyWhenValidationBeatsTheRecordedRuleBaseline() {
+    seedMatureExposuresWithBothLabelsAndRecordedBaselineScores();
+    assertThat(trainingService.trainAndPublish().published()).isTrue();
+    assertThat(modelStore.loadActive(clock.instant()).model()).isPresent();
+    assertThat(trainingService.lastValidationMetrics().modelAuc())
+            .isGreaterThan(trainingService.lastValidationMetrics().baselineAuc());
 }
 
 @Test
@@ -731,21 +763,33 @@ void eligibleUserWithPublishedModelReceivesPersonalizedSession() {
 }
 ```
 
-The integration fixture inserts only real-shaped rows into `recommendation_exposure` and `user_article_event`: 90-day-old training exposures, recent validation exposures, and later positive events inside the seven-day label window. Add the inverse fixture where candidate AUC is not greater than the 0.5 chronological baseline and assert no model file is published.
+Use fixed injected clocks and real Testcontainers MySQL/Redis rows rather than mocked mapper counts. Cover the exact user cutoffs 19/20 and global cutoffs 499/500, including a fact exactly at each cutoff. A duplicate delivery must not increase eligibility and a plain article-detail GET must not create a fact.
+
+The training fixture inserts real-shaped `recommendation_exposure` and `user_article_event` rows. Assert that only exposures satisfying `now - modelWindowDays <= exposed_at < now - labelWindowDays` become training rows. Resolve last-touch attribution against every matching exposure before applying maturity, non-null-baseline or 50,000-row cohort filters: an interaction belongs once to the latest qualifying prior exposure in its seven-day window, including when a newer competing exposure is immature or falls outside the final cohort. `FOLLOW_AUTHOR` is attributed to the latest qualifying prior exposure of an article by `target_author_id`. Add multiple-session overlap and capped-cohort cases proving one event cannot label multiple exposures, an omitted newer exposure cannot create a false positive, and an exposure from the latest seven days cannot become a premature negative.
+
+Persist and round-trip all nine ordered features, the four source flags and `baseline_score`. Add a personalized session test proving the exact scoring-time snapshot reaches the exposure row unchanged. Add the inverse validation fixture where model AUC does not beat recorded baseline AUC and fixtures for a missing baseline, one-class split and numeric failure; all must retain the previous active model.
+
+`RecommendationModelStoreTest` uses `@TempDir`, never the repository. Cover malformed/unknown-schema/non-finite/future/expired models, unique concurrent publication, unsupported atomic move and retaining the previous `active-model.json`. Loading is only from the active file, never directory scanning.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `./mvnw -Dtest=LogisticRegressionTrainerTest,RecommendationTrainingIntegrationTest test`
+Run: `./mvnw -Dtest=LogisticRegressionTrainerTest,RecommendationModelStoreTest,RecommendationTrainingIntegrationTest,RecommendationFeedIntegrationTest test`
 
-Expected: FAIL because the eligibility, exposure, trainer and model classes do not exist.
+Expected: FAIL because the eligibility, dataset, trainer and model-store boundaries do not exist and the feed still has no model-scoring branch.
 
-- [ ] **Step 3: Implement real sample construction, training and model storage**
+- [ ] **Step 3: Persist immutable feature/baseline snapshots and build leakage-free samples**
 
-Create `RecommendationFeatureVector` with these fixed, ordered doubles: `tagAffinity`, `authorAffinity`, `similarScore`, `heatScore`, `freshnessScore`, `sourceFollow`, `sourceTag`, `sourceSimilar`, and `sourceExplore`. `RecommendationExposureService.record` persists exactly those values from the served `RecommendationCandidate`, never inventing a feature later. Deduplicate by `(user_id, article_id, session_id)` and do not write exposures for the latest tab.
+Create `RecommendationFeatureVector` with these fixed, ordered doubles: `tagAffinity`, `authorAffinity`, `similarScore`, `heatScore`, `freshnessScore`, `sourceFollow`, `sourceTag`, `sourceSimilar`, and `sourceExplore`. Reject any wrong-length or non-finite vector. `RecommendationSessionItem` carries the immutable nine-dimensional snapshot and a nullable `baselineScore`; `RecommendationExposureService.recordPage` persists both exactly and never recomputes them from current profiles/articles. Old Redis sessions with a missing snapshot remain compatible and are recorded as chronology rather than fabricated personalization. The latest tab never writes recommendation exposures.
 
-`RecommendationEligibilityService.isEligible` must count `user_article_event` by `user_id` and `occurred_at >= now - 30 days`, then all event facts by `occurred_at >= now - 90 days`; it returns true only at `>= 20` and `>= 500` respectively. It must not treat raw GET detail requests or duplicate event deliveries as behaviors.
+Add nullable `baseline_score DOUBLE` to `recommendation_exposure`; existing migrated rows remain null and are excluded from the final cohort. The four source columns remain `TINYINT NOT NULL DEFAULT 0`. For chronology candidates calculate the current Task 4 rule-score formula with read penalty `0`; for recalled candidates record the same rule score, including their actual read penalty, before model scoring. Persist multi-source truth only through the four flags; define the single `source` as the deterministic winning/display source, using a fixed tie priority `FOLLOW > TAG > SIMILAR > EXPLORE`, for reasons and Task 8 metrics.
 
-Build labels with parameterized queries per exposure: `label=1` when a unique event for that user/article has `occurred_at >= exposed_at` and `< exposed_at + 7 days`, or a `FOLLOW_AUTHOR` event in the same window has `target_author_id` equal to the exposed article’s author. Otherwise use `label=0`. Split samples by exposure time: oldest 80 percent training, newest 20 percent validation. Reject training if either split lacks both labels. Standardize all numeric features using training means and standard deviations, using `1.0` for a zero standard deviation.
+Keep the fresh-bootstrap definitions in `script.sql` synchronized and add `docs/database/migrations/2026-08-09-recommendation-training.sql` as an executable, idempotent MySQL 8 forward migration. It checks `information_schema` before prepared `ALTER TABLE`/`CREATE INDEX` statements for the four Task 5 source flags, nullable `baseline_score`, `idx_article_recommendation_feed`, `idx_exposure_training`, `idx_user_article_event_at`, and `idx_user_author_event_at`. README must tell operators to back up the database and run this file against an existing `metro_community` schema before enabling Task 6; bootstrap SQL alone is not described as an upgrade mechanism.
+
+`RecommendationEligibilityService.isEligible` uses two named, parameterized mapper queries: unique facts for `user_id` with `occurred_at >= now - 30 days`, and global unique facts with `occurred_at >= now - 90 days`. It returns true only at `>= 20` and `>= 500`. Inject `Clock`; do not use generic/mock `selectCount`, raw GETs or duplicate deliveries as behavior.
+
+Build one bounded dataset (default maximum `50_000`) without N+1 label queries. Resolve each approved `VIEW`, `LIKE`, `COLLECT`, `COMMENT` or `FOLLOW_AUTHOR` fact against the untruncated exposure universe first, using a parameterized MySQL 8 window query or bounded fact batches that still consult all newer matching exposures; follow matches the exposed article author. Only after each fact has one latest target may the service retain the newest 50,000 mature, non-null-baseline target rows. Mature rows satisfy `now - modelWindowDays <= exposed_at < now - labelWindowDays`; sort the retained rows deterministically by exposure time then ID, mark attributed rows positive, and mark other retained mature rows negative. Split oldest 80 percent for training and newest 20 percent for validation, and require both labels in both splits. Standardization means/stddev come only from the training split; use `1.0` for a zero standard deviation, and reuse the saved values for validation and inference.
+
+- [ ] **Step 4: Train, validate and atomically publish a real model**
 
 Implement batch gradient descent in Java with learning rate `0.05`, 300 iterations and L2 regularization `0.01`:
 
@@ -760,20 +804,36 @@ weights[i] -= learningRate * ((gradient[i] / rows) + l2 * weights[i]);
 bias -= learningRate * biasGradient / rows;
 ```
 
-Evaluate validation AUC with rank ordering and compare it to the fixed chronological baseline AUC `0.5`. Publish only when model AUC is strictly greater than `0.5`, then write JSON to `${recommendation.model-directory}/recommendation-model-<UTC timestamp>.json` through a same-directory temporary file and `Files.move(..., ATOMIC_MOVE, REPLACE_EXISTING)`. Maintain `active-model.json` as an atomic copy of the selected version. The model record stores `version`, `trainedAt`, `featureNames`, means, standard deviations, weights, bias and validation AUC. `RecommendationModelStore.loadActive()` validates exactly the nine feature names and a finite coefficient for every field; invalid JSON returns `Optional.empty()` and logs a warning.
+Validate every input, gradient, weight, bias and probability as finite; clamp sigmoid logits to `[-35, 35]`. Empty data, wrong dimensions, either split lacking both labels or numeric failure returns a precise non-publication reason. AUC uses pair ranking, awards `0.5` for ties and rejects one-class inputs.
 
-Modify `RecommendationRankingService`: calculate feature vectors from existing candidates and order by `model.score(vector) + freshnessScore * 0.05`, then retain all existing eligibility filters and diversity reordering. Modify `RecommendationFeedService.createSession`: call the ranker only when `RecommendationEligibilityService.isEligible(userId)` is true and `RecommendationModelStore.loadActive()` returns a valid model; return `PERSONALIZED` in that branch. All other branches retain Task 5's chronological `COLD_START` behavior. `RecommendationTrainingTask` runs daily at `0 15 2 * * ?`, logs published version/AUC or a precise non-publication reason, and catches/logs exceptions so scheduling stays alive.
+Compute two AUCs on the same validation rows: model probability and the exposure's recorded `baseline_score`. Publish only when `modelAuc > baselineAuc + 1e-6`; a missing real baseline is `NO_REAL_BASELINE`, never a fabricated constant `0.5`. Training failure/no data/failed validation/storage failure must leave the previous active model untouched and log the reason plus bounded aggregate counts without user-level behavior details.
 
-- [ ] **Step 4: Run focused tests to verify they pass**
+The model record stores version, trainedAt, the exact ordered feature names, means, positive standard deviations, weights, bias, validation model AUC and baseline AUC. Normalize `${recommendation.model-directory}` to an absolute directory and add `/data/recommendation-models/` to `.gitignore`. Guard a cross-process `FileLock` with an in-JVM lock and hold both through version and active promotion; lock contention or `OverlappingFileLockException` returns `PUBLICATION_LOCK_UNAVAILABLE`. Serialize to unique same-directory temporary/version paths and use `ATOMIC_MOVE` for both version and active publication. If atomic move is unsupported, do not replace active. `loadActive(Instant now)` reads only `active-model.json` and distinguishes absent/invalid/expired from operational I/O failure; validate schema, exact dimension/order, all finite values, `trainedAt <= now`, AUC range and maximum age (default seven days). Production and tests always pass the injected clock instant; there is no age-bypassing no-argument loader.
 
-Run: `./mvnw -Dtest=LogisticRegressionTrainerTest,RecommendationTrainingIntegrationTest test`
+- [ ] **Step 5: Insert model scoring before diversity and keep delivery modes truthful**
 
-Expected: PASS; training is deterministic on the fixture, only better-than-baseline models are published, invalid models are ignored, and both threshold counts are mandatory.
+Split `RecommendationCandidateService` into recall/feature assembly and ranking so a model sees the complete de-duplicated, eligible candidate set before any rule truncation or diversity. The rule path sorts by the existing rule score; the model path sorts by `model.score(vector) + freshnessScore * 0.05`; both then use the same existing author/tag diversity pass. Never model-rerank an already rule-truncated/diversified list. Preserve all self/deleted/unpublished/shown filters. If personalized candidates are fewer than the requested page size, return an entirely chronological page instead of mixing model and chronology cards.
 
-- [ ] **Step 5: Commit the machine-learning boundary**
+`RecommendationFeedService.createSession` returns `PERSONALIZED` only after both thresholds, a valid non-expired model, successful inference and enough candidates. Threshold failure, absent/invalid/expired model or candidate shortage returns chronological `COLD_START`. `recommendation.enabled=false`, Redis/session failure, model I/O/inference operational failure, or invalid/expired cursor returns chronological `FALLBACK`. Catch Redis `DataAccessException` only inside the profile/session Redis boundary and translate it, plus model operational failures, to a typed `RecommendationServingUnavailableException` handled by `feed()`; never hide MySQL hydration/query failures in that catch. Both modes still persist real chronology exposures; the latest tab remains independent and creates none.
+
+Inject the same application `Clock` into exposure recording and derive `exposedAt`/`createTime` from it, so serving, maturity and attribution share one time basis. Store the exact scoring snapshot/baseline in every session item. A model only has to be valid while a personalized session is created: later cursor pages reuse that stored, scored snapshot until the Redis TTL ends, even if the active model is replaced or expires, so pagination cannot drift.
+
+Add `model-window-days` (default `90`), `label-window-days` (`7`), `model-max-age-days` (`7`), `training-sample-limit` (`50000`) and environment overrides. `RecommendationTrainingTask` runs `@Scheduled(cron = "0 15 2 * * ?", zone = "Asia/Shanghai")` even when serving is disabled, catches top-level exceptions to preserve future runs, and reports a precise publication/non-publication result. Multi-instance publication safety is provided by the model-store file lock.
+
+- [ ] **Step 6: Run focused and full Java 21 verification**
+
+Run: `./mvnw -Dtest=LogisticRegressionTrainerTest,RecommendationModelStoreTest,RecommendationTrainingIntegrationTest,RecommendationFeedIntegrationTest,RecommendationPolicyTest test`
+
+Expected: PASS; training is deterministic, leakage-free and last-touch attributed; only a model beating the recorded rule baseline is atomically published; invalid/expired models are ignored; exact thresholds are mandatory; personalized delivery preserves all nine persisted features and truthful modes.
+
+Run: `./mvnw test`
+
+Expected: PASS under Java 21; Task 1–5 collection, outbox, profile, recall and delivery contracts remain green.
+
+- [ ] **Step 7: Commit the machine-learning boundary**
 
 ```bash
-git add src/main/java/cumt/zongzuo/community/recommendation/entity/RecommendationExposure.java src/main/java/cumt/zongzuo/community/recommendation/mapper/RecommendationExposureMapper.java src/main/java/cumt/zongzuo/community/recommendation/service/RecommendationEligibilityService.java src/main/java/cumt/zongzuo/community/recommendation/service/RecommendationExposureService.java src/main/java/cumt/zongzuo/community/recommendation/training src/main/java/cumt/zongzuo/community/recommendation/task/RecommendationTrainingTask.java src/main/java/cumt/zongzuo/community/recommendation/service/RecommendationRankingService.java src/test/java/cumt/zongzuo/community/recommendation/LogisticRegressionTrainerTest.java src/test/java/cumt/zongzuo/community/recommendation/RecommendationTrainingIntegrationTest.java
+git add .gitignore README.md script.sql docs/database/migrations/2026-08-09-recommendation-training.sql src/main/resources/application.yml src/main/java/cumt/zongzuo/community/recommendation/config src/main/java/cumt/zongzuo/community/recommendation/dto src/main/java/cumt/zongzuo/community/recommendation/entity/RecommendationExposure.java src/main/java/cumt/zongzuo/community/recommendation/mapper src/main/java/cumt/zongzuo/community/recommendation/service src/main/java/cumt/zongzuo/community/recommendation/training src/main/java/cumt/zongzuo/community/recommendation/task/RecommendationTrainingTask.java src/test/java/cumt/zongzuo/community/recommendation
 git commit -m "feat: train recommendation ranking model"
 ```
 
