@@ -8,6 +8,9 @@ import cumt.zongzuo.community.entity.FavoriteFolder;
 import cumt.zongzuo.community.mapper.ArticleMapper;
 import cumt.zongzuo.community.mapper.FavoriteFolderMapper;
 import cumt.zongzuo.community.mapper.FavoriteMapper;
+import cumt.zongzuo.community.recommendation.dto.RecommendationEventCommand;
+import cumt.zongzuo.community.recommendation.entity.RecommendationEventType;
+import cumt.zongzuo.community.recommendation.service.RecommendationEventPublisher;
 import cumt.zongzuo.community.service.FavoriteService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -29,6 +32,9 @@ public class FavoriteServiceImpl extends ServiceImpl<FavoriteFolderMapper, Favor
 
     @Autowired
     private ArticleMapper articleMapper;
+
+    @Autowired
+    private RecommendationEventPublisher recommendationEventPublisher;
 
     @Override
     public void createFolder(Long userId, String name, String description, Integer isPublic) {
@@ -89,7 +95,16 @@ public class FavoriteServiceImpl extends ServiceImpl<FavoriteFolderMapper, Favor
             favorite.setArticleId(articleId);
             favorite.setFolderId(folderId);
             favorite.setCreateTime(LocalDateTime.now());
-            favoriteMapper.insert(favorite);
+            if (favoriteMapper.insert(favorite) > 0) {
+                recommendationEventPublisher.publishAfterCommit(new RecommendationEventCommand(
+                        userId,
+                        articleId,
+                        null,
+                        RecommendationEventType.COLLECT,
+                        LocalDateTime.now(),
+                        "collect:" + favorite.getId(),
+                        "favorite"));
+            }
         }
     }
 

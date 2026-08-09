@@ -9,6 +9,9 @@ import cumt.zongzuo.community.entity.Follow;
 import cumt.zongzuo.community.entity.User;
 import cumt.zongzuo.community.mapper.FollowMapper;
 import cumt.zongzuo.community.mapper.UserMapper;
+import cumt.zongzuo.community.recommendation.dto.RecommendationEventCommand;
+import cumt.zongzuo.community.recommendation.entity.RecommendationEventType;
+import cumt.zongzuo.community.recommendation.service.RecommendationEventPublisher;
 import cumt.zongzuo.community.service.FollowService;
 import cumt.zongzuo.community.service.MessageService;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
@@ -36,6 +39,9 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
 
     @Autowired
     private RabbitTemplate rabbitTemplate;
+
+    @Autowired
+    private RecommendationEventPublisher recommendationEventPublisher;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -66,7 +72,17 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
             follow.setCreateTime(LocalDateTime.now());
 
             try {
-                save(follow);
+                boolean saved = save(follow);
+                if (saved) {
+                    recommendationEventPublisher.publishAfterCommit(new RecommendationEventCommand(
+                            followerId,
+                            null,
+                            followedId,
+                            RecommendationEventType.FOLLOW_AUTHOR,
+                            LocalDateTime.now(),
+                            "follow:" + follow.getId(),
+                            "follow"));
+                }
                 // 【修改】异步发送通知
                 NotificationMsgDTO msg = new NotificationMsgDTO();
                 msg.setFromId(followerId);

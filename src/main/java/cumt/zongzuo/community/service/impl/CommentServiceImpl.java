@@ -13,6 +13,9 @@ import cumt.zongzuo.community.entity.User;
 import cumt.zongzuo.community.mapper.ArticleMapper;
 import cumt.zongzuo.community.mapper.CommentMapper;
 import cumt.zongzuo.community.mapper.UserMapper;
+import cumt.zongzuo.community.recommendation.dto.RecommendationEventCommand;
+import cumt.zongzuo.community.recommendation.entity.RecommendationEventType;
+import cumt.zongzuo.community.recommendation.service.RecommendationEventPublisher;
 import cumt.zongzuo.community.service.CommentService;
 import cumt.zongzuo.community.service.MessageService;
 import cumt.zongzuo.community.service.UserService;
@@ -46,6 +49,9 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
     @Autowired
     private ArticleMapper articleMapper;
 
+    @Autowired
+    private RecommendationEventPublisher recommendationEventPublisher;
+
     @Override
     @Transactional(rollbackFor = Exception.class) // 建议加上事务
     public void publishComment(CommentDTO dto, Long userId) {
@@ -64,7 +70,18 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
         }
 
         // 4. 保存评论
-        save(comment);
+        boolean saved = save(comment);
+
+        if (saved) {
+            recommendationEventPublisher.publishAfterCommit(new RecommendationEventCommand(
+                    userId,
+                    comment.getArticleId(),
+                    null,
+                    RecommendationEventType.COMMENT,
+                    LocalDateTime.now(),
+                    "comment:" + comment.getId(),
+                    "comment"));
+        }
 
         // 5. 【核心修复】更新文章评论数 +1
         CommentTaskDTO task = new CommentTaskDTO();

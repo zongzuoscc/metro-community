@@ -10,6 +10,9 @@ import cumt.zongzuo.community.entity.LikeRecord;
 import cumt.zongzuo.community.mapper.ArticleMapper;
 import cumt.zongzuo.community.mapper.CommentMapper; // 引入 Mapper
 import cumt.zongzuo.community.mapper.LikeRecordMapper;
+import cumt.zongzuo.community.recommendation.dto.RecommendationEventCommand;
+import cumt.zongzuo.community.recommendation.entity.RecommendationEventType;
+import cumt.zongzuo.community.recommendation.service.RecommendationEventPublisher;
 import cumt.zongzuo.community.service.LikeService;
 import cumt.zongzuo.community.service.MessageService;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
@@ -19,9 +22,12 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 
 @Service
 public class LikeServiceImpl extends ServiceImpl<LikeRecordMapper, LikeRecord> implements LikeService {
+
+    private static final DateTimeFormatter DEDUPE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS");
 
     @Autowired
     private StringRedisTemplate redisTemplate;
@@ -37,6 +43,9 @@ public class LikeServiceImpl extends ServiceImpl<LikeRecordMapper, LikeRecord> i
 
     @Autowired
     private MessageService messageService;
+
+    @Autowired
+    private RecommendationEventPublisher recommendationEventPublisher;
 
     @Override
     public void like(Long userId, Long targetId, Integer targetType) {
@@ -62,6 +71,18 @@ public class LikeServiceImpl extends ServiceImpl<LikeRecordMapper, LikeRecord> i
         task.setLike(isLike);
 
         rabbitTemplate.convertAndSend("like.task.queue", task);
+
+        if (isLike && targetType == 1) {
+            LocalDateTime occurredAt = LocalDateTime.now();
+            recommendationEventPublisher.publishAfterCommit(new RecommendationEventCommand(
+                    userId,
+                    targetId,
+                    null,
+                    RecommendationEventType.LIKE,
+                    occurredAt,
+                    "like:" + userId + ":article:" + targetId + ":" + DEDUPE_TIME_FORMATTER.format(occurredAt),
+                    "article_detail"));
+        }
 
         // 方法直接结束，无需等待数据库操作完成
     }
