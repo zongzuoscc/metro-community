@@ -90,6 +90,13 @@ app:
     ticket-ttl: ${WEBSOCKET_TICKET_TTL:PT30S}
 
 metro:
+  events:
+    outbox:
+      dispatch-enabled: ${METRO_DOMAIN_EVENT_DISPATCH_ENABLED:true}
+      dispatch-delay-ms: ${METRO_DOMAIN_EVENT_DISPATCH_DELAY_MS:1000}
+      batch-size: 100
+      lease-duration: PT30S
+      max-attempts: 12
   ai:
     enabled: ${METRO_AI_ENABLED:false}
     agent:
