@@ -5,6 +5,7 @@ import cumt.zongzuo.community.entity.Tag;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
+import java.util.Collection;
 import java.util.List;
 
 @Mapper
@@ -15,4 +16,6 @@ public interface TagMapper extends BaseMapper<Tag> {
      * 避免在 Java 代码中循环查库
      */
     List<Tag> selectTagsByArticleId(@Param("articleId") Long articleId);
+
+    List<Long> selectIdsByNames(@Param("names") Collection<String> names);
 }

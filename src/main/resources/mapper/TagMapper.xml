@@ -9,4 +9,14 @@
         WHERE at.article_id = #{articleId}
     </select>
 
+    <select id="selectIdsByNames" resultType="java.lang.Long">
+        SELECT id
+        FROM tag
+        WHERE name IN
+        <foreach collection="names" item="name" open="(" separator="," close=")">
+            #{name}
+        </foreach>
+        ORDER BY id
+    </select>
+
 </mapper>
