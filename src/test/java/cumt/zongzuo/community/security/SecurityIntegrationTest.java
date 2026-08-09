@@ -23,6 +23,11 @@ class SecurityIntegrationTest extends IntegrationTestSupport {
     void createAuthenticatedUser() {
         jdbcTemplate.update("INSERT INTO sys_user (id, username, password, email, role, status) VALUES (?, ?, ?, ?, ?, ?)",
                 1001L, "security-test", "unused", "security-test@example.com", 0, 0);
+        jdbcTemplate.update("""
+                INSERT INTO sys_user (id, username, password, email, role, status)
+                VALUES (1002, 'security-admin', 'unused', 'security-admin@example.com', 1, 0)
+                ON DUPLICATE KEY UPDATE role = 1, status = 0
+                """);
     }
 
     @Test
@@ -111,6 +116,28 @@ class SecurityIntegrationTest extends IntegrationTestSupport {
     }
 
     @Test
+    void moderationQueueTopologyAndLegacyAdminAuthorizationAreEnforced() {
+        assertThat(amqpAdmin.getQueueProperties("article.audit.queue")).isNotNull();
+        assertThat(amqpAdmin.getQueueProperties("article.audit.queue.dlq")).isNotNull();
+
+        ResponseEntity<String> unauthenticated = restTemplate.getForEntity(
+                url("/api/article/admin/pending"), String.class);
+        ResponseEntity<String> ordinaryUser = restTemplate.exchange(
+                url("/api/article/admin/pending"), HttpMethod.GET,
+                new org.springframework.http.HttpEntity<>(bearerHeaders(1001L)), String.class);
+        ResponseEntity<String> administrator = restTemplate.exchange(
+                url("/api/article/admin/pending"), HttpMethod.GET,
+                new org.springframework.http.HttpEntity<>(bearerHeaders(1002L)), String.class);
+
+        assertThat(unauthenticated.getStatusCode().value()).isEqualTo(401);
+        assertThat(unauthenticated.getBody()).contains("\"code\":401", "\"msg\"");
+        assertThat(ordinaryUser.getStatusCode().value()).isEqualTo(403);
+        assertThat(ordinaryUser.getBody()).contains("\"code\":403", "\"msg\"");
+        assertThat(administrator.getStatusCode().value()).isEqualTo(200);
+        assertThat(administrator.getBody()).contains("\"code\":200", "\"data\"");
+    }
+
+    @Test
     void profileUpdateCannotEscalateRoleOrChangeAccountState() {
         HttpHeaders headers = new HttpHeaders();
         headers.setBearerAuth(jwtService.generate(1001L));
@@ -156,6 +183,12 @@ class SecurityIntegrationTest extends IntegrationTestSupport {
         copy.putAll(source);
         copy.setContentType(MediaType.APPLICATION_JSON);
         return copy;
+    }
+
+    private HttpHeaders bearerHeaders(long userId) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(jwtService.generate(userId));
+        return headers;
     }
 
     private void assertGenericBadRequest(ResponseEntity<String> response, String maliciousValue) {

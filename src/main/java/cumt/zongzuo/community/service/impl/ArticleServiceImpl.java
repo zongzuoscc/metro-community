@@ -47,6 +47,8 @@ import org.springframework.data.elasticsearch.core.query.StringQuery;
 import org.springframework.data.elasticsearch.core.SearchHit;
 import org.springframework.data.elasticsearch.core.SearchHits;
 import cumt.zongzuo.community.document.ArticleDoc;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.server.ResponseStatusException;
 
 @Slf4j
 @Service
@@ -421,7 +423,10 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
     public Page<Article> getPendingArticles(int page, int size) {
         Page<Article> pageInfo = new Page<>(page, size);
         QueryWrapper<Article> query = new QueryWrapper<>();
-        query.eq("status", 2).orderByAsc("create_time");
+        query.eq("status", 2)
+                .eq("is_deleted", 0)
+                .orderByAsc("create_time")
+                .orderByAsc("id");
         Page<Article> result = page(pageInfo, query);
         if (result.getRecords() != null) {
             for (Article a : result.getRecords()) {
@@ -434,37 +439,36 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void auditArticle(Long articleId, boolean pass, String reason) {
-        Article article = getById(articleId);
-        if (article == null) throw new RuntimeException("文章不存在");
-
-        // 1. 【核心】动态获取操作人 ID 以区分人工还是 AI
-        Long currentUserId = tryGetCurrentUserId();
-        boolean isManual = (currentUserId != null);
-        // 如果是人工操作，发送人就是管理员；如果是 MQ 异步 AI 审核，兜底发件人为官方账号
-        Long adminId = isManual ? currentUserId : 9999L;
-
-        // 2. 更新文章状态
-        if (pass) {
-            article.setStatus(1); // 通过
-        } else {
-            article.setStatus(3); // 拒绝
+        Long adminId = CurrentUser.id();
+        int targetStatus = pass ? 1 : 3;
+        int updated = baseMapper.updateModerationStatusIfPending(articleId, targetStatus);
+        if (updated == 0) {
+            Article current = getById(articleId);
+            if (current != null
+                    && Integer.valueOf(0).equals(current.getIsDeleted())
+                    && Integer.valueOf(targetStatus).equals(current.getStatus())) {
+                return;
+            }
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "文章审核状态已发生变化");
         }
-        updateById(article);
 
-        // 3. 状态联动 (同步 ES 与发送系统通知)
-        String source = isManual ? "人工" : "Metro AI "; // 动态文案
+        Article article = getById(articleId);
+        if (article == null) {
+            throw new IllegalStateException("审核状态更新后文章不存在");
+        }
+
         if (pass) {
             // 审核通过，同步到 Elasticsearch 提供搜索
             rabbitTemplate.convertAndSend("es.sync.queue", articleId);
 
             // 发送通过私信通知
             sendSystemNotification(adminId, article.getAuthorId(), articleId,
-                    "🎉 恭喜！您的文章《" + article.getTitle() + "》已通过" + source + "审核并成功发布。");
+                    "🎉 恭喜！您的文章《" + article.getTitle() + "》已通过人工审核并成功发布。");
         } else {
             // 发送拒绝私信通知
             String rejectReason = StrUtil.isNotBlank(reason) ? reason : "存在违规内容";
             sendSystemNotification(adminId, article.getAuthorId(), articleId,
-                    "⚠️ 抱歉，您的文章《" + article.getTitle() + "》未通过" + source + "审核。原因：" + rejectReason + "。请修改后重新发布。");
+                    "⚠️ 抱歉，您的文章《" + article.getTitle() + "》未通过人工审核。原因：" + rejectReason + "。请修改后重新发布。");
         }
 
         // 4. 清理旧缓存

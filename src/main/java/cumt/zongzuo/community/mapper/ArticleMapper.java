@@ -5,6 +5,7 @@ import cumt.zongzuo.community.entity.Article;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 
 import java.util.Collection;
 import java.time.LocalDateTime;
@@ -46,4 +47,9 @@ public interface ArticleMapper extends BaseMapper<Article> {
     List<Long> selectPublishedChronologicalIds(@Param("limit") int limit);
 
     Article selectPublicById(@Param("articleId") Long articleId);
+
+    @Update("UPDATE article SET status = #{targetStatus} " +
+            "WHERE id = #{articleId} AND status = 2 AND is_deleted = 0")
+    int updateModerationStatusIfPending(@Param("articleId") Long articleId,
+                                        @Param("targetStatus") int targetStatus);
 }
