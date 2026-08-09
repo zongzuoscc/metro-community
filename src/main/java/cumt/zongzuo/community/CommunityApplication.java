@@ -1,6 +1,7 @@
 package cumt.zongzuo.community;
 
 import cumt.zongzuo.community.config.SecurityProperties;
+import cumt.zongzuo.community.recommendation.config.RecommendationProperties;
 import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
@@ -11,7 +12,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 @SpringBootApplication(exclude = UserDetailsServiceAutoConfiguration.class)
 @MapperScan("cumt.zongzuo.community.mapper")
 @EnableScheduling
-@EnableConfigurationProperties(SecurityProperties.class)
+@EnableConfigurationProperties({SecurityProperties.class, RecommendationProperties.class})
 public class CommunityApplication {
 
 	public static void main(String[] args) {

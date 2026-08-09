@@ -2,13 +2,9 @@ package cumt.zongzuo.community.recommendation.config;
 
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
-import org.springframework.boot.context.properties.EnableConfigurationProperties;
-import org.springframework.context.annotation.Configuration;
 
 @Data
-@Configuration(proxyBeanMethods = false)
 @ConfigurationProperties(prefix = "recommendation")
-@EnableConfigurationProperties(RecommendationProperties.class)
 public class RecommendationProperties {
 
     private boolean enabled = false;

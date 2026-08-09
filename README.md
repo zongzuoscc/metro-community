@@ -4,7 +4,7 @@
 
 ## 技术栈
 
-- Java 17、Spring Boot 3、Spring Security、MyBatis-Plus
+- Java 21、Spring Boot 3、Spring Security、MyBatis-Plus
 - MySQL 8、Redis、RabbitMQ、Elasticsearch 8 + IK 中文分词
 - WebSocket、阿里云 OSS、Spring AI（默认关闭，需显式配置）
 
@@ -20,7 +20,7 @@
 
 ### 1. 准备依赖
 
-需要 JDK 17、Docker（或已有的 MySQL 8、Redis、RabbitMQ、Elasticsearch 8）。Elasticsearch 必须安装仓库中 `elasticsearch/` Dockerfile 使用的 IK 插件。
+需要 JDK 21、Docker（或已有的 MySQL 8、Redis、RabbitMQ、Elasticsearch 8）。Elasticsearch 必须安装仓库中 `elasticsearch/` Dockerfile 使用的 IK 插件。
 
 项目 Docker Compose 使用独立默认端口：MySQL `13306`、Redis `16379`、RabbitMQ AMQP `15673` / 管理台 `15674`、Elasticsearch `19200`、Kibana `15601`，避免占用常见的本机开发端口。可以通过 `.env` 中的 `*_HOST_PORT` 覆盖它们。
 
