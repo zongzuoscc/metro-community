@@ -410,8 +410,8 @@ git commit -m "fix: deliver recommendation events through outbox"
 @Test
 void duplicateRabbitDeliveryCreatesOneFactAndAddsProfileOnce() {
     RecommendationEventCommand event = view(1001L, articleId, "view:1001:" + articleId + ":2026-08-09");
-    rabbitTemplate.convertAndSend(RecommendationOutboxDispatcher.QUEUE, event);
-    rabbitTemplate.convertAndSend(RecommendationOutboxDispatcher.QUEUE, event);
+    rabbitTemplate.convertAndSend(RecommendationOutboxDispatcher.EVENT_QUEUE, event);
+    rabbitTemplate.convertAndSend(RecommendationOutboxDispatcher.EVENT_QUEUE, event);
 
     await().untilAsserted(() -> {
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM user_article_event", Integer.class)).isEqualTo(1);
@@ -440,7 +440,7 @@ Expected: FAIL because no listener or profile service exists.
 Implement the listener with no swallowed exception so configured retry/DLQ remains effective:
 
 ```java
-@RabbitListener(queues = RecommendationOutboxDispatcher.QUEUE)
+@RabbitListener(queues = RecommendationOutboxDispatcher.EVENT_QUEUE)
 public void consume(RecommendationEventCommand command) {
     try {
         eventMapper.insert(toEntity(command));
@@ -450,6 +450,8 @@ public void consume(RecommendationEventCommand command) {
     profileService.rebuildProfile(command.userId());
 }
 ```
+
+Expose Task 2's queue name as `public static final String EVENT_QUEUE = "recommendation.event.queue"` on `RecommendationOutboxDispatcher` so the producer and consumer cannot drift to different routing keys.
 
 Use the table's unique key as the authority: catch only `DuplicateKeyException` around `insert`, then always rebuild that user's profile from MySQL facts. Any other database or Redis exception must propagate so RabbitMQ retries and ultimately routes to the DLQ. Rebuilding deletes both Redis profile keys, loads the user's facts from the last 30 days in ascending time order, and recalculates tag and author scores; this makes a retry safe even when a previous attempt inserted MySQL successfully but failed partway through Redis updates. For every tag/author score, use:
 
