@@ -13,7 +13,10 @@ import org.junit.jupiter.params.provider.EnumSource;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.EnumMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -168,20 +171,30 @@ class AiCapabilityExecutorTest {
 
     @Test
     void shortAbsoluteDeadlinePreventsASecondAttempt() {
+        Instant startedAt = Instant.parse("2026-08-10T00:00:00Z");
+        Instant callerDeadline = startedAt.plusMillis(20);
+        Clock clock = new SequenceClock(List.of(
+                startedAt,
+                startedAt,
+                startedAt,
+                callerDeadline.minusMillis(10),
+                callerDeadline.minusNanos(1)));
         AtomicInteger attempts = new AtomicInteger();
         MetroAiProperties.RuntimeProperties runtime = runtimeDefaults();
-        runtime.setRetryDelay(Duration.ofMillis(100));
-        executor = executor(defaultPolicies(), context -> { }, runtime);
+        runtime.setRetryDelay(Duration.ofMillis(10));
+        AiCapabilityPolicyResolver resolver = new AiCapabilityPolicyResolver(defaultPolicies(), runtime);
+        executor = new DefaultAiCapabilityExecutor(resolver, context -> { }, metrics, clock);
 
-        long started = System.nanoTime();
         assertReason(AiExecutionErrorReason.DEADLINE_EXCEEDED, () -> executor.execute(
-                context(AiCapability.AGENT, 10, Instant.now().plusMillis(35), false), () -> {
-                    attempts.incrementAndGet();
-                    throw provider(AiProviderErrorReason.CONNECTION_FAILURE, null);
+                context(AiCapability.AGENT, 10, callerDeadline, false), () -> {
+                    if (attempts.incrementAndGet() == 1) {
+                        throw provider(AiProviderErrorReason.CONNECTION_FAILURE, null);
+                    }
+                    new CountDownLatch(1).await();
+                    return "unexpected";
                 }));
 
         assertThat(attempts).hasValue(1);
-        assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofMillis(80));
     }
 
     @Test
@@ -399,5 +412,31 @@ class AiCapabilityExecutorTest {
         assertThatThrownBy(invocation::run)
                 .isInstanceOfSatisfying(AiExecutionException.class,
                         error -> assertThat(error.reason()).isEqualTo(expected));
+    }
+
+    private static final class SequenceClock extends Clock {
+
+        private final List<Instant> instants;
+        private final AtomicInteger index = new AtomicInteger();
+
+        private SequenceClock(List<Instant> instants) {
+            this.instants = List.copyOf(instants);
+        }
+
+        @Override
+        public ZoneId getZone() {
+            return ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            return this;
+        }
+
+        @Override
+        public Instant instant() {
+            int position = index.getAndUpdate(current -> Math.min(current + 1, instants.size() - 1));
+            return instants.get(position);
+        }
     }
 }

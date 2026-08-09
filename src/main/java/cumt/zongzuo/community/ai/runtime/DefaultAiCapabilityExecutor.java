@@ -84,14 +84,20 @@ public final class DefaultAiCapabilityExecutor implements AiCapabilityExecutor, 
                         "AI capability executor is shut down");
             }
             quotaService.acquire(context);
-            Instant capabilityDeadline = minimum(context.deadline(), invocationStarted.plus(policy.timeout()));
+            EffectiveDeadline effectiveDeadline = effectiveDeadline(
+                    context.deadline(), invocationStarted.plus(policy.timeout()));
             CapabilityLane lane = lane(context);
-            Retry retry = retry(context, capabilityDeadline);
-            CheckedSupplier<T> timed = () -> executeTimedAttempt(lane, capabilityDeadline, operation);
+            RetryDeadlineGuard retryDeadlineGuard = new RetryDeadlineGuard();
+            Retry retry = retry(context, effectiveDeadline, retryDeadlineGuard);
+            CheckedSupplier<T> timed = () -> executeTimedAttempt(lane, effectiveDeadline, operation);
             CheckedSupplier<T> bulkheaded = Bulkhead.decorateCheckedSupplier(lane.bulkhead(), timed);
             CheckedSupplier<T> circuitProtected = CircuitBreaker.decorateCheckedSupplier(
                     lane.circuitBreaker(), bulkheaded);
-            CheckedSupplier<T> resilient = Retry.decorateCheckedSupplier(retry, circuitProtected);
+            CheckedSupplier<T> retryableAttempt = () -> {
+                retryDeadlineGuard.verifyRetryMayStart();
+                return circuitProtected.get();
+            };
+            CheckedSupplier<T> resilient = Retry.decorateCheckedSupplier(retry, retryableAttempt);
             result = resilient.get();
             outcome = "success";
             return result;
@@ -107,12 +113,11 @@ public final class DefaultAiCapabilityExecutor implements AiCapabilityExecutor, 
         }
     }
 
-    private <T> T executeTimedAttempt(CapabilityLane lane, Instant deadline,
+    private <T> T executeTimedAttempt(CapabilityLane lane, EffectiveDeadline effectiveDeadline,
                                       CheckedSupplier<T> operation) throws Throwable {
-        Duration remaining = Duration.between(clock.instant(), deadline);
+        Duration remaining = Duration.between(clock.instant(), effectiveDeadline.instant());
         if (remaining.isZero() || remaining.isNegative()) {
-            throw new AiExecutionException(AiExecutionErrorReason.DEADLINE_EXCEEDED,
-                    "AI invocation deadline has elapsed");
+            throw expired(effectiveDeadline);
         }
         TimeLimiterConfig config = TimeLimiterConfig.custom()
                 .timeoutDuration(remaining)
@@ -130,9 +135,10 @@ public final class DefaultAiCapabilityExecutor implements AiCapabilityExecutor, 
         }
         catch (TimeoutException error) {
             cancel(submitted.get());
-            metrics.recordProviderTimeout(lane.policy());
-            throw new AiExecutionException(AiExecutionErrorReason.TIMEOUT,
-                    "AI capability execution timed out", error);
+            if (effectiveDeadline.reason() == AiExecutionErrorReason.TIMEOUT) {
+                metrics.recordProviderTimeout(lane.policy());
+            }
+            throw expired(effectiveDeadline, error);
         }
         catch (InterruptedException error) {
             Future<T> future = submitted.get();
@@ -165,13 +171,14 @@ public final class DefaultAiCapabilityExecutor implements AiCapabilityExecutor, 
         }
     }
 
-    private Retry retry(AiInvocationContext context, Instant deadline) {
+    private Retry retry(AiInvocationContext context, EffectiveDeadline effectiveDeadline,
+                        RetryDeadlineGuard retryDeadlineGuard) {
         int attempts = context.background()
                 ? runtime.getBackgroundMaxAttempts() : runtime.getInteractiveMaxAttempts();
         RetryConfig config = RetryConfig.<Object>custom()
                 .maxAttempts(attempts)
-                .intervalBiFunction((attempt, outcome) -> retryIntervalMillis(
-                        deadline, context.background(), attempt))
+                .intervalBiFunction((attempt, outcome) -> guardedRetryIntervalMillis(
+                        effectiveDeadline, context.background(), attempt, retryDeadlineGuard))
                 .retryOnException(AiProviderExceptionClassifier::isRetryable)
                 .failAfterMaxAttempts(false)
                 .build();
@@ -183,13 +190,33 @@ public final class DefaultAiCapabilityExecutor implements AiCapabilityExecutor, 
         if (remaining.isNegative() || remaining.isZero()) {
             return 0L;
         }
+        long configured = configuredRetryIntervalMillis(background, attempt);
+        return Math.min(configured, remaining.toMillis());
+    }
+
+    private long guardedRetryIntervalMillis(EffectiveDeadline effectiveDeadline, boolean background,
+                                            int attempt, RetryDeadlineGuard retryDeadlineGuard) {
+        Duration remaining = Duration.between(clock.instant(), effectiveDeadline.instant());
+        if (remaining.isNegative() || remaining.isZero()) {
+            retryDeadlineGuard.preventRetry(effectiveDeadline.reason());
+            return 0L;
+        }
+        long configured = configuredRetryIntervalMillis(background, attempt);
+        if (Duration.ofMillis(configured).compareTo(remaining) >= 0) {
+            retryDeadlineGuard.preventRetry(effectiveDeadline.reason());
+            return 0L;
+        }
+        return configured;
+    }
+
+    private long configuredRetryIntervalMillis(boolean background, int attempt) {
         long configured = runtime.getRetryDelay().toMillis();
         if (background && attempt > 1) {
             long multiplier = 1L << Math.min(attempt - 1, 30);
             configured = configured > Long.MAX_VALUE / multiplier
                     ? Long.MAX_VALUE : configured * multiplier;
         }
-        return Math.min(configured, remaining.toMillis());
+        return configured;
     }
 
     private CapabilityLane createLane(AiCapabilityPolicy policy) {
@@ -299,8 +326,21 @@ public final class DefaultAiCapabilityExecutor implements AiCapabilityExecutor, 
         return "failure";
     }
 
-    private static Instant minimum(Instant first, Instant second) {
-        return first.isBefore(second) ? first : second;
+    private static EffectiveDeadline effectiveDeadline(Instant callerDeadline, Instant capabilityDeadline) {
+        if (!callerDeadline.isAfter(capabilityDeadline)) {
+            return new EffectiveDeadline(callerDeadline, AiExecutionErrorReason.DEADLINE_EXCEEDED);
+        }
+        return new EffectiveDeadline(capabilityDeadline, AiExecutionErrorReason.TIMEOUT);
+    }
+
+    private static AiExecutionException expired(EffectiveDeadline effectiveDeadline) {
+        return expired(effectiveDeadline, null);
+    }
+
+    private static AiExecutionException expired(EffectiveDeadline effectiveDeadline, Throwable cause) {
+        String message = effectiveDeadline.reason() == AiExecutionErrorReason.DEADLINE_EXCEEDED
+                ? "AI invocation deadline has elapsed" : "AI capability execution timed out";
+        return new AiExecutionException(effectiveDeadline.reason(), message, cause);
     }
 
     private static void cancel(Future<?> future) {
@@ -359,6 +399,27 @@ public final class DefaultAiCapabilityExecutor implements AiCapabilityExecutor, 
 
     private record CapabilityLane(AiCapabilityPolicy policy, ThreadPoolExecutor executor,
                                   Bulkhead bulkhead, CircuitBreaker circuitBreaker) {
+    }
+
+    private record EffectiveDeadline(Instant instant, AiExecutionErrorReason reason) {
+    }
+
+    private static final class RetryDeadlineGuard {
+
+        private AiExecutionErrorReason preventedReason;
+
+        private void preventRetry(AiExecutionErrorReason reason) {
+            preventedReason = reason;
+        }
+
+        private void verifyRetryMayStart() {
+            if (preventedReason != null) {
+                throw new AiExecutionException(preventedReason,
+                        preventedReason == AiExecutionErrorReason.DEADLINE_EXCEEDED
+                                ? "AI invocation deadline cannot accommodate another retry"
+                                : "AI capability timeout cannot accommodate another retry");
+            }
+        }
     }
 
     private static final class OperationThrowable extends Exception {
