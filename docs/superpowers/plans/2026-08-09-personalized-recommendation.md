@@ -565,12 +565,15 @@ git commit -m "feat: rank personalized recommendation candidates"
 **Files:**
 - Create: `src/main/java/cumt/zongzuo/community/recommendation/dto/RecommendationItem.java`
 - Create: `src/main/java/cumt/zongzuo/community/recommendation/dto/RecommendationFeedResponse.java`
+- Create: `src/main/java/cumt/zongzuo/community/recommendation/dto/RecommendationMode.java`
 - Create: `src/main/java/cumt/zongzuo/community/recommendation/dto/RecommendationSession.java`
+- Create: `src/main/java/cumt/zongzuo/community/recommendation/dto/RecommendationSessionItem.java`
 - Create: `src/main/java/cumt/zongzuo/community/recommendation/dto/RecommendationViewRequest.java`
 - Create: `src/main/java/cumt/zongzuo/community/recommendation/entity/RecommendationExposure.java`
 - Create: `src/main/java/cumt/zongzuo/community/recommendation/mapper/RecommendationExposureMapper.java`
 - Create: `src/main/java/cumt/zongzuo/community/recommendation/service/RecommendationExposureService.java`
 - Create: `src/main/java/cumt/zongzuo/community/recommendation/service/RecommendationSessionStore.java`
+- Create: `src/main/java/cumt/zongzuo/community/recommendation/service/RecommendationSessionUnavailableException.java`
 - Create: `src/main/java/cumt/zongzuo/community/recommendation/service/RecommendationFeedService.java`
 - Create: `src/main/java/cumt/zongzuo/community/recommendation/controller/RecommendationController.java`
 - Modify: `src/main/java/cumt/zongzuo/community/recommendation/service/RecommendationCandidateService.java`
@@ -578,11 +581,13 @@ git commit -m "feat: rank personalized recommendation candidates"
 - Modify: `src/main/java/cumt/zongzuo/community/recommendation/mapper/RecommendationEventOutboxMapper.java`
 - Modify: `src/main/java/cumt/zongzuo/community/mapper/ArticleMapper.java`
 - Modify: `src/main/resources/mapper/ArticleMapper.xml`
+- Modify: `script.sql`
 - Modify: `src/test/java/cumt/zongzuo/community/security/SecurityIntegrationTest.java`
 - Test: `src/test/java/cumt/zongzuo/community/recommendation/RecommendationFeedIntegrationTest.java`
+- Test: `src/test/java/cumt/zongzuo/community/recommendation/service/RecommendationChronologicalFeaturesTest.java`
 
 **Interfaces:**
-- Consumes Task 2 `RecommendationEventOutboxService`, Task 1 properties, Task 4 candidate feature assembly and existing `ArticleService#getFeedArticles`; this task deliberately serves only cold-start chronology until Task 6 adds a validated model.
+- Consumes Task 2 `RecommendationEventOutboxService`, Task 1 properties, Task 4 article-derived feature assembly and the existing chronological feed ordering contract; this task deliberately serves only cold-start chronology until Task 6 adds a validated model.
 - Produces `GET /api/recommendations/feed` and `POST /api/recommendations/views/{articleId}` for the frontend task.
 
 - [ ] **Step 1: Write failing API integration tests**
@@ -622,9 +627,9 @@ Expected: FAIL with 404 before controller implementation; after adding a control
 
 - [ ] **Step 3: Implement session paging, validation and fallback**
 
-Use JSON value storage under `recommendation:session:{uuid}` with `RecommendationSession(userId, List<RecommendationItem> items, RecommendationMode mode)`, expiry from `sessionTtlMinutes`, and a Base64URL cursor built as `uuid + ":" + offset`. On first page create a `COLD_START` session from up to 100 published, non-deleted articles ordered by `(create_time DESC, id DESC)` through a parameterized mapper query with no user-specific filtering; this is the same chronology semantics as the latest feed but large enough for stable multi-page scrolling. Task 6 replaces only this session-construction branch after it has a validated model. `RecommendationExposure` has `id`, `userId`, `articleId`, `sessionId`, `source`, the five numeric feature columns from the SQL contract, `exposedAt`, and `createTime`.
+Use JSON value storage under `recommendation:session:{uuid}` with `RecommendationSession(userId, List<RecommendationSessionItem> items, RecommendationMode mode)`, expiry from `sessionTtlMinutes`, and a Base64URL cursor built as `uuid + ":" + offset`. `RecommendationSessionItem` contains only `articleId`, `reason` and `source`; never store full article bodies or exposure IDs in Redis. On first page create a `COLD_START` session from up to 100 article IDs selected by a parameterized `SELECT id` query over published, non-deleted rows ordered by `(create_time DESC, id DESC)`. Add the matching `(status, is_deleted, create_time DESC, id DESC)` database index. This is the same chronology semantics as the latest feed but large enough for stable multi-page scrolling. Task 6 replaces only this session-construction branch after it has a validated model. `RecommendationExposure` has `id`, `userId`, `articleId`, `sessionId`, `source`, the five numeric feature columns from the SQL contract, `exposedAt`, and `createTime`.
 
-Store the ordered session candidates with null exposure IDs, then slice the requested page. Immediately before that page is returned, use Task 4's feature assembly only for the articles in the slice, call `RecommendationExposureService.record(sessionId, userId, candidate)`, persist the real current feature values with source `CHRONOLOGICAL`, and replace each returned item with its exposure ID. `record` must be idempotent for `(user_id, article_id, session_id)` and return the existing ID on a repeated cursor request. Never persist exposure rows for candidates that have not been returned to the user. On later pages, decode safely, reject malformed/missing/other-user sessions into chronological fallback, and slice without recomputing rank.
+Slice the requested page IDs, batch-hydrate only that slice from MySQL while preserving session order, and batch-fill author name/avatar through `UserService#getUserMapCached`; on Redis cache failure, fall back to one `listByIds` database query. Immediately before that page is returned, use Task 4's Redis-independent chronological feature assembly for the hydrated articles and call transactional `RecommendationExposureService.recordPage`. The whole page of exposure rows commits or rolls back together. Its upsert handles only the unique identity conflict, is idempotent for `(user_id, article_id, session_id)`, and returns the existing IDs on a repeated cursor request; other database errors must propagate. Never persist exposure rows for candidates that have not been returned to the user. On later pages, decode with a bounded input length, reject malformed/missing/other-user sessions into chronological fallback, and slice without recomputing rank.
 
 ```java
 public RecommendationFeedResponse feed(Long userId, String cursor, int requestedSize) {
@@ -632,14 +637,14 @@ public RecommendationFeedResponse feed(Long userId, String cursor, int requested
     if (!properties.isEnabled()) return fallback(cursor, size, RecommendationMode.FALLBACK);
     try {
         return cursor == null ? createSession(userId, size) : pageSession(userId, cursor, size);
-    } catch (DataAccessException | RedisConnectionFailureException exception) {
+    } catch (InvalidSessionCursorException | RecommendationSessionUnavailableException exception) {
         log.warn("Recommendation unavailable; serving chronological fallback", exception);
         return fallback(cursor, size, RecommendationMode.FALLBACK);
     }
 }
 ```
 
-`fallback` and `coldStart` must call `articleService.getFeedArticles(lastCreateTime)` and wrap each result as `new RecommendationItem(article, null, "CHRONOLOGICAL", exposureId)`; preserve a time cursor encoded as `fallback:{lastCreateTime}`. The only distinction is the returned mode. A fallback page gets its own page-scoped session UUID and records exposure only for the articles actually returned. If Redis profiles are unavailable, affinities/similarity are zero at serving time while heat/freshness remain article-derived; do not fabricate non-zero profile features. Do not introduce a public security permit rule for `/api/recommendations/**`.
+`fallback` uses the parameterized chronology mapper with a composite `(create_time, article_id)` cursor so equal timestamps neither duplicate nor skip articles. The cursor is bound to the authenticated user. The same fallback cursor deterministically identifies its returned page so a network replay reuses the same exposure IDs rather than duplicating training rows. The only semantic distinction from cold start is `mode=FALLBACK`. A fallback page records only the articles actually returned. If Redis profiles are unavailable, affinities/similarity are zero at serving time while heat/freshness remain article-derived; do not fabricate non-zero profile features. Do not introduce a public security permit rule for `/api/recommendations/**`.
 
 For effective views, validate the requested article exists, is public and not deleted with a non-mutating mapper lookup (do not call `ArticleService#getDetail`, which increments the normal view counter), then enqueue through `RecommendationEventOutboxService` with exactly this daily key:
 
