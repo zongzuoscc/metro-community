@@ -56,6 +56,7 @@ public class RecommendationFeedService {
     private final RecommendationMetricsService metricsService;
     private final RecommendationEligibilityService eligibilityService;
     private final RecommendationModelStore modelStore;
+    private final RecommendationFeedRateLimiter rateLimiter;
     private final Clock clock;
 
     @Autowired
@@ -68,13 +69,14 @@ public class RecommendationFeedService {
                                      UserService userService,
                                      RecommendationEventOutboxService outboxService,
                                      RecommendationMetricsService metricsService,
+                                     RecommendationFeedRateLimiter rateLimiter,
                                      ObjectProvider<Clock> clockProvider,
                                      ObjectProvider<RecommendationEligibilityService> eligibilityProvider,
                                      ObjectProvider<RecommendationModelStore> modelStoreProvider) {
         this(properties, sessionStore, articleMapper, candidateService, rankingService, exposureService,
                 userService, outboxService, metricsService,
                 clockProvider.getIfAvailable(Clock::systemDefaultZone),
-                eligibilityProvider.getIfAvailable(), modelStoreProvider.getIfAvailable());
+                eligibilityProvider.getIfAvailable(), modelStoreProvider.getIfAvailable(), rateLimiter);
     }
 
     public RecommendationFeedService(RecommendationProperties properties,
@@ -88,7 +90,7 @@ public class RecommendationFeedService {
                                      RecommendationMetricsService metricsService,
                                      Clock clock) {
         this(properties, sessionStore, articleMapper, candidateService, rankingService, exposureService, userService,
-                outboxService, metricsService, clock, null, null);
+                outboxService, metricsService, clock, null, null, null);
     }
 
     public RecommendationFeedService(RecommendationProperties properties,
@@ -98,6 +100,18 @@ public class RecommendationFeedService {
                                      UserService userService, RecommendationEventOutboxService outboxService,
                                      RecommendationMetricsService metricsService, Clock clock,
                                      RecommendationEligibilityService eligibilityService, RecommendationModelStore modelStore) {
+        this(properties, sessionStore, articleMapper, candidateService, rankingService, exposureService, userService,
+                outboxService, metricsService, clock, eligibilityService, modelStore, null);
+    }
+
+    public RecommendationFeedService(RecommendationProperties properties,
+                                     RecommendationSessionStore sessionStore, ArticleMapper articleMapper,
+                                     RecommendationCandidateService candidateService, RecommendationRankingService rankingService,
+                                     RecommendationExposureService exposureService,
+                                     UserService userService, RecommendationEventOutboxService outboxService,
+                                     RecommendationMetricsService metricsService, Clock clock,
+                                     RecommendationEligibilityService eligibilityService, RecommendationModelStore modelStore,
+                                     RecommendationFeedRateLimiter rateLimiter) {
         this.properties = properties;
         this.sessionStore = sessionStore;
         this.articleMapper = articleMapper;
@@ -110,10 +124,14 @@ public class RecommendationFeedService {
         this.clock = clock;
         this.eligibilityService = eligibilityService;
         this.modelStore = modelStore;
+        this.rateLimiter = rateLimiter;
     }
 
     public RecommendationFeedResponse feed(Long userId, String cursor, int requestedSize) {
         int size = Math.clamp(requestedSize, 1, properties.getMaxPageSize());
+        if (rateLimiter != null) {
+            rateLimiter.checkRequest(userId);
+        }
         if (!properties.isEnabled()) {
             return fallback(userId, cursor, size);
         }

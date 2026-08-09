@@ -23,6 +23,7 @@ import cumt.zongzuo.community.recommendation.service.RecommendationCandidate;
 import cumt.zongzuo.community.recommendation.service.RecommendationExposureService;
 import cumt.zongzuo.community.recommendation.service.RecommendationEventOutboxService;
 import cumt.zongzuo.community.recommendation.service.RecommendationFeedService;
+import cumt.zongzuo.community.recommendation.service.RecommendationFeedRateLimiter;
 import cumt.zongzuo.community.recommendation.service.RecommendationEligibilityService;
 import cumt.zongzuo.community.recommendation.service.RecommendationMetricsService;
 import cumt.zongzuo.community.recommendation.service.RecommendationRankingService;
@@ -147,6 +148,8 @@ class RecommendationFeedIntegrationTest extends IntegrationTestSupport {
     void cleanAndSeedUsers() {
         properties.setEnabled(true);
         properties.setMaxPageSize(20);
+        properties.setFeedRequestLimit(20);
+        properties.setFeedRateWindowSeconds(60);
         jdbcTemplate.update("DELETE FROM recommendation_event_outbox");
         jdbcTemplate.update("DELETE FROM user_article_event");
         jdbcTemplate.update("DELETE FROM recommendation_exposure");
@@ -169,6 +172,66 @@ class RecommendationFeedIntegrationTest extends IntegrationTestSupport {
     void restoreProperties() {
         properties.setEnabled(false);
         properties.setMaxPageSize(20);
+        properties.setFeedRequestLimit(20);
+        properties.setFeedRateWindowSeconds(60);
+    }
+
+    @Test
+    void feedRequestRateLimitIsPerUserAtomicAndReturnsHttp429BeforeWritingMoreExposures() {
+        properties.setFeedRequestLimit(2);
+        properties.setFeedRateWindowSeconds(60);
+        insertArticles(4);
+
+        ResponseEntity<String> first = getFeedOverHttp(USER_ID, 1);
+        ResponseEntity<String> second = getFeedOverHttp(USER_ID, 1);
+        ResponseEntity<String> rejected = getFeedOverHttp(USER_ID, 1);
+        ResponseEntity<String> otherUser = getFeedOverHttp(OTHER_USER_ID, 1);
+
+        assertThat(first.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(second.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(rejected.getStatusCode()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
+        assertThat(rejected.getBody()).contains("\"code\":429");
+        assertThat(otherUser.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(exposureCount()).isEqualTo(3);
+        String key = "recommendation:feed:request:" + USER_ID;
+        assertThat(redisTemplate.opsForValue().get(key)).isEqualTo("3");
+        assertThat(redisTemplate.getExpire(key)).isPositive().isLessThanOrEqualTo(60L);
+    }
+
+    @Test
+    void cursorPagesCannotBypassThePerUserExposureWriteRateLimit() {
+        properties.setFeedRequestLimit(2);
+        insertArticles(4);
+
+        RecommendationFeedResponse first = feedService.feed(USER_ID, null, 1);
+        RecommendationFeedResponse second = feedService.feed(USER_ID, first.nextCursor(), 1);
+
+        assertThatThrownBy(() -> feedService.feed(USER_ID, second.nextCursor(), 1))
+                .isInstanceOfSatisfying(org.springframework.web.server.ResponseStatusException.class,
+                        failure -> assertThat(failure.getStatusCode()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS));
+        assertThat(exposureCount()).isEqualTo(2);
+    }
+
+    @Test
+    void rateLimitRedisFailureFailsOpenAndPreservesTheExistingFallbackFeed() throws Exception {
+        properties.setEnabled(false);
+        insertArticles(2);
+        LettuceConnectionFactory failingFactory = failingRedisFactory(reserveThenClosePort());
+        try {
+            RecommendationFeedRateLimiter failingLimiter = new RecommendationFeedRateLimiter(
+                    new StringRedisTemplate(failingFactory), properties);
+            RecommendationFeedService isolated = new RecommendationFeedService(
+                    properties, sessionStore, articleMapper, candidateService, rankingService, exposureService,
+                    userService, outboxService, metricsService, clock, eligibilityService, null, failingLimiter);
+
+            RecommendationFeedResponse response = isolated.feed(USER_ID, null, 1);
+
+            assertThat(response.mode()).isEqualTo(RecommendationMode.FALLBACK);
+            assertThat(response.items()).hasSize(1);
+            assertThat(exposureCount()).isOne();
+        } finally {
+            failingFactory.destroy();
+        }
     }
 
     @Test
@@ -513,9 +576,11 @@ class RecommendationFeedIntegrationTest extends IntegrationTestSupport {
         try {
             RecommendationSessionStore failingStore = new RecommendationSessionStore(
                     new StringRedisTemplate(failingFactory), objectMapper, properties);
+            RecommendationFeedRateLimiter failingLimiter = new RecommendationFeedRateLimiter(
+                    new StringRedisTemplate(failingFactory), properties);
             RecommendationFeedService serviceWithFailingSessionStore = new RecommendationFeedService(
                     properties, failingStore, articleMapper, candidateService, rankingService, exposureService,
-                    userService, outboxService, metricsService, clock);
+                    userService, outboxService, metricsService, clock, null, null, failingLimiter);
 
             RecommendationFeedResponse response = serviceWithFailingSessionStore.feed(USER_ID, null, 2);
 
@@ -654,6 +719,11 @@ class RecommendationFeedIntegrationTest extends IntegrationTestSupport {
         return restTemplate.postForEntity(url("/api/recommendations/views/" + articleId),
                 new HttpEntity<>(objectMapper.writeValueAsString(new RecommendationViewRequest(exposureId)), headers),
                 String.class);
+    }
+
+    private ResponseEntity<String> getFeedOverHttp(long userId, int size) {
+        return restTemplate.exchange(url("/api/recommendations/feed?size=" + size), HttpMethod.GET,
+                new HttpEntity<>(bearerHeaders(userId)), String.class);
     }
 
     private HttpHeaders bearerHeaders(long userId) {

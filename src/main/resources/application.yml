@@ -109,12 +109,24 @@ recommendation:
   session-ttl-minutes: ${RECOMMENDATION_SESSION_TTL_MINUTES:10}
   profile-ttl-days: ${RECOMMENDATION_PROFILE_TTL_DAYS:35}
   profile-window-days: ${RECOMMENDATION_PROFILE_WINDOW_DAYS:30}
+  profile-fact-limit: ${RECOMMENDATION_PROFILE_FACT_LIMIT:10000}
+  profile-tag-association-limit: ${RECOMMENDATION_PROFILE_TAG_ASSOCIATION_LIMIT:50000}
+  profile-max-tags: ${RECOMMENDATION_PROFILE_MAX_TAGS:100}
+  profile-max-authors: ${RECOMMENDATION_PROFILE_MAX_AUTHORS:100}
+  profile-repair-enabled: ${RECOMMENDATION_PROFILE_REPAIR_ENABLED:true}
+  profile-repair-batch-size: ${RECOMMENDATION_PROFILE_REPAIR_BATCH_SIZE:100}
+  profile-repair-delay-ms: ${RECOMMENDATION_PROFILE_REPAIR_DELAY_MS:30000}
+  profile-repair-initial-delay-ms: ${RECOMMENDATION_PROFILE_REPAIR_INITIAL_DELAY_MS:30000}
   default-page-size: ${RECOMMENDATION_DEFAULT_PAGE_SIZE:10}
   max-page-size: ${RECOMMENDATION_MAX_PAGE_SIZE:20}
+  feed-request-limit: ${RECOMMENDATION_FEED_REQUEST_LIMIT:20}
+  feed-rate-window-seconds: ${RECOMMENDATION_FEED_RATE_WINDOW_SECONDS:60}
   minimum-user-events: ${RECOMMENDATION_MINIMUM_USER_EVENTS:20}
   minimum-global-events: ${RECOMMENDATION_MINIMUM_GLOBAL_EVENTS:500}
   model-window-days: ${RECOMMENDATION_MODEL_WINDOW_DAYS:90}
   label-window-days: ${RECOMMENDATION_LABEL_WINDOW_DAYS:7}
   model-max-age-days: ${RECOMMENDATION_MODEL_MAX_AGE_DAYS:7}
   training-sample-limit: ${RECOMMENDATION_TRAINING_SAMPLE_LIMIT:50000}
+  training-max-samples-per-user: ${RECOMMENDATION_TRAINING_MAX_SAMPLES_PER_USER:500}
+  training-fact-scan-limit: ${RECOMMENDATION_TRAINING_FACT_SCAN_LIMIT:200000}
   model-directory: ${RECOMMENDATION_MODEL_DIRECTORY:data/recommendation-models}

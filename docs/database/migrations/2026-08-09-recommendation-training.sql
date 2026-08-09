@@ -19,6 +19,18 @@ CREATE TABLE IF NOT EXISTS user_article_event (
   INDEX idx_user_author_event_at (user_id, target_author_id, occurred_at DESC, id DESC)
 ) COMMENT='个性化推荐行为事实' CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS recommendation_profile_checkpoint (
+  user_id BIGINT PRIMARY KEY,
+  requested_event_id BIGINT NOT NULL,
+  rebuilt_event_id BIGINT NOT NULL DEFAULT 0,
+  retry_count INT NOT NULL DEFAULT 0,
+  next_attempt_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_error VARCHAR(500) NULL,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_profile_checkpoint_repair (next_attempt_at, user_id)
+) COMMENT='推荐画像持久化重建检查点' CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS recommendation_event_outbox (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   user_id BIGINT NOT NULL,
@@ -97,3 +109,16 @@ PREPARE migration_statement FROM @sql; EXECUTE migration_statement; DEALLOCATE P
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=@schema_name AND table_name='user_article_event' AND index_name='idx_user_author_event_at') = 0,
   'CREATE INDEX idx_user_author_event_at ON user_article_event (user_id, target_author_id, occurred_at DESC, id DESC)', 'SELECT 1');
 PREPARE migration_statement FROM @sql; EXECUTE migration_statement; DEALLOCATE PREPARE migration_statement;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=@schema_name AND table_name='recommendation_profile_checkpoint' AND index_name='idx_profile_checkpoint_repair') = 0,
+  'CREATE INDEX idx_profile_checkpoint_repair ON recommendation_profile_checkpoint (next_attempt_at, user_id)', 'SELECT 1');
+PREPARE migration_statement FROM @sql; EXECUTE migration_statement; DEALLOCATE PREPARE migration_statement;
+
+INSERT INTO recommendation_profile_checkpoint
+  (user_id,requested_event_id,rebuilt_event_id,retry_count,next_attempt_at,last_error,create_time,update_time)
+SELECT user_id,MAX(id),0,0,NOW(),NULL,NOW(),NOW()
+FROM user_article_event GROUP BY user_id
+ON DUPLICATE KEY UPDATE
+  next_attempt_at=IF(VALUES(requested_event_id)>requested_event_id,
+                     LEAST(next_attempt_at,VALUES(next_attempt_at)),next_attempt_at),
+  requested_event_id=GREATEST(requested_event_id,VALUES(requested_event_id)),
+  update_time=VALUES(update_time);

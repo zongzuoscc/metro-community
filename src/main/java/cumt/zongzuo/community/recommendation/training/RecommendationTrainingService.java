@@ -44,6 +44,9 @@ public class RecommendationTrainingService {
         if (rows.status() == RecommendationTrainingDataset.Status.NO_DATA) {
             return TrainingResult.notPublished("NO_DATA", samples, positives, negatives);
         }
+        if (rows.status() == RecommendationTrainingDataset.Status.FACT_SCAN_LIMIT_EXCEEDED) {
+            return TrainingResult.notPublished("FACT_SCAN_LIMIT_EXCEEDED", samples, positives, negatives);
+        }
         if (rows.isEmpty()) return TrainingResult.notPublished("NO_DATA", samples, positives, negatives);
         if (!rows.hasBothLabels()) return TrainingResult.notPublished("SPLIT_MISSING_LABEL", samples, positives, negatives);
         try {

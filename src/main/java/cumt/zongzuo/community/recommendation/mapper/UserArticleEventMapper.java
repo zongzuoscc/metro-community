@@ -30,4 +30,7 @@ public interface UserArticleEventMapper extends BaseMapper<UserArticleEvent> {
             "WHERE user_id = #{userId} AND article_id IS NOT NULL AND occurred_at >= #{since}")
     List<Long> selectRecentlyInteractedArticleIds(@Param("userId") Long userId,
                                                    @Param("since") LocalDateTime since);
+
+    @Select("SELECT id FROM user_article_event WHERE dedupe_key = #{dedupeKey} AND user_id = #{userId}")
+    Long selectIdByDedupeKey(@Param("dedupeKey") String dedupeKey, @Param("userId") Long userId);
 }

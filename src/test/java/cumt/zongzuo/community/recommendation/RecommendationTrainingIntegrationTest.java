@@ -49,10 +49,62 @@ class RecommendationTrainingIntegrationTest extends IntegrationTestSupport {
     @BeforeEach
     void clean() {
         properties.setTrainingSampleLimit(50_000);
+        properties.setTrainingMaxSamplesPerUser(500);
+        properties.setTrainingFactScanLimit(200_000);
         jdbcTemplate.update("DELETE FROM user_article_event");
         jdbcTemplate.update("DELETE FROM recommendation_exposure");
         jdbcTemplate.update("DELETE FROM article");
         article(1, 11); article(2, 11);
+    }
+
+    @Test
+    void cohortCapsEachUserBeforeApplyingTheGlobalSampleLimit() {
+        properties.setTrainingSampleLimit(10);
+        properties.setTrainingMaxSamplesPerUser(2);
+        article(3, 12);
+        article(4, 13);
+        article(5, 14);
+        LocalDateTime start = LocalDateTime.of(2026, 7, 20, 20, 0);
+        exposureForUser(1, 1, start, 1D);
+        exposureForUser(1, 2, start.plusDays(1), 2D);
+        exposureForUser(1, 3, start.plusDays(2), 3D);
+        exposureForUser(2, 4, start.plusDays(3), 4D);
+        exposureForUser(2, 5, start.plusDays(4), 5D);
+
+        RecommendationTrainingDataset.Dataset rows = dataset.load();
+
+        assertThat(rows.sampleCount()).isEqualTo(4);
+        assertThat(all(rows).map(row -> row.features().tagAffinity()))
+                .containsExactlyInAnyOrder(2D, 3D, 4D, 5D);
+    }
+
+    @Test
+    void factAttributionAcceptsTheExactScanCapButRejectsCapPlusOneAsIncomplete(@TempDir Path modelDirectory) {
+        properties.setTrainingSampleLimit(1);
+        properties.setTrainingFactScanLimit(2);
+        LocalDateTime exposedAt = LocalDateTime.of(2026, 7, 25, 20, 0);
+        exposure(1, exposedAt, 0.5D);
+        fact(2001, exposedAt.plusMinutes(1), "bounded-fact-1");
+        fact(2002, exposedAt.plusMinutes(1), "bounded-fact-2");
+
+        assertThat(dataset.load().status()).isEqualTo(RecommendationTrainingDataset.Status.READY);
+
+        fact(2003, exposedAt.plusMinutes(1), "bounded-fact-overflow");
+        RecommendationTrainingDataset.Dataset overflow = dataset.load();
+        RecommendationModelStore store = new RecommendationModelStore(modelDirectory, objectMapper, 7);
+        RecommendationModel active = validModel("before-fact-overflow");
+        assertThat(store.publish(active).published()).isTrue();
+        RecommendationTrainingService training = new RecommendationTrainingService(
+                dataset, store, Clock.fixed(NOW, SHANGHAI));
+
+        RecommendationTrainingService.TrainingResult result = training.trainAndPublish();
+
+        assertThat(overflow.status()).isEqualTo(
+                RecommendationTrainingDataset.Status.FACT_SCAN_LIMIT_EXCEEDED);
+        assertThat(overflow.isEmpty()).isTrue();
+        assertThat(result.published()).isFalse();
+        assertThat(result.reason()).isEqualTo("FACT_SCAN_LIMIT_EXCEEDED");
+        assertThat(store.loadActive(NOW).model()).contains(active);
     }
 
     @Test
@@ -280,12 +332,16 @@ class RecommendationTrainingIntegrationTest extends IntegrationTestSupport {
             FileSystemResource migration = new FileSystemResource("docs/database/migrations/2026-08-09-recommendation-training.sql");
 
             ScriptUtils.executeSqlScript(connection, migration);
+            statement.execute("INSERT INTO user_article_event "
+                    + "(user_id,article_id,event_type,occurred_at,dedupe_key,source) "
+                    + "VALUES (99,1,'VIEW',NOW(),'migration-profile-backfill','test')");
             ScriptUtils.executeSqlScript(connection, migration);
 
             try (var result = statement.executeQuery("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='"
-                    + schema + "' AND table_name IN ('user_article_event','recommendation_event_outbox','recommendation_exposure')")) {
+                    + schema + "' AND table_name IN ('user_article_event','recommendation_event_outbox','recommendation_exposure',"
+                    + "'recommendation_profile_checkpoint')")) {
                 result.next();
-                assertThat(result.getInt(1)).isEqualTo(3);
+                assertThat(result.getInt(1)).isEqualTo(4);
             }
             try (var result = statement.executeQuery("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='"
                     + schema + "' AND ((table_name='recommendation_exposure' AND column_name IN "
@@ -295,9 +351,16 @@ class RecommendationTrainingIntegrationTest extends IntegrationTestSupport {
             }
             try (var result = statement.executeQuery("SELECT COUNT(DISTINCT index_name) FROM information_schema.statistics WHERE table_schema='"
                     + schema + "' AND index_name IN ('idx_exposure_training','idx_user_article_event_at','idx_user_author_event_at',"
-                    + "'idx_event_occurred_at','idx_exposure_user_article_at','idx_article_recommendation_feed')")) {
+                    + "'idx_event_occurred_at','idx_exposure_user_article_at','idx_article_recommendation_feed',"
+                    + "'idx_profile_checkpoint_repair')")) {
                 result.next();
-                assertThat(result.getInt(1)).isEqualTo(6);
+                assertThat(result.getInt(1)).isEqualTo(7);
+            }
+            try (var result = statement.executeQuery("SELECT requested_event_id,rebuilt_event_id "
+                    + "FROM recommendation_profile_checkpoint WHERE user_id=99")) {
+                assertThat(result.next()).isTrue();
+                assertThat(result.getLong(1)).isPositive();
+                assertThat(result.getLong(2)).isZero();
             }
             statement.execute("USE " + originalSchema);
         } finally {
@@ -347,6 +410,10 @@ class RecommendationTrainingIntegrationTest extends IntegrationTestSupport {
     }
     private void exposure(long article, LocalDateTime time, Double baseline, double tagAffinity) {
         jdbcTemplate.update("INSERT INTO recommendation_exposure (user_id,article_id,session_id,source,tag_affinity,author_affinity,similar_score,heat_score,freshness_score,source_follow,source_tag,source_similar,source_explore,baseline_score,exposed_at,create_time) VALUES (1,?,UUID(),'TAG',?,0,0,0,0,0,1,0,0,?,?,?)", article, tagAffinity, baseline, time, time);
+    }
+    private void exposureForUser(long user, long article, LocalDateTime time, double tagAffinity) {
+        jdbcTemplate.update("INSERT INTO recommendation_exposure (user_id,article_id,session_id,source,tag_affinity,author_affinity,similar_score,heat_score,freshness_score,source_follow,source_tag,source_similar,source_explore,baseline_score,exposed_at,create_time) VALUES (?,?,UUID(),'TAG',?,0,0,0,0,0,1,0,0,1,?,?)",
+                user, article, tagAffinity, time, time);
     }
     @TestConfiguration static class FixedClockConfiguration { @Bean @Primary Clock clock() { return Clock.fixed(NOW, SHANGHAI); } }
 }

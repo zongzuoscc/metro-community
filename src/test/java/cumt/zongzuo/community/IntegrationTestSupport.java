@@ -87,6 +87,7 @@ public abstract class IntegrationTestSupport {
         registry.add("spring.rabbitmq.password", RABBIT::getAdminPassword);
         registry.add("spring.rabbitmq.listener.simple.auto-startup", () -> "false");
         registry.add("recommendation.outbox.dispatch-enabled", () -> "false");
+        registry.add("recommendation.profile-repair-initial-delay-ms", () -> "3600000");
         registry.add("spring.elasticsearch.uris", ELASTICSEARCH::getHttpHostAddress);
         registry.add("app.security.jwt-secret", () -> "test-secret-with-at-least-thirty-two-characters");
         registry.add("app.security.token-ttl", () -> "PT30M");

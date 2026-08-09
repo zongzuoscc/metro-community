@@ -203,6 +203,18 @@ CREATE TABLE user_article_event (
     INDEX idx_user_author_event_at (user_id, target_author_id, occurred_at DESC, id DESC)
 ) COMMENT='个性化推荐行为事实';
 
+CREATE TABLE recommendation_profile_checkpoint (
+    user_id BIGINT PRIMARY KEY,
+    requested_event_id BIGINT NOT NULL,
+    rebuilt_event_id BIGINT NOT NULL DEFAULT 0,
+    retry_count INT NOT NULL DEFAULT 0,
+    next_attempt_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_error VARCHAR(500) NULL,
+    create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_profile_checkpoint_repair (next_attempt_at, user_id)
+) COMMENT='推荐画像持久化重建检查点';
+
 CREATE TABLE recommendation_event_outbox (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     user_id BIGINT NOT NULL,

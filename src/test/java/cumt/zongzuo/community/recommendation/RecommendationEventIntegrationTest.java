@@ -2,12 +2,16 @@ package cumt.zongzuo.community.recommendation;
 
 import cumt.zongzuo.community.IntegrationTestSupport;
 import cumt.zongzuo.community.recommendation.dto.RecommendationEventCommand;
+import cumt.zongzuo.community.recommendation.config.RecommendationProperties;
+import cumt.zongzuo.community.recommendation.entity.UserArticleEvent;
 import cumt.zongzuo.community.recommendation.entity.RecommendationEventType;
-import cumt.zongzuo.community.recommendation.mapper.UserArticleEventMapper;
 import cumt.zongzuo.community.recommendation.mq.RecommendationEventConsumer;
+import cumt.zongzuo.community.recommendation.service.RecommendationFactPersistenceService;
 import cumt.zongzuo.community.recommendation.service.RecommendationMetricsService;
 import cumt.zongzuo.community.recommendation.service.RecommendationProfileService;
+import cumt.zongzuo.community.recommendation.service.RecommendationProfileRecoveryService;
 import cumt.zongzuo.community.recommendation.task.RecommendationOutboxDispatcher;
+import cumt.zongzuo.community.recommendation.task.RecommendationProfileRepairTask;
 import io.lettuce.core.ClientOptions;
 import io.lettuce.core.SocketOptions;
 import org.junit.jupiter.api.AfterAll;
@@ -64,9 +68,15 @@ class RecommendationEventIntegrationTest extends IntegrationTestSupport {
     @Autowired
     private RecommendationEventConsumer consumer;
     @Autowired
-    private UserArticleEventMapper eventMapper;
-    @Autowired
     private RecommendationMetricsService metricsService;
+    @Autowired
+    private RecommendationProperties properties;
+    @Autowired
+    private RecommendationProfileRecoveryService profileRecoveryService;
+    @Autowired
+    private RecommendationProfileRepairTask profileRepairTask;
+    @Autowired
+    private RecommendationFactPersistenceService factPersistenceService;
     @Autowired
     private Clock clock;
 
@@ -82,6 +92,13 @@ class RecommendationEventIntegrationTest extends IntegrationTestSupport {
 
     @BeforeEach
     void cleanAndSeed() {
+        properties.setProfileFactLimit(10_000);
+        properties.setProfileTagAssociationLimit(50_000);
+        properties.setProfileMaxTags(100);
+        properties.setProfileMaxAuthors(100);
+        properties.setProfileRepairEnabled(true);
+        properties.setProfileRepairBatchSize(100);
+        jdbcTemplate.update("DELETE FROM recommendation_profile_checkpoint");
         amqpAdmin.purgeQueue(RecommendationOutboxDispatcher.EVENT_QUEUE, true);
         jdbcTemplate.update("DELETE FROM user_article_event");
         jdbcTemplate.update("DELETE FROM article_tag");
@@ -154,7 +171,7 @@ class RecommendationEventIntegrationTest extends IntegrationTestSupport {
             RecommendationMetricsService failingMetrics = new RecommendationMetricsService(
                     new StringRedisTemplate(failingFactory), clock);
             RecommendationEventConsumer isolatedConsumer = new RecommendationEventConsumer(
-                    eventMapper, profileService, failingMetrics);
+                    factPersistenceService, profileService, failingMetrics, profileRecoveryService);
 
             assertThatCode(() -> isolatedConsumer.consume(event)).doesNotThrowAnyException();
 
@@ -177,7 +194,7 @@ class RecommendationEventIntegrationTest extends IntegrationTestSupport {
                     jdbcTemplate, new StringRedisTemplate(failingFactory),
                     new cumt.zongzuo.community.recommendation.config.RecommendationProperties());
             RecommendationEventConsumer isolatedConsumer = new RecommendationEventConsumer(
-                    eventMapper, failingProfile, metricsService);
+                    factPersistenceService, failingProfile, metricsService, profileRecoveryService);
 
             assertThatThrownBy(() -> isolatedConsumer.consume(event)).isInstanceOf(DataAccessException.class);
 
@@ -208,6 +225,79 @@ class RecommendationEventIntegrationTest extends IntegrationTestSupport {
     }
 
     @Test
+    void failedProfileDeliveryLeavesDurableStaleCheckpointForAutomaticRepairWithoutAnotherEvent()
+            throws Exception {
+        RecommendationEventCommand event = event(
+                RecommendationEventType.COLLECT, ARTICLE_ID, null, "collect:durable-profile-repair");
+        LettuceConnectionFactory failingFactory = failingRedisFactory(reserveThenClosePort());
+        try {
+            RecommendationProfileService failingProfile = new RecommendationProfileService(
+                    jdbcTemplate, new StringRedisTemplate(failingFactory), properties);
+            RecommendationEventConsumer isolatedConsumer = new RecommendationEventConsumer(
+                    factPersistenceService, failingProfile, metricsService, profileRecoveryService);
+
+            assertThatThrownBy(() -> isolatedConsumer.consume(event)).isInstanceOf(DataAccessException.class);
+
+            Map<String, Object> stale = jdbcTemplate.queryForMap("""
+                    SELECT requested_event_id,rebuilt_event_id
+                    FROM recommendation_profile_checkpoint WHERE user_id=?
+                    """, USER_ID);
+            long factId = jdbcTemplate.queryForObject(
+                    "SELECT id FROM user_article_event WHERE dedupe_key=?", Long.class, event.dedupeKey());
+            assertThat(((Number) stale.get("requested_event_id")).longValue()).isEqualTo(factId);
+            assertThat(((Number) stale.get("rebuilt_event_id")).longValue()).isZero();
+
+            profileRepairTask.repairProfiles();
+
+            assertThat(profileService.profileTags(USER_ID, 5)).containsExactly(Map.entry("redis", 8D));
+            assertThat(profileService.profileAuthors(USER_ID, 5)).containsExactly(Map.entry(AUTHOR_ID, 8D));
+            assertThat(jdbcTemplate.queryForObject("""
+                    SELECT requested_event_id=rebuilt_event_id
+                    FROM recommendation_profile_checkpoint WHERE user_id=?
+                    """, Boolean.class, USER_ID)).isTrue();
+        } finally {
+            failingFactory.destroy();
+        }
+    }
+
+    @Test
+    void factInsertRollsBackWhenItsDurableProfileCheckpointCannotBeWritten() {
+        RecommendationEventCommand command = event(
+                RecommendationEventType.VIEW, ARTICLE_ID, null, "view:atomic-checkpoint");
+        UserArticleEvent fact = fact(command);
+        jdbcTemplate.execute("DROP TABLE recommendation_profile_checkpoint");
+        try {
+            assertThatThrownBy(() -> factPersistenceService.persist(fact))
+                    .isInstanceOf(DataAccessException.class);
+
+            assertThat(eventCount()).isZero();
+        } finally {
+            createProfileCheckpointTable();
+        }
+    }
+
+    @Test
+    void checkpointCompletionCannotHideANewerRequestAndRepairWorkIsBatchBounded() {
+        properties.setProfileRepairBatchSize(1);
+        profileRecoveryService.requestRebuild(USER_ID, 10L);
+        profileRecoveryService.requestRebuild(USER_ID, 11L);
+        profileRecoveryService.markRebuilt(USER_ID, 10L);
+        profileRecoveryService.requestRebuild(USER_ID + 1, 20L);
+
+        assertThat(profileRecoveryService.repairDueProfiles()).isOne();
+
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM recommendation_profile_checkpoint
+                WHERE requested_event_id>rebuilt_event_id
+                """, Integer.class)).isOne();
+        assertThat(profileRecoveryService.repairDueProfiles()).isOne();
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM recommendation_profile_checkpoint
+                WHERE requested_event_id>rebuilt_event_id
+                """, Integer.class)).isZero();
+    }
+
+    @Test
     void rebuildUsesOnlyRecentMySqlFactsAndAtomicallyReplacesBothProfiles() {
         insertEvent(event(RecommendationEventType.COLLECT, ARTICLE_ID, null, "collect:recent"));
         insertEvent(new RecommendationEventCommand(USER_ID, ARTICLE_ID, null, RecommendationEventType.LIKE,
@@ -222,6 +312,47 @@ class RecommendationEventIntegrationTest extends IntegrationTestSupport {
         assertThat(redisTemplate.getExpire(tagKey(), TimeUnit.DAYS)).isPositive();
         assertThat(redisTemplate.getExpire(authorKey(), TimeUnit.DAYS)).isPositive();
         assertThat(redisTemplate.keys("recommendation:*:" + USER_ID + ":rebuild:*")).isEmpty();
+    }
+
+    @Test
+    void rebuildCapsRecentFactsBeforeJoiningTagsAndBoundsStoredMembers() {
+        insertProfileArticle(2002L, 3002L, 4002L, "java");
+        insertProfileArticle(2003L, 3003L, 4003L, "mysql");
+        properties.setProfileFactLimit(2);
+        properties.setProfileMaxTags(1);
+        properties.setProfileMaxAuthors(1);
+        LocalDateTime now = LocalDateTime.now().withNano(0);
+        insertEvent(new RecommendationEventCommand(USER_ID, ARTICLE_ID, null, RecommendationEventType.COLLECT,
+                now.minusMinutes(2), "bounded-profile-old", "test"));
+        insertEvent(new RecommendationEventCommand(USER_ID, 2002L, null, RecommendationEventType.LIKE,
+                now.minusMinutes(1), "bounded-profile-newer", "test"));
+        insertEvent(new RecommendationEventCommand(USER_ID, 2003L, null, RecommendationEventType.VIEW,
+                now, "bounded-profile-newest", "test"));
+
+        profileService.rebuildProfile(USER_ID);
+
+        assertThat(profileService.profileTags(USER_ID, 10))
+                .containsExactly(Map.entry("java", 4D));
+        assertThat(profileService.profileAuthors(USER_ID, 10))
+                .containsExactly(Map.entry(3002L, 4D));
+        assertThat(redisTemplate.opsForZSet().zCard(tagKey())).isOne();
+        assertThat(redisTemplate.opsForZSet().zCard(authorKey())).isOne();
+    }
+
+    @Test
+    void rebuildCapsTagAssociationsBeforeAggregation() {
+        jdbcTemplate.update("INSERT INTO tag (id, name, article_count, create_time) VALUES (4002, 'java', 1, NOW())");
+        jdbcTemplate.update("INSERT INTO tag (id, name, article_count, create_time) VALUES (4003, 'mysql', 1, NOW())");
+        jdbcTemplate.update("INSERT INTO article_tag (article_id, tag_id) VALUES (?, 4002), (?, 4003)",
+                ARTICLE_ID, ARTICLE_ID);
+        properties.setProfileTagAssociationLimit(2);
+        insertEvent(event(RecommendationEventType.VIEW, ARTICLE_ID, null, "bounded-tag-associations"));
+
+        profileService.rebuildProfile(USER_ID);
+
+        assertThat(profileService.profileTags(USER_ID, 10)).hasSize(2)
+                .containsKeys("redis", "java")
+                .doesNotContainKey("mysql");
     }
 
     @Test
@@ -252,6 +383,46 @@ class RecommendationEventIntegrationTest extends IntegrationTestSupport {
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """, event.userId(), event.articleId(), event.targetAuthorId(), event.eventType().name(),
                 event.occurredAt(), event.dedupeKey(), event.source());
+    }
+
+    private UserArticleEvent fact(RecommendationEventCommand command) {
+        UserArticleEvent fact = new UserArticleEvent();
+        fact.setUserId(command.userId());
+        fact.setArticleId(command.articleId());
+        fact.setTargetAuthorId(command.targetAuthorId());
+        fact.setEventType(command.eventType().name());
+        fact.setOccurredAt(command.occurredAt());
+        fact.setDedupeKey(command.dedupeKey());
+        fact.setSource(command.source());
+        fact.setCreateTime(LocalDateTime.now().withNano(0));
+        return fact;
+    }
+
+    private void createProfileCheckpointTable() {
+        jdbcTemplate.execute("""
+                CREATE TABLE recommendation_profile_checkpoint (
+                  user_id BIGINT PRIMARY KEY,
+                  requested_event_id BIGINT NOT NULL,
+                  rebuilt_event_id BIGINT NOT NULL DEFAULT 0,
+                  retry_count INT NOT NULL DEFAULT 0,
+                  next_attempt_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  last_error VARCHAR(500) NULL,
+                  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                  INDEX idx_profile_checkpoint_repair (next_attempt_at, user_id)
+                ) COMMENT='recommendation profile rebuild checkpoint'
+                """);
+    }
+
+    private void insertProfileArticle(long articleId, long authorId, long tagId, String tagName) {
+        jdbcTemplate.update("""
+                INSERT INTO article
+                    (id, title, summary, content, author_id, status, is_deleted, create_time, update_time)
+                VALUES (?, ?, ?, ?, ?, 1, 0, NOW(), NOW())
+                """, articleId, tagName, tagName, tagName, authorId);
+        jdbcTemplate.update("INSERT INTO tag (id, name, article_count, create_time) VALUES (?, ?, 1, NOW())",
+                tagId, tagName);
+        jdbcTemplate.update("INSERT INTO article_tag (article_id, tag_id) VALUES (?, ?)", articleId, tagId);
     }
 
     private int eventCount() {

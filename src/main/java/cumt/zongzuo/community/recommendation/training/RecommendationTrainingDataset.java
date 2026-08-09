@@ -32,17 +32,25 @@ public class RecommendationTrainingDataset {
         LocalDateTime windowStart = now.minusDays(properties.getModelWindowDays());
         LocalDateTime matureBefore = now.minusDays(properties.getLabelWindowDays());
         int cohortLimit = Math.max(1, Math.min(MAX_COHORT_SIZE, properties.getTrainingSampleLimit()));
+        int perUserLimit = Math.max(1, Math.min(cohortLimit, properties.getTrainingMaxSamplesPerUser()));
         List<Row> cohort = jdbc.query("""
-                SELECT e.id,e.exposed_at,e.baseline_score,
-                  e.tag_affinity,e.author_affinity,e.similar_score,e.heat_score,e.freshness_score,
-                  e.source_follow,e.source_tag,e.source_similar,e.source_explore
-                FROM recommendation_exposure e
-                WHERE e.exposed_at >= ? AND e.exposed_at < ? AND e.baseline_score IS NOT NULL
-                ORDER BY e.exposed_at DESC,e.id DESC LIMIT ?
+                WITH per_user AS (
+                  SELECT e.id,e.exposed_at,e.baseline_score,
+                    e.tag_affinity,e.author_affinity,e.similar_score,e.heat_score,e.freshness_score,
+                    e.source_follow,e.source_tag,e.source_similar,e.source_explore,
+                    ROW_NUMBER() OVER (PARTITION BY e.user_id ORDER BY e.exposed_at DESC,e.id DESC) AS user_position
+                  FROM recommendation_exposure e
+                  WHERE e.exposed_at >= ? AND e.exposed_at < ? AND e.baseline_score IS NOT NULL
+                )
+                SELECT id,exposed_at,baseline_score,
+                  tag_affinity,author_affinity,similar_score,heat_score,freshness_score,
+                  source_follow,source_tag,source_similar,source_explore
+                FROM per_user WHERE user_position <= ?
+                ORDER BY exposed_at DESC,id DESC LIMIT ?
                 """, (rs, rowNumber) -> new Row(rs.getLong(1), rs.getObject(2, LocalDateTime.class),
                 rs.getDouble(3), new RecommendationFeatureVector(rs.getDouble(4), rs.getDouble(5),
                 rs.getDouble(6), rs.getDouble(7), rs.getDouble(8), rs.getDouble(9), rs.getDouble(10),
-                rs.getDouble(11), rs.getDouble(12))), windowStart, matureBefore, cohortLimit);
+                rs.getDouble(11), rs.getDouble(12))), windowStart, matureBefore, perUserLimit, cohortLimit);
         if (cohort.isEmpty()) {
             Integer matureExposureExists = jdbc.queryForObject("""
                     SELECT EXISTS(SELECT 1 FROM recommendation_exposure
@@ -55,7 +63,11 @@ public class RecommendationTrainingDataset {
 
         Set<Long> cohortIds = new HashSet<>(cohort.size());
         cohort.forEach(row -> cohortIds.add(row.id));
-        Set<Long> positiveIds = attributeFacts(windowStart, now, cohortIds);
+        AttributionResult attribution = attributeFacts(windowStart, now, cohortIds);
+        if (!attribution.complete()) {
+            return new Dataset(Status.FACT_SCAN_LIMIT_EXCEEDED, List.of(), List.of());
+        }
+        Set<Long> positiveIds = attribution.positiveIds();
         List<Row> chronological = cohort.stream()
                 .sorted(Comparator.comparing(Row::exposedAt).thenComparing(Row::id))
                 .toList();
@@ -66,11 +78,15 @@ public class RecommendationTrainingDataset {
         return new Dataset(Status.READY, all.subList(0, split), all.subList(split, all.size()));
     }
 
-    private Set<Long> attributeFacts(LocalDateTime windowStart, LocalDateTime now, Set<Long> cohortIds) {
+    private AttributionResult attributeFacts(LocalDateTime windowStart, LocalDateTime now, Set<Long> cohortIds) {
         Set<Long> positiveIds = new HashSet<>();
         LocalDateTime cursorTime = windowStart.minusSeconds(1);
         long cursorId = 0L;
+        int scanLimit = Math.max(1, properties.getTrainingFactScanLimit());
+        int scanned = 0;
         while (true) {
+            int remaining = scanLimit - scanned;
+            int queryLimit = remaining >= FACT_BATCH_SIZE ? FACT_BATCH_SIZE : remaining + 1;
             List<Attribution> batch = jdbc.query("""
                     WITH fact_batch AS (
                       SELECT id,user_id,article_id,target_author_id,event_type,occurred_at
@@ -80,50 +96,50 @@ public class RecommendationTrainingDataset {
                         AND (occurred_at > ? OR (occurred_at = ? AND id > ?))
                       ORDER BY occurred_at ASC,id ASC
                       LIMIT ?
-                    ), candidates AS (
-                      SELECT f.id AS fact_id,e.id AS exposure_id,e.exposed_at
-                      FROM fact_batch f
-                      JOIN recommendation_exposure e
-                        ON f.event_type <> 'FOLLOW_AUTHOR'
-                       AND e.user_id=f.user_id AND e.article_id=f.article_id
-                      WHERE e.exposed_at >= ? AND e.exposed_at <= f.occurred_at
-                        AND f.occurred_at < TIMESTAMPADD(DAY, ?, e.exposed_at)
-                      UNION ALL
-                      SELECT f.id AS fact_id,e.id AS exposure_id,e.exposed_at
-                      FROM fact_batch f
-                      JOIN article a ON f.event_type='FOLLOW_AUTHOR' AND a.author_id=f.target_author_id
-                      JOIN recommendation_exposure e ON e.user_id=f.user_id AND e.article_id=a.id
-                      WHERE e.exposed_at >= ? AND e.exposed_at <= f.occurred_at
-                        AND f.occurred_at < TIMESTAMPADD(DAY, ?, e.exposed_at)
-                    ), ranked AS (
-                      SELECT fact_id,exposure_id,
-                        ROW_NUMBER() OVER (PARTITION BY fact_id ORDER BY exposed_at DESC,exposure_id DESC) AS position
-                      FROM candidates
                     )
-                    SELECT f.id,f.occurred_at,r.exposure_id
+                    SELECT f.id,f.occurred_at,
+                      CASE WHEN f.event_type='FOLLOW_AUTHOR' THEN (
+                        SELECT e.id
+                        FROM recommendation_exposure e
+                        JOIN article a ON a.id=e.article_id
+                        WHERE e.user_id=f.user_id AND a.author_id=f.target_author_id
+                          AND e.exposed_at >= ? AND e.exposed_at <= f.occurred_at
+                          AND f.occurred_at < TIMESTAMPADD(DAY, ?, e.exposed_at)
+                        ORDER BY e.exposed_at DESC,e.id DESC LIMIT 1
+                      ) ELSE (
+                        SELECT e.id
+                        FROM recommendation_exposure e
+                        WHERE e.user_id=f.user_id AND e.article_id=f.article_id
+                          AND e.exposed_at >= ? AND e.exposed_at <= f.occurred_at
+                          AND f.occurred_at < TIMESTAMPADD(DAY, ?, e.exposed_at)
+                        ORDER BY e.exposed_at DESC,e.id DESC LIMIT 1
+                      ) END AS exposure_id
                     FROM fact_batch f
-                    LEFT JOIN ranked r ON r.fact_id=f.id AND r.position=1
                     ORDER BY f.occurred_at ASC,f.id ASC
                     """, (rs, rowNumber) -> new Attribution(rs.getLong(1),
                     rs.getObject(2, LocalDateTime.class), (Long) rs.getObject(3)),
-                    windowStart, now, cursorTime, cursorTime, cursorId, FACT_BATCH_SIZE,
+                    windowStart, now, cursorTime, cursorTime, cursorId, queryLimit,
                     windowStart, properties.getLabelWindowDays(),
                     windowStart, properties.getLabelWindowDays());
-            if (batch.isEmpty()) break;
+            if (batch.size() > remaining) {
+                return new AttributionResult(Set.of(), false);
+            }
             for (Attribution attribution : batch) {
                 if (attribution.exposureId != null && cohortIds.contains(attribution.exposureId)) {
                     positiveIds.add(attribution.exposureId);
                 }
             }
+            scanned += batch.size();
+            if (batch.size() < queryLimit) {
+                return new AttributionResult(positiveIds, true);
+            }
             Attribution last = batch.getLast();
             cursorTime = last.occurredAt;
             cursorId = last.factId;
-            if (batch.size() < FACT_BATCH_SIZE) break;
         }
-        return positiveIds;
     }
 
-    public enum Status { READY, NO_DATA, NO_REAL_BASELINE }
+    public enum Status { READY, NO_DATA, NO_REAL_BASELINE, FACT_SCAN_LIMIT_EXCEEDED }
 
     public record Dataset(Status status, List<TrainingExample> training, List<TrainingExample> validation) {
         public Dataset {
@@ -145,4 +161,5 @@ public class RecommendationTrainingDataset {
 
     private record Row(long id, LocalDateTime exposedAt, double baseline, RecommendationFeatureVector features) {}
     private record Attribution(long factId, LocalDateTime occurredAt, Long exposureId) {}
+    private record AttributionResult(Set<Long> positiveIds, boolean complete) {}
 }

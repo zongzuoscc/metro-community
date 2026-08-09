@@ -1,18 +1,20 @@
 package cumt.zongzuo.community.recommendation.service;
 
 import cumt.zongzuo.community.recommendation.config.RecommendationProperties;
-import cumt.zongzuo.community.recommendation.entity.RecommendationEventType;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.data.redis.core.DefaultTypedTuple;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.dao.DataAccessException;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 
+import java.time.Clock;
 import java.time.LocalDateTime;
-import java.time.temporal.ChronoUnit;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -24,16 +26,17 @@ import java.util.concurrent.TimeUnit;
 @Service
 public class RecommendationProfileService {
 
-    private static final double HALF_LIFE_DAYS = 14D;
     private static final int LOCK_TIMEOUT_SECONDS = 5;
     private static final DefaultRedisScript<Long> REPLACE_PROFILE_SCRIPT = new DefaultRedisScript<>("""
             if redis.call('exists', KEYS[1]) == 1 then
                 redis.call('rename', KEYS[1], KEYS[2])
+                redis.call('expire', KEYS[2], ARGV[1])
             else
                 redis.call('del', KEYS[2])
             end
             if redis.call('exists', KEYS[3]) == 1 then
                 redis.call('rename', KEYS[3], KEYS[4])
+                redis.call('expire', KEYS[4], ARGV[1])
             else
                 redis.call('del', KEYS[4])
             end
@@ -43,12 +46,25 @@ public class RecommendationProfileService {
     private final JdbcTemplate jdbcTemplate;
     private final StringRedisTemplate redisTemplate;
     private final RecommendationProperties properties;
+    private final Clock clock;
+
+    @Autowired
+    public RecommendationProfileService(JdbcTemplate jdbcTemplate, StringRedisTemplate redisTemplate,
+                                        RecommendationProperties properties, ObjectProvider<Clock> clocks) {
+        this(jdbcTemplate, redisTemplate, properties, clocks.getIfAvailable(Clock::systemDefaultZone));
+    }
 
     public RecommendationProfileService(JdbcTemplate jdbcTemplate, StringRedisTemplate redisTemplate,
                                         RecommendationProperties properties) {
+        this(jdbcTemplate, redisTemplate, properties, Clock.systemDefaultZone());
+    }
+
+    RecommendationProfileService(JdbcTemplate jdbcTemplate, StringRedisTemplate redisTemplate,
+                                 RecommendationProperties properties, Clock clock) {
         this.jdbcTemplate = jdbcTemplate;
         this.redisTemplate = redisTemplate;
         this.properties = properties;
+        this.clock = clock;
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -92,67 +108,96 @@ public class RecommendationProfileService {
     }
 
     private void rebuildWhileLocked(Long userId) {
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = LocalDateTime.now(clock).withNano(0);
         LocalDateTime cutoff = now.minusDays(properties.getProfileWindowDays());
-        List<ProfileRow> rows = jdbcTemplate.query("""
-                SELECT e.id AS event_id, e.event_type, e.occurred_at, e.target_author_id,
-                       a.author_id AS article_author_id, t.name AS tag_name
-                FROM user_article_event e
-                LEFT JOIN article a ON a.id = e.article_id
-                LEFT JOIN article_tag article_tags ON article_tags.article_id = e.article_id
-                LEFT JOIN tag t ON t.id = article_tags.tag_id
-                WHERE e.user_id = ? AND e.occurred_at >= ?
-                ORDER BY e.occurred_at ASC, e.id ASC, article_tags.id ASC
-                """, (resultSet, rowNumber) -> new ProfileRow(
-                resultSet.getLong("event_id"),
-                RecommendationEventType.valueOf(resultSet.getString("event_type")),
-                resultSet.getObject("occurred_at", LocalDateTime.class),
-                nullableLong(resultSet, "target_author_id"),
-                nullableLong(resultSet, "article_author_id"),
-                resultSet.getString("tag_name")), userId, cutoff);
+        int factLimit = Math.max(1, properties.getProfileFactLimit());
+        List<ProfileScore> tags = topTags(userId, cutoff, now, factLimit);
+        List<ProfileScore> authors = topAuthors(userId, cutoff, now, factLimit);
 
         String suffix = ":rebuild:" + UUID.randomUUID();
         String temporaryTagKey = tagKey(userId) + suffix;
         String temporaryAuthorKey = authorKey(userId) + suffix;
         try {
-            replay(rows, now, temporaryTagKey, temporaryAuthorKey);
-            setTtlIfPresent(temporaryTagKey);
-            setTtlIfPresent(temporaryAuthorKey);
+            writeProfile(temporaryTagKey, tags);
+            writeProfile(temporaryAuthorKey, authors);
             redisTemplate.execute(REPLACE_PROFILE_SCRIPT,
-                    List.of(temporaryTagKey, tagKey(userId), temporaryAuthorKey, authorKey(userId)));
+                    List.of(temporaryTagKey, tagKey(userId), temporaryAuthorKey, authorKey(userId)),
+                    Long.toString(TimeUnit.DAYS.toSeconds(Math.max(1, properties.getProfileTtlDays()))));
         } finally {
             redisTemplate.delete(List.of(temporaryTagKey, temporaryAuthorKey));
         }
     }
 
-    private void replay(List<ProfileRow> rows, LocalDateTime now, String tagKey, String authorKey) {
-        Long currentEventId = null;
-        for (ProfileRow row : rows) {
-            double delta = row.eventType().weight() * decay(row.occurredAt(), now);
-            if (!row.eventId().equals(currentEventId)) {
-                Long authorId = row.eventType() == RecommendationEventType.FOLLOW_AUTHOR
-                        ? row.targetAuthorId() : row.articleAuthorId();
-                if (authorId != null) {
-                    redisTemplate.opsForZSet().incrementScore(authorKey, authorId.toString(), delta);
-                }
-                currentEventId = row.eventId();
-            }
-            if (row.eventType() != RecommendationEventType.FOLLOW_AUTHOR && row.tagName() != null) {
-                redisTemplate.opsForZSet().incrementScore(tagKey, row.tagName(), delta);
-            }
+    private List<ProfileScore> topTags(Long userId, LocalDateTime cutoff, LocalDateTime now, int factLimit) {
+        int memberLimit = Math.max(0, properties.getProfileMaxTags());
+        if (memberLimit == 0) {
+            return List.of();
         }
+        return jdbcTemplate.query("""
+                WITH bounded_events AS (
+                  SELECT id,event_type,occurred_at,article_id
+                  FROM user_article_event
+                  WHERE user_id=? AND occurred_at>=?
+                  ORDER BY occurred_at DESC,id DESC LIMIT ?
+                ), bounded_tag_rows AS (
+                  SELECT e.event_type,e.occurred_at,t.name AS member
+                  FROM bounded_events e
+                  JOIN article_tag article_tags ON article_tags.article_id=e.article_id
+                  JOIN tag t ON t.id=article_tags.tag_id
+                  WHERE e.event_type<>'FOLLOW_AUTHOR'
+                  ORDER BY e.occurred_at DESC,e.id DESC,article_tags.id ASC
+                  LIMIT ?
+                )
+                SELECT member,SUM(
+                  CASE event_type
+                    WHEN 'VIEW' THEN 1 WHEN 'LIKE' THEN 4 WHEN 'COLLECT' THEN 8
+                    WHEN 'COMMENT' THEN 6 ELSE 0 END
+                  * EXP(-LN(2)*GREATEST(0,DATEDIFF(DATE(?),DATE(occurred_at)))/14.0)
+                ) AS score
+                FROM bounded_tag_rows
+                GROUP BY member ORDER BY score DESC,member ASC LIMIT ?
+                """, (rs, rowNumber) -> new ProfileScore(rs.getString(1), rs.getDouble(2)),
+                userId, cutoff, factLimit, Math.max(1, properties.getProfileTagAssociationLimit()), now, memberLimit);
     }
 
-    private double decay(LocalDateTime occurredAt, LocalDateTime now) {
-        long daysBetween = Math.max(0L,
-                ChronoUnit.DAYS.between(occurredAt.toLocalDate(), now.toLocalDate()));
-        return Math.exp(-Math.log(2D) * daysBetween / HALF_LIFE_DAYS);
+    private List<ProfileScore> topAuthors(Long userId, LocalDateTime cutoff, LocalDateTime now, int factLimit) {
+        int memberLimit = Math.max(0, properties.getProfileMaxAuthors());
+        if (memberLimit == 0) {
+            return List.of();
+        }
+        return jdbcTemplate.query("""
+                WITH bounded_events AS (
+                  SELECT id,event_type,occurred_at,article_id,target_author_id
+                  FROM user_article_event
+                  WHERE user_id=? AND occurred_at>=?
+                  ORDER BY occurred_at DESC,id DESC LIMIT ?
+                ), author_events AS (
+                  SELECT CASE WHEN e.event_type='FOLLOW_AUTHOR' THEN e.target_author_id
+                              ELSE a.author_id END AS member,
+                         e.event_type,e.occurred_at
+                  FROM bounded_events e LEFT JOIN article a ON a.id=e.article_id
+                )
+                SELECT member,SUM(
+                  CASE event_type
+                    WHEN 'VIEW' THEN 1 WHEN 'LIKE' THEN 4 WHEN 'COLLECT' THEN 8
+                    WHEN 'COMMENT' THEN 6 WHEN 'FOLLOW_AUTHOR' THEN 10 ELSE 0 END
+                  * EXP(-LN(2)*GREATEST(0,DATEDIFF(DATE(?),DATE(occurred_at)))/14.0)
+                ) AS score
+                FROM author_events WHERE member IS NOT NULL
+                GROUP BY member ORDER BY score DESC,member ASC LIMIT ?
+                """, (rs, rowNumber) -> new ProfileScore(rs.getString(1), rs.getDouble(2)),
+                userId, cutoff, factLimit, now, memberLimit);
     }
 
-    private void setTtlIfPresent(String key) {
-        if (Boolean.TRUE.equals(redisTemplate.hasKey(key))) {
-            redisTemplate.expire(key, properties.getProfileTtlDays(), TimeUnit.DAYS);
+    private void writeProfile(String key, List<ProfileScore> scores) {
+        if (scores.isEmpty()) {
+            return;
         }
+        Set<ZSetOperations.TypedTuple<String>> tuples = scores.stream()
+                .map(score -> (ZSetOperations.TypedTuple<String>)
+                        new DefaultTypedTuple<>(score.member(), score.score()))
+                .collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new));
+        redisTemplate.opsForZSet().add(key, tuples);
     }
 
     private <T> Map<T, Double> readProfile(String key, int limit,
@@ -171,11 +216,6 @@ public class RecommendationProfileService {
         return profile;
     }
 
-    private static Long nullableLong(java.sql.ResultSet resultSet, String column) throws java.sql.SQLException {
-        long value = resultSet.getLong(column);
-        return resultSet.wasNull() ? null : value;
-    }
-
     private static String tagKey(Long userId) {
         return "recommendation:tag:" + userId;
     }
@@ -184,7 +224,5 @@ public class RecommendationProfileService {
         return "recommendation:author:" + userId;
     }
 
-    private record ProfileRow(Long eventId, RecommendationEventType eventType, LocalDateTime occurredAt,
-                              Long targetAuthorId, Long articleAuthorId, String tagName) {
-    }
+    private record ProfileScore(String member, double score) {}
 }

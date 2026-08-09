@@ -59,4 +59,18 @@ class CommunityApplicationTests {
                 "00:05",
                 "不提供公开指标 API 或 Dashboard");
     }
+
+    @Test
+    void environmentExampleCanBeSourcedByTheDocumentedShellCommand() throws Exception {
+        Process process = new ProcessBuilder(
+                "bash", "-c", "set -a; source .env.example; printf '%s' \"$DB_URL\"")
+                .redirectErrorStream(true)
+                .start();
+
+        String output = new String(process.getInputStream().readAllBytes());
+
+        assertThat(process.waitFor()).isZero();
+        assertThat(output).isEqualTo(
+                "jdbc:mysql://127.0.0.1:13306/metro_community?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai");
+    }
 }
