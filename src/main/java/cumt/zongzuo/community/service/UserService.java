@@ -1,7 +1,7 @@
 package cumt.zongzuo.community.service;
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
-import com.baomidou.mybatisplus.extension.service.IService;
+import com.baomidou.mybatisplus.spring.service.IService;
 import cumt.zongzuo.community.common.Result;
 import cumt.zongzuo.community.dto.LoginDTO; // 或者你的DTO包
 import cumt.zongzuo.community.dto.RegisterDTO;

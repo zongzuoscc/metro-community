@@ -1,7 +1,7 @@
 package cumt.zongzuo.community.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
-import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import cumt.zongzuo.community.entity.Tag;
 import cumt.zongzuo.community.mapper.TagMapper;
 import cumt.zongzuo.community.service.TagService;

@@ -57,28 +57,11 @@ spring:
           timeout: ${MAIL_TIMEOUT:10000}
           writetimeout: ${MAIL_WRITE_TIMEOUT:10000}
   ai:
-    openai:
-      api-key: ${DEEPSEEK_API_KEY:}
-      base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
-      chat:
-        enabled: ${AI_CHAT_ENABLED:false}
-        options:
-          model: ${DEEPSEEK_MODEL:deepseek-chat}
-          temperature: 0.7
-      embedding:
-        enabled: ${AI_EMBEDDING_ENABLED:false}
-      image:
-        enabled: false
-      audio:
-        speech:
-          enabled: false
-        transcription:
-          enabled: false
-      # Spring AI 1.0.0-M5 unconditionally creates a moderation client. It is not
-      # used by this application and receives a non-routable placeholder until
-      # the AI module is rebuilt with a real provider configuration.
-      moderation:
-        api-key: ${AI_MODERATION_API_KEY:disabled}
+    model:
+      chat: none
+      embedding: none
+    retry:
+      max-attempts: 1
   elasticsearch:
     uris: ${ELASTICSEARCH_URIS:http://127.0.0.1:19200}
 
@@ -133,3 +116,14 @@ recommendation:
   training-exposure-scan-limit: ${RECOMMENDATION_TRAINING_EXPOSURE_SCAN_LIMIT:200000}
   training-fact-scan-limit: ${RECOMMENDATION_TRAINING_FACT_SCAN_LIMIT:200000}
   model-directory: ${RECOMMENDATION_MODEL_DIRECTORY:data/recommendation-models}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  health:
+    elasticsearch:
+      enabled: false
+    mail:
+      enabled: false

@@ -92,12 +92,9 @@ public abstract class IntegrationTestSupport {
         registry.add("app.security.jwt-secret", () -> "test-secret-with-at-least-thirty-two-characters");
         registry.add("app.security.token-ttl", () -> "PT30M");
         registry.add("app.security.cors-allowed-origins", () -> "http://localhost:5173");
-        registry.add("spring.ai.openai.chat.enabled", () -> "false");
-        registry.add("spring.ai.openai.embedding.enabled", () -> "false");
-        registry.add("spring.ai.openai.image.enabled", () -> "false");
-        registry.add("spring.ai.openai.audio.speech.enabled", () -> "false");
-        registry.add("spring.ai.openai.audio.transcription.enabled", () -> "false");
-        registry.add("spring.ai.openai.moderation.api-key", () -> "disabled");
+        registry.add("spring.ai.model.chat", () -> "none");
+        registry.add("spring.ai.model.embedding", () -> "none");
+        registry.add("spring.ai.retry.max-attempts", () -> "1");
     }
 
     @BeforeAll

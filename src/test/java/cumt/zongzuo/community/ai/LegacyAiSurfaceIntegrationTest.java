@@ -29,6 +29,7 @@ class LegacyAiSurfaceIntegrationTest extends IntegrationTestSupport {
     private ApplicationContext context;
 
     @Autowired
+    @Qualifier("requestMappingHandlerMapping")
     private RequestMappingHandlerMapping handlerMapping;
 
     @Autowired
@@ -98,6 +99,44 @@ class LegacyAiSurfaceIntegrationTest extends IntegrationTestSupport {
         assertThat(articleService).contains(
                 "article.setStatus(2)",
                 "rabbitTemplate.convertAndSend(\"article.audit.queue\", article.getId())");
+    }
+
+    @Test
+    void platformDependencyBaselineUsesStableAiStartersWithoutLegacyRepositories() throws IOException {
+        String pom = Files.readString(Path.of("pom.xml"));
+        String applicationConfig = Files.readString(Path.of("src/main/resources/application.yml"));
+        String integrationSupport = Files.readString(Path.of(
+                "src/test/java/cumt/zongzuo/community/IntegrationTestSupport.java"));
+
+        assertThat(pom).contains(
+                "<version>3.5.16</version>",
+                "<artifactId>spring-ai-bom</artifactId>",
+                "<version>1.1.8</version>",
+                "<artifactId>mybatis-plus-spring-boot3-starter</artifactId>",
+                "<artifactId>mybatis-plus-jsqlparser-4.9</artifactId>",
+                "<version>3.5.17</version>",
+                "<artifactId>spring-ai-starter-model-deepseek</artifactId>",
+                "<artifactId>spring-ai-starter-model-ollama</artifactId>",
+                "<artifactId>spring-boot-starter-webflux</artifactId>",
+                "<artifactId>spring-boot-starter-actuator</artifactId>",
+                "<artifactId>micrometer-registry-prometheus</artifactId>",
+                "<artifactId>resilience4j-spring-boot3</artifactId>",
+                "<version>2.4.0</version>")
+                .doesNotContain(
+                        "spring-ai-openai-" + "spring-boot-starter",
+                        "1.0.0-" + "M5",
+                        "spring-" + "milestones",
+                        "repo.spring.io/" + "milestone");
+        assertThat(applicationConfig).contains(
+                "chat: none",
+                "embedding: none",
+                "max-attempts: 1")
+                .doesNotContain("  " + "openai:", "api-key:", "AI_" + "CHAT_ENABLED");
+        assertThat(integrationSupport).contains(
+                "spring.ai.model.chat",
+                "spring.ai.model.embedding",
+                "spring.ai.retry.max-attempts")
+                .doesNotContain("spring.ai." + "openai", "api-key");
     }
 
     private Set<String> mappedPaths() {

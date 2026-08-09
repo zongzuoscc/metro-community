@@ -1,6 +1,6 @@
 package cumt.zongzuo.community.service;
 
-import com.baomidou.mybatisplus.extension.service.IService;
+import com.baomidou.mybatisplus.spring.service.IService;
 import cumt.zongzuo.community.entity.ChatMsg;
 import cumt.zongzuo.community.entity.User;
 

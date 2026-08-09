@@ -3,7 +3,7 @@ package cumt.zongzuo.community.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
-import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import cumt.zongzuo.community.dto.CommentDTO;
 import cumt.zongzuo.community.dto.CommentTaskDTO;
 import cumt.zongzuo.community.dto.NotificationMsgDTO;

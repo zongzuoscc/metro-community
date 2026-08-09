@@ -133,7 +133,9 @@ public class RabbitConfig {
 
     @Bean
     public MessageConverter messageConverter() {
-        return new Jackson2JsonMessageConverter();
+        return new Jackson2JsonMessageConverter(
+                "cumt.zongzuo.community.dto",
+                "cumt.zongzuo.community.recommendation.dto");
     }
 
     private Queue workQueue(String name) {
