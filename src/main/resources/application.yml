@@ -130,5 +130,6 @@ recommendation:
   model-max-age-days: ${RECOMMENDATION_MODEL_MAX_AGE_DAYS:7}
   training-sample-limit: ${RECOMMENDATION_TRAINING_SAMPLE_LIMIT:50000}
   training-max-samples-per-user: ${RECOMMENDATION_TRAINING_MAX_SAMPLES_PER_USER:500}
+  training-exposure-scan-limit: ${RECOMMENDATION_TRAINING_EXPOSURE_SCAN_LIMIT:200000}
   training-fact-scan-limit: ${RECOMMENDATION_TRAINING_FACT_SCAN_LIMIT:200000}
   model-directory: ${RECOMMENDATION_MODEL_DIRECTORY:data/recommendation-models}

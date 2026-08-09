@@ -54,7 +54,7 @@ curl -X POST http://localhost:18080/api/ws/ticket \
   -H 'Authorization: Bearer <login-jwt>'
 ```
 
-推荐排序 Serving 默认关闭（`RECOMMENDATION_ENABLED=false`），但训练任务仍按 Asia/Shanghai 每日 02:15 运行，且不受 Serving 开关影响。模型目录应是应用进程可写的持久化绝对路径。Serving 关闭时返回 chronology `FALLBACK`；启用 Serving 但尚无可用模型时，符合条件的用户收到 chronology `COLD_START`。完整可调参数见 `.env.example`。
+推荐排序 Serving 默认关闭（`RECOMMENDATION_ENABLED=false`），但训练任务仍按 Asia/Shanghai 每日 02:15 运行，且不受 Serving 开关影响。模型目录应是应用进程可写的持久化绝对路径。Serving 关闭时返回 chronology `FALLBACK`；启用 Serving 但尚无可用模型时，符合条件的用户收到 chronology `COLD_START`。主要可调参数见 `.env.example`。
 
 RabbitMQ 工作队列现在配置了 3 次有限重试与死信队列（队列名后缀为 `.dlq`）。如果本地 RabbitMQ 已存在由旧版本创建的同名队列，需要先在管理界面删除这些**项目队列**后再启动，以便声明死信交换机参数；不要删除其他项目的队列。
 
@@ -68,11 +68,11 @@ RabbitMQ 工作队列现在配置了 3 次有限重试与死信队列（队列�
 
 `PERSONALIZED` 表示已通过双门槛并使用有效模型精排；`COLD_START` 表示 Serving 可用，但门槛未满足、可用模型缺失/无效/过期或个性化候选不足，因此返回时间线；`FALLBACK` 表示 Serving 已关闭，或者 Redis 会话/画像、模型 I/O/推理、游标等请求侧边界不可用，同样安全降级为时间线。
 
-训练数据只来自真实的 `recommendation_exposure` 曝光和去重后的 `user_article_event` 事实。曝光持久化五个连续值和四个来源 one-hot，共九个投递时特征；离线 Logistic Regression 使用 7 天归因标签，并且只在验证集模型 AUC 严格优于同一批曝光记录的规则基线 AUC 时发布。这些事实和曝光是训练与可追溯输入，不以 Redis 运维计数代替。
+训练数据只来自真实的 `recommendation_exposure` 曝光和去重后的 `user_article_event` 事实。曝光持久化九个投递时特征（五个连续值和四个来源 one-hot）以及 `article_author_id` 快照；`FOLLOW_AUTHOR` 最后触点直接按快照索引归因，不会因文章作者记录后续改变而重写历史标签。离线 Logistic Regression 使用 7 天归因标签，并且只在验证集模型 AUC 严格优于同一批曝光记录的规则基线 AUC 时发布。这些事实和曝光是训练与可追溯输入，不以 Redis 运维计数代替。
 
-训练 cohort 默认全局最多 50000 条，并且单用户最多贡献 500 条，防止少数高频用户主导样本。归因事实扫描默认最多 200000 条，并额外读取 1 条只用于判断是否触顶；一旦触顶，整批返回 `FACT_SCAN_LIMIT_EXCEEDED` 并跳过发布，不使用不完整标签训练，也不会替换已有 active model。
+训练先按 `(exposed_at, id)` 索引读取最新曝光，默认硬上限 200000 条加 1 条 sentinel，再在 Java 内应用全局 50000 条和单用户 500 条配额，避免 MySQL 先对 90 天全量曝光做窗口排序。曝光扫描触顶返回 `EXPOSURE_SCAN_LIMIT_EXCEEDED`。归因事实扫描另有独立的 200000 条加 1 条 sentinel 上限，触顶返回 `FACT_SCAN_LIMIT_EXCEEDED`。任一扫描不完整都会跳过发布，不使用截断数据训练，也不会替换已有 active model。
 
-画像重建只读取最近 30 天中固定上限的最新事实，并对标签关联数、最终 tag 数和 author 数分别设限；14 天半衰期、MySQL 用户级锁和 Redis 双 ZSET 原子替换保持不变。每条事实与 `recommendation_profile_checkpoint.requested_event_id` 在同一 MySQL 事务内落库，消除进程在两次写入之间退出造成的遗漏；画像重建成功后再推进 `rebuilt_event_id`。如果 Redis 重建持续失败直至消息进入 DLQ，定时补偿仍会批量发现 `requested_event_id > rebuilt_event_id` 的用户并从 MySQL 事实恢复画像，不依赖下一次用户行为或人工重放 DLQ；失败补偿采用有界退避，checkpoint 更新使用单调递增语义避免并发完成覆盖新请求。
+画像重建只读取最近 30 天中固定上限的最新事实，并对标签关联数、最终 tag 数和 author 数分别设限；14 天半衰期、MySQL 用户级锁和 Redis 双 ZSET 原子替换保持不变。每条事实与 `recommendation_profile_checkpoint.requested_event_id` 在同一 MySQL 事务内落库，消除进程在两次写入之间退出造成的遗漏；画像重建成功后再推进 `rebuilt_event_id`。补偿任务通过 `(needs_rebuild, next_attempt_at, user_id)` 索引只选择显式 pending 的 checkpoint，追平后即清除 pending，不再反复扫描已完成历史。如果 Redis 重建持续失败直至消息进入 DLQ，定时补偿仍会从 MySQL 事实恢复画像，不依赖下一次用户行为或人工重放 DLQ；失败补偿采用有界退避，checkpoint 更新使用单调递增与条件语义避免并发完成覆盖新请求。
 
 ## 推荐可观测性
 

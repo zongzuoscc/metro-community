@@ -28,6 +28,7 @@ public class RecommendationProperties {
     private int modelMaxAgeDays = 7;
     private int trainingSampleLimit = 50_000;
     private int trainingMaxSamplesPerUser = 500;
+    private int trainingExposureScanLimit = 200_000;
     private int trainingFactScanLimit = 200_000;
     private String modelDirectory = "data/recommendation-models";
 }

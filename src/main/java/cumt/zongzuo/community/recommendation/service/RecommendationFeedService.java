@@ -254,7 +254,8 @@ public class RecommendationFeedService {
                                                 List<HydratedRecommendationItem> items) {
         List<RecommendationExposureDraft> drafts = items.stream()
                 .map(item -> new RecommendationExposureDraft(
-                        item.item().article().getId(), item.item().source(), item.snapshot(), item.baselineScore()))
+                        item.item().article().getId(), item.item().article().getAuthorId(),
+                        item.item().source(), item.snapshot(), item.baselineScore()))
                 .toList();
         List<Long> exposureIds = exposureService.recordPage(sessionId, userId, drafts);
         return java.util.stream.IntStream.range(0, items.size())

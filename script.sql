@@ -207,12 +207,13 @@ CREATE TABLE recommendation_profile_checkpoint (
     user_id BIGINT PRIMARY KEY,
     requested_event_id BIGINT NOT NULL,
     rebuilt_event_id BIGINT NOT NULL DEFAULT 0,
+    needs_rebuild TINYINT NOT NULL DEFAULT 1,
     retry_count INT NOT NULL DEFAULT 0,
     next_attempt_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_error VARCHAR(500) NULL,
     create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    INDEX idx_profile_checkpoint_repair (next_attempt_at, user_id)
+    INDEX idx_profile_checkpoint_due (needs_rebuild, next_attempt_at, user_id)
 ) COMMENT='推荐画像持久化重建检查点';
 
 CREATE TABLE recommendation_event_outbox (
@@ -239,6 +240,7 @@ CREATE TABLE recommendation_exposure (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     user_id BIGINT NOT NULL,
     article_id BIGINT NOT NULL,
+    article_author_id BIGINT NOT NULL,
     session_id VARCHAR(64) NOT NULL,
     source VARCHAR(32) NOT NULL,
     tag_affinity DOUBLE NOT NULL,
@@ -257,6 +259,7 @@ CREATE TABLE recommendation_exposure (
     INDEX idx_exposure_user_time (user_id, exposed_at DESC),
     INDEX idx_exposure_article_time (article_id, exposed_at DESC),
     INDEX idx_exposure_user_article_at (user_id, article_id, exposed_at DESC, id DESC),
+    INDEX idx_exposure_user_author_at (user_id, article_author_id, exposed_at DESC, id DESC),
     INDEX idx_exposure_training (exposed_at DESC, id DESC)
 ) COMMENT='推荐真实曝光和训练特征快照';
 

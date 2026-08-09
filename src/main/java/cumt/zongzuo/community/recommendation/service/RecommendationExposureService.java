@@ -42,6 +42,7 @@ public class RecommendationExposureService {
         RecommendationExposure exposure = new RecommendationExposure();
         exposure.setUserId(userId);
         exposure.setArticleId(draft.articleId());
+        exposure.setArticleAuthorId(draft.articleAuthorId());
         exposure.setSessionId(sessionId);
         exposure.setSource(draft.source());
         exposure.setTagAffinity(snapshot.tagAffinity());

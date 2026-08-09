@@ -12,11 +12,12 @@ public interface RecommendationExposureMapper extends BaseMapper<RecommendationE
 
     @Insert("""
             INSERT INTO recommendation_exposure
-                (user_id, article_id, session_id, source, tag_affinity, author_affinity,
+                (user_id, article_id, article_author_id, session_id, source, tag_affinity, author_affinity,
                  similar_score, heat_score, freshness_score, source_follow, source_tag,
                  source_similar, source_explore, baseline_score, exposed_at, create_time)
             VALUES
-                (#{exposure.userId}, #{exposure.articleId}, #{exposure.sessionId}, #{exposure.source},
+                (#{exposure.userId}, #{exposure.articleId}, #{exposure.articleAuthorId},
+                 #{exposure.sessionId}, #{exposure.source},
                  #{exposure.tagAffinity}, #{exposure.authorAffinity}, #{exposure.similarScore},
                  #{exposure.heatScore}, #{exposure.freshnessScore}, #{exposure.sourceFollow},
                  #{exposure.sourceTag}, #{exposure.sourceSimilar}, #{exposure.sourceExplore},

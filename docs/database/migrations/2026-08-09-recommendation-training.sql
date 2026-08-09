@@ -23,12 +23,13 @@ CREATE TABLE IF NOT EXISTS recommendation_profile_checkpoint (
   user_id BIGINT PRIMARY KEY,
   requested_event_id BIGINT NOT NULL,
   rebuilt_event_id BIGINT NOT NULL DEFAULT 0,
+  needs_rebuild TINYINT NOT NULL DEFAULT 1,
   retry_count INT NOT NULL DEFAULT 0,
   next_attempt_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   last_error VARCHAR(500) NULL,
   create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  INDEX idx_profile_checkpoint_repair (next_attempt_at, user_id)
+  INDEX idx_profile_checkpoint_due (needs_rebuild, next_attempt_at, user_id)
 ) COMMENT='推荐画像持久化重建检查点' CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS recommendation_event_outbox (
@@ -55,6 +56,7 @@ CREATE TABLE IF NOT EXISTS recommendation_exposure (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   user_id BIGINT NOT NULL,
   article_id BIGINT NOT NULL,
+  article_author_id BIGINT NOT NULL,
   session_id VARCHAR(64) NOT NULL,
   source VARCHAR(32) NOT NULL,
   tag_affinity DOUBLE NOT NULL,
@@ -73,8 +75,17 @@ CREATE TABLE IF NOT EXISTS recommendation_exposure (
   INDEX idx_exposure_user_time (user_id, exposed_at DESC),
   INDEX idx_exposure_article_time (article_id, exposed_at DESC),
   INDEX idx_exposure_user_article_at (user_id, article_id, exposed_at DESC, id DESC),
+  INDEX idx_exposure_user_author_at (user_id, article_author_id, exposed_at DESC, id DESC),
   INDEX idx_exposure_training (exposed_at DESC, id DESC)
 ) COMMENT='推荐真实曝光和训练特征快照' CHARSET=utf8mb4;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@schema_name AND table_name='recommendation_exposure' AND column_name='article_author_id') = 0,
+  'ALTER TABLE recommendation_exposure ADD COLUMN article_author_id BIGINT NULL AFTER article_id', 'SELECT 1');
+PREPARE migration_statement FROM @sql; EXECUTE migration_statement; DEALLOCATE PREPARE migration_statement;
+UPDATE recommendation_exposure e
+JOIN article a ON a.id=e.article_id
+SET e.article_author_id=a.author_id
+WHERE e.article_author_id IS NULL;
 
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@schema_name AND table_name='recommendation_exposure' AND column_name='source_follow') = 0,
   'ALTER TABLE recommendation_exposure ADD COLUMN source_follow TINYINT NOT NULL DEFAULT 0 AFTER freshness_score', 'SELECT 1');
@@ -100,6 +111,9 @@ PREPARE migration_statement FROM @sql; EXECUTE migration_statement; DEALLOCATE P
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=@schema_name AND table_name='recommendation_exposure' AND index_name='idx_exposure_user_article_at') = 0,
   'CREATE INDEX idx_exposure_user_article_at ON recommendation_exposure (user_id, article_id, exposed_at DESC, id DESC)', 'SELECT 1');
 PREPARE migration_statement FROM @sql; EXECUTE migration_statement; DEALLOCATE PREPARE migration_statement;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=@schema_name AND table_name='recommendation_exposure' AND index_name='idx_exposure_user_author_at') = 0,
+  'CREATE INDEX idx_exposure_user_author_at ON recommendation_exposure (user_id, article_author_id, exposed_at DESC, id DESC)', 'SELECT 1');
+PREPARE migration_statement FROM @sql; EXECUTE migration_statement; DEALLOCATE PREPARE migration_statement;
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=@schema_name AND table_name='user_article_event' AND index_name='idx_event_occurred_at') = 0,
   'CREATE INDEX idx_event_occurred_at ON user_article_event (occurred_at, id)', 'SELECT 1');
 PREPARE migration_statement FROM @sql; EXECUTE migration_statement; DEALLOCATE PREPARE migration_statement;
@@ -109,16 +123,27 @@ PREPARE migration_statement FROM @sql; EXECUTE migration_statement; DEALLOCATE P
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=@schema_name AND table_name='user_article_event' AND index_name='idx_user_author_event_at') = 0,
   'CREATE INDEX idx_user_author_event_at ON user_article_event (user_id, target_author_id, occurred_at DESC, id DESC)', 'SELECT 1');
 PREPARE migration_statement FROM @sql; EXECUTE migration_statement; DEALLOCATE PREPARE migration_statement;
-SET @sql = IF((SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=@schema_name AND table_name='recommendation_profile_checkpoint' AND index_name='idx_profile_checkpoint_repair') = 0,
-  'CREATE INDEX idx_profile_checkpoint_repair ON recommendation_profile_checkpoint (next_attempt_at, user_id)', 'SELECT 1');
+SET @needs_rebuild_missing = (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@schema_name AND table_name='recommendation_profile_checkpoint' AND column_name='needs_rebuild') = 0;
+SET @sql = IF(@needs_rebuild_missing,
+  'ALTER TABLE recommendation_profile_checkpoint ADD COLUMN needs_rebuild TINYINT NOT NULL DEFAULT 1 AFTER rebuilt_event_id', 'SELECT 1');
+PREPARE migration_statement FROM @sql; EXECUTE migration_statement; DEALLOCATE PREPARE migration_statement;
+SET @sql = IF(@needs_rebuild_missing,
+  'UPDATE recommendation_profile_checkpoint SET needs_rebuild=IF(requested_event_id>rebuilt_event_id,1,0)', 'SELECT 1');
+PREPARE migration_statement FROM @sql; EXECUTE migration_statement; DEALLOCATE PREPARE migration_statement;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=@schema_name AND table_name='recommendation_profile_checkpoint' AND index_name='idx_profile_checkpoint_due') = 0,
+  'CREATE INDEX idx_profile_checkpoint_due ON recommendation_profile_checkpoint (needs_rebuild, next_attempt_at, user_id)', 'SELECT 1');
+PREPARE migration_statement FROM @sql; EXECUTE migration_statement; DEALLOCATE PREPARE migration_statement;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=@schema_name AND table_name='recommendation_profile_checkpoint' AND index_name='idx_profile_checkpoint_repair') > 0,
+  'DROP INDEX idx_profile_checkpoint_repair ON recommendation_profile_checkpoint', 'SELECT 1');
 PREPARE migration_statement FROM @sql; EXECUTE migration_statement; DEALLOCATE PREPARE migration_statement;
 
 INSERT INTO recommendation_profile_checkpoint
-  (user_id,requested_event_id,rebuilt_event_id,retry_count,next_attempt_at,last_error,create_time,update_time)
-SELECT user_id,MAX(id),0,0,NOW(),NULL,NOW(),NOW()
+  (user_id,requested_event_id,rebuilt_event_id,needs_rebuild,retry_count,next_attempt_at,last_error,create_time,update_time)
+SELECT user_id,MAX(id),0,1,0,NOW(),NULL,NOW(),NOW()
 FROM user_article_event GROUP BY user_id
 ON DUPLICATE KEY UPDATE
   next_attempt_at=IF(VALUES(requested_event_id)>requested_event_id,
                      LEAST(next_attempt_at,VALUES(next_attempt_at)),next_attempt_at),
+  needs_rebuild=IF(VALUES(requested_event_id)>requested_event_id,1,needs_rebuild),
   requested_event_id=GREATEST(requested_event_id,VALUES(requested_event_id)),
   update_time=VALUES(update_time);

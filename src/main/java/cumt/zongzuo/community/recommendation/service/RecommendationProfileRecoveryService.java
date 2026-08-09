@@ -38,14 +38,15 @@ public class RecommendationProfileRecoveryService {
         LocalDateTime now = LocalDateTime.now(clock).withNano(0);
         jdbc.update("""
                 INSERT INTO recommendation_profile_checkpoint
-                  (user_id,requested_event_id,rebuilt_event_id,retry_count,next_attempt_at,
+                  (user_id,requested_event_id,rebuilt_event_id,needs_rebuild,retry_count,next_attempt_at,
                    last_error,create_time,update_time)
-                VALUES (?,?,0,0,?,NULL,?,?)
+                VALUES (?,?,0,1,0,?,NULL,?,?)
                 ON DUPLICATE KEY UPDATE
-                  next_attempt_at=IF(VALUES(requested_event_id)>requested_event_id,
+                  next_attempt_at=IF(VALUES(requested_event_id)>=requested_event_id,
                                      LEAST(next_attempt_at,VALUES(next_attempt_at)),next_attempt_at),
-                  retry_count=IF(VALUES(requested_event_id)>requested_event_id,0,retry_count),
-                  last_error=IF(VALUES(requested_event_id)>requested_event_id,NULL,last_error),
+                  retry_count=IF(VALUES(requested_event_id)>=requested_event_id,0,retry_count),
+                  last_error=IF(VALUES(requested_event_id)>=requested_event_id,NULL,last_error),
+                  needs_rebuild=1,
                   requested_event_id=GREATEST(requested_event_id,VALUES(requested_event_id)),
                   update_time=VALUES(update_time)
                 """, userId, eventId, now, now, now);
@@ -56,13 +57,14 @@ public class RecommendationProfileRecoveryService {
         jdbc.update("""
                 UPDATE recommendation_profile_checkpoint
                 SET rebuilt_event_id=GREATEST(rebuilt_event_id,LEAST(requested_event_id,?)),
+                    needs_rebuild=IF(requested_event_id<=?,0,1),
                     retry_count=IF(requested_event_id<=?,0,retry_count),
                     next_attempt_at=IF(requested_event_id<=?,?,next_attempt_at),
                     last_error=IF(requested_event_id<=?,NULL,last_error),
                     update_time=?
                 WHERE user_id=?
-                """, rebuiltThroughEventId, rebuiltThroughEventId, rebuiltThroughEventId, now,
-                rebuiltThroughEventId, now, userId);
+                """, rebuiltThroughEventId, rebuiltThroughEventId, rebuiltThroughEventId,
+                rebuiltThroughEventId, now, rebuiltThroughEventId, now, userId);
     }
 
     public int repairDueProfiles() {
@@ -71,7 +73,7 @@ public class RecommendationProfileRecoveryService {
         List<Checkpoint> due = jdbc.query("""
                 SELECT user_id,requested_event_id,retry_count
                 FROM recommendation_profile_checkpoint
-                WHERE requested_event_id>rebuilt_event_id AND next_attempt_at<=?
+                WHERE needs_rebuild=1 AND next_attempt_at<=?
                 ORDER BY next_attempt_at ASC,user_id ASC LIMIT ?
                 """, (rs, rowNumber) -> new Checkpoint(
                 rs.getLong(1), rs.getLong(2), rs.getInt(3)), now, batchSize);
@@ -99,8 +101,8 @@ public class RecommendationProfileRecoveryService {
         }
         jdbc.update("""
                 UPDATE recommendation_profile_checkpoint
-                SET retry_count=?,next_attempt_at=?,last_error=?,update_time=?
-                WHERE user_id=? AND requested_event_id=? AND rebuilt_event_id<requested_event_id
+                SET needs_rebuild=1,retry_count=?,next_attempt_at=?,last_error=?,update_time=?
+                WHERE user_id=? AND requested_event_id=? AND needs_rebuild=1
                 """, retryCount, failedAt.plusSeconds(delaySeconds), error, failedAt,
                 checkpoint.userId(), checkpoint.requestedEventId());
     }

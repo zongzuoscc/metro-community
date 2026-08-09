@@ -250,6 +250,11 @@ class RecommendationFeedIntegrationTest extends IntegrationTestSupport {
             assertThat(item.article().getAuthorAvatar()).startsWith("https://img.example/");
         });
         assertThat(exposureCount()).isEqualTo(4);
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM recommendation_exposure e
+                JOIN article a ON a.id=e.article_id
+                WHERE e.article_author_id=a.author_id
+                """, Integer.class)).isEqualTo(4);
         assertThat(jdbcTemplate.queryForList("""
                 SELECT tag_affinity, author_affinity, similar_score, heat_score, freshness_score,
                        source_follow, source_tag, source_similar, source_explore
@@ -754,7 +759,7 @@ class RecommendationFeedIntegrationTest extends IntegrationTestSupport {
     }
 
     private RecommendationExposureDraft chronologicalDraft(RecommendationCandidate candidate) {
-        return new RecommendationExposureDraft(candidate.articleId(), "CHRONOLOGICAL",
+        return new RecommendationExposureDraft(candidate.articleId(), candidate.authorId(), "CHRONOLOGICAL",
                 new RecommendationFeatureSnapshot(
                         candidate.tagAffinity(), candidate.authorAffinity(), candidate.similarScore(),
                         candidate.heatScore(), candidate.freshnessScore(), 0D, 0D, 0D, 0D));

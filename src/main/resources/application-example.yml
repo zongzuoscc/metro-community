@@ -24,3 +24,7 @@ app:
       - http://localhost:5173
   websocket:
     ticket-ttl: PT30S
+
+recommendation:
+  training-exposure-scan-limit: 200000
+  training-fact-scan-limit: 200000

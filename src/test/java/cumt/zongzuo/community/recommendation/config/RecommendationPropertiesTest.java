@@ -25,6 +25,7 @@ class RecommendationPropertiesTest {
                         assertThat(properties.isEnabled()).isTrue();
                         assertThat(properties.getDefaultPageSize()).isEqualTo(16);
                         assertThat(properties.getSessionTtlMinutes()).isEqualTo(10);
+                        assertThat(properties.getTrainingExposureScanLimit()).isEqualTo(200_000);
                     });
         });
     }

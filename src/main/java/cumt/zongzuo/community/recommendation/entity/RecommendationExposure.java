@@ -15,6 +15,7 @@ public class RecommendationExposure {
     private Long id;
     private Long userId;
     private Long articleId;
+    private Long articleAuthorId;
     private String sessionId;
     private String source;
     private Double tagAffinity;

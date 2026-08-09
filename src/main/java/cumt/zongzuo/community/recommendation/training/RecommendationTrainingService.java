@@ -44,6 +44,9 @@ public class RecommendationTrainingService {
         if (rows.status() == RecommendationTrainingDataset.Status.NO_DATA) {
             return TrainingResult.notPublished("NO_DATA", samples, positives, negatives);
         }
+        if (rows.status() == RecommendationTrainingDataset.Status.EXPOSURE_SCAN_LIMIT_EXCEEDED) {
+            return TrainingResult.notPublished("EXPOSURE_SCAN_LIMIT_EXCEEDED", samples, positives, negatives);
+        }
         if (rows.status() == RecommendationTrainingDataset.Status.FACT_SCAN_LIMIT_EXCEEDED) {
             return TrainingResult.notPublished("FACT_SCAN_LIMIT_EXCEEDED", samples, positives, negatives);
         }

@@ -298,6 +298,58 @@ class RecommendationEventIntegrationTest extends IntegrationTestSupport {
     }
 
     @Test
+    void checkpointPendingFlagClearsOnlyWhenTheCurrentRequestIsFullyRebuilt() {
+        profileRecoveryService.requestRebuild(USER_ID, 10L);
+
+        assertThat(checkpointNeedsRebuild(USER_ID)).isTrue();
+
+        profileRecoveryService.requestRebuild(USER_ID, 11L);
+        profileRecoveryService.markRebuilt(USER_ID, 10L);
+
+        assertThat(checkpointNeedsRebuild(USER_ID)).isTrue();
+
+        profileRecoveryService.markRebuilt(USER_ID, 11L);
+
+        assertThat(checkpointNeedsRebuild(USER_ID)).isFalse();
+
+        profileRecoveryService.requestRebuild(USER_ID, 12L);
+
+        assertThat(checkpointNeedsRebuild(USER_ID)).isTrue();
+        assertThat(profileRecoveryService.repairDueProfiles()).isOne();
+        assertThat(checkpointNeedsRebuild(USER_ID)).isFalse();
+
+        profileRecoveryService.markRebuilt(USER_ID, 12L);
+        profileRecoveryService.requestRebuild(USER_ID, 12L);
+
+        assertThat(checkpointNeedsRebuild(USER_ID)).isTrue();
+        assertThat(profileRecoveryService.repairDueProfiles()).isOne();
+        assertThat(checkpointNeedsRebuild(USER_ID)).isFalse();
+    }
+
+    @Test
+    void completedCheckpointHistoryDoesNotConsumeTheBoundedPendingRepairBatch() {
+        properties.setProfileRepairBatchSize(1);
+        LocalDateTime old = LocalDateTime.now(clock).withNano(0).minusDays(1);
+        for (long userId = 9_100L; userId < 9_110L; userId++) {
+            jdbcTemplate.update("""
+                    INSERT INTO recommendation_profile_checkpoint
+                      (user_id,requested_event_id,rebuilt_event_id,needs_rebuild,retry_count,
+                       next_attempt_at,create_time,update_time)
+                    VALUES (?,?,?,0,0,?,?,?)
+                    """, userId, userId, userId, old, old, old);
+        }
+        long pendingUser = 9_200L;
+        profileRecoveryService.requestRebuild(pendingUser, 20L);
+
+        assertThat(profileRecoveryService.repairDueProfiles()).isOne();
+
+        assertThat(checkpointNeedsRebuild(pendingUser)).isFalse();
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM recommendation_profile_checkpoint WHERE needs_rebuild=1
+                """, Integer.class)).isZero();
+    }
+
+    @Test
     void rebuildUsesOnlyRecentMySqlFactsAndAtomicallyReplacesBothProfiles() {
         insertEvent(event(RecommendationEventType.COLLECT, ARTICLE_ID, null, "collect:recent"));
         insertEvent(new RecommendationEventCommand(USER_ID, ARTICLE_ID, null, RecommendationEventType.LIKE,
@@ -404,14 +456,21 @@ class RecommendationEventIntegrationTest extends IntegrationTestSupport {
                   user_id BIGINT PRIMARY KEY,
                   requested_event_id BIGINT NOT NULL,
                   rebuilt_event_id BIGINT NOT NULL DEFAULT 0,
+                  needs_rebuild TINYINT NOT NULL DEFAULT 1,
                   retry_count INT NOT NULL DEFAULT 0,
                   next_attempt_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                   last_error VARCHAR(500) NULL,
                   create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                   update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                  INDEX idx_profile_checkpoint_repair (next_attempt_at, user_id)
+                  INDEX idx_profile_checkpoint_due (needs_rebuild, next_attempt_at, user_id)
                 ) COMMENT='recommendation profile rebuild checkpoint'
                 """);
+    }
+
+    private boolean checkpointNeedsRebuild(long userId) {
+        return Boolean.TRUE.equals(jdbcTemplate.queryForObject("""
+                SELECT needs_rebuild=1 FROM recommendation_profile_checkpoint WHERE user_id=?
+                """, Boolean.class, userId));
     }
 
     private void insertProfileArticle(long articleId, long authorId, long tagId, String tagName) {

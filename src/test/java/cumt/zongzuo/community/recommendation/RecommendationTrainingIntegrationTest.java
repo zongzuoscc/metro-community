@@ -50,11 +50,45 @@ class RecommendationTrainingIntegrationTest extends IntegrationTestSupport {
     void clean() {
         properties.setTrainingSampleLimit(50_000);
         properties.setTrainingMaxSamplesPerUser(500);
+        properties.setTrainingExposureScanLimit(200_000);
         properties.setTrainingFactScanLimit(200_000);
         jdbcTemplate.update("DELETE FROM user_article_event");
         jdbcTemplate.update("DELETE FROM recommendation_exposure");
         jdbcTemplate.update("DELETE FROM article");
         article(1, 11); article(2, 11);
+    }
+
+    @Test
+    void exposureScanAcceptsTheExactCapButRejectsCapPlusOneWithoutReplacingTheActiveModel(
+            @TempDir Path modelDirectory) {
+        properties.setTrainingSampleLimit(10);
+        properties.setTrainingExposureScanLimit(2);
+        LocalDateTime first = LocalDateTime.of(2026, 7, 25, 20, 0);
+        exposure(1, first, 0.1D);
+        exposure(2, first.plusDays(1), 0.2D);
+
+        assertThat(dataset.load()).satisfies(rows -> {
+            assertThat(rows.status()).isEqualTo(RecommendationTrainingDataset.Status.READY);
+            assertThat(rows.sampleCount()).isEqualTo(2);
+        });
+
+        article(3, 12);
+        exposure(3, first.plusDays(2), 0.3D);
+        RecommendationTrainingDataset.Dataset overflow = dataset.load();
+        RecommendationModelStore store = new RecommendationModelStore(modelDirectory, objectMapper, 7);
+        RecommendationModel active = validModel("before-exposure-overflow");
+        assertThat(store.publish(active).published()).isTrue();
+        RecommendationTrainingService training = new RecommendationTrainingService(
+                dataset, store, Clock.fixed(NOW, SHANGHAI));
+
+        RecommendationTrainingService.TrainingResult result = training.trainAndPublish();
+
+        assertThat(overflow.status()).isEqualTo(
+                RecommendationTrainingDataset.Status.EXPOSURE_SCAN_LIMIT_EXCEEDED);
+        assertThat(overflow.isEmpty()).isTrue();
+        assertThat(result.published()).isFalse();
+        assertThat(result.reason()).isEqualTo("EXPOSURE_SCAN_LIMIT_EXCEEDED");
+        assertThat(store.loadActive(NOW).model()).contains(active);
     }
 
     @Test
@@ -165,6 +199,7 @@ class RecommendationTrainingIntegrationTest extends IntegrationTestSupport {
         LocalDateTime latest = LocalDateTime.of(2026, 7, 28, 20, 0);
         exposure(3, first, 0.2D);
         exposure(4, latest, 0.2D);
+        jdbcTemplate.update("UPDATE article SET author_id=88 WHERE id IN (3,4)");
         follow(77, LocalDateTime.of(2026, 7, 29, 20, 0));
 
         RecommendationTrainingDataset.Dataset rows = dataset.load();
@@ -328,13 +363,62 @@ class RecommendationTrainingIntegrationTest extends IntegrationTestSupport {
             String originalSchema = connection.getCatalog();
             statement.execute("CREATE DATABASE " + schema);
             statement.execute("USE " + schema);
-            statement.execute("CREATE TABLE article (id BIGINT PRIMARY KEY, status INT, is_deleted INT, create_time DATETIME)");
+            statement.execute("CREATE TABLE article (id BIGINT PRIMARY KEY, author_id BIGINT, status INT, is_deleted INT, create_time DATETIME)");
+            statement.execute("INSERT INTO article VALUES (1,99,1,0,NOW())");
+            statement.execute("""
+                    CREATE TABLE recommendation_exposure (
+                      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                      user_id BIGINT NOT NULL,
+                      article_id BIGINT NOT NULL,
+                      session_id VARCHAR(64) NOT NULL,
+                      source VARCHAR(32) NOT NULL,
+                      tag_affinity DOUBLE NOT NULL,
+                      author_affinity DOUBLE NOT NULL,
+                      similar_score DOUBLE NOT NULL,
+                      heat_score DOUBLE NOT NULL,
+                      freshness_score DOUBLE NOT NULL,
+                      source_follow TINYINT NOT NULL DEFAULT 0,
+                      source_tag TINYINT NOT NULL DEFAULT 0,
+                      source_similar TINYINT NOT NULL DEFAULT 0,
+                      source_explore TINYINT NOT NULL DEFAULT 0,
+                      baseline_score DOUBLE NULL,
+                      exposed_at DATETIME NOT NULL,
+                      create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                      UNIQUE KEY uk_recommendation_exposure (user_id,article_id,session_id),
+                      INDEX idx_exposure_user_article_at (user_id,article_id,exposed_at DESC,id DESC),
+                      INDEX idx_exposure_training (exposed_at DESC,id DESC)
+                    )
+                    """);
+            statement.execute("""
+                    INSERT INTO recommendation_exposure
+                      (user_id,article_id,session_id,source,tag_affinity,author_affinity,
+                       similar_score,heat_score,freshness_score,baseline_score,exposed_at)
+                    VALUES (99,1,'legacy-session','TAG',1,1,0,0,1,1,NOW())
+                    """);
+            statement.execute("""
+                    CREATE TABLE recommendation_profile_checkpoint (
+                      user_id BIGINT PRIMARY KEY,
+                      requested_event_id BIGINT NOT NULL,
+                      rebuilt_event_id BIGINT NOT NULL DEFAULT 0,
+                      retry_count INT NOT NULL DEFAULT 0,
+                      next_attempt_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                      last_error VARCHAR(500) NULL,
+                      create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                      update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                      INDEX idx_profile_checkpoint_repair (next_attempt_at,user_id)
+                    )
+                    """);
+            statement.execute("""
+                    INSERT INTO recommendation_profile_checkpoint
+                      (user_id,requested_event_id,rebuilt_event_id)
+                    VALUES (99,5,5),(100,6,4)
+                    """);
             FileSystemResource migration = new FileSystemResource("docs/database/migrations/2026-08-09-recommendation-training.sql");
 
             ScriptUtils.executeSqlScript(connection, migration);
             statement.execute("INSERT INTO user_article_event "
                     + "(user_id,article_id,event_type,occurred_at,dedupe_key,source) "
-                    + "VALUES (99,1,'VIEW',NOW(),'migration-profile-backfill','test')");
+                    + "VALUES (101,1,'VIEW',NOW(),'migration-profile-backfill','test')");
             ScriptUtils.executeSqlScript(connection, migration);
 
             try (var result = statement.executeQuery("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='"
@@ -345,22 +429,64 @@ class RecommendationTrainingIntegrationTest extends IntegrationTestSupport {
             }
             try (var result = statement.executeQuery("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='"
                     + schema + "' AND ((table_name='recommendation_exposure' AND column_name IN "
-                    + "('source_follow','source_tag','source_similar','source_explore','baseline_score')))")) {
+                    + "('article_author_id','source_follow','source_tag','source_similar','source_explore','baseline_score')))")) {
                 result.next();
-                assertThat(result.getInt(1)).isEqualTo(5);
+                assertThat(result.getInt(1)).isEqualTo(6);
             }
             try (var result = statement.executeQuery("SELECT COUNT(DISTINCT index_name) FROM information_schema.statistics WHERE table_schema='"
                     + schema + "' AND index_name IN ('idx_exposure_training','idx_user_article_event_at','idx_user_author_event_at',"
                     + "'idx_event_occurred_at','idx_exposure_user_article_at','idx_article_recommendation_feed',"
-                    + "'idx_profile_checkpoint_repair')")) {
+                    + "'idx_exposure_user_author_at','idx_profile_checkpoint_due')")) {
                 result.next();
-                assertThat(result.getInt(1)).isEqualTo(7);
+                assertThat(result.getInt(1)).isEqualTo(8);
             }
-            try (var result = statement.executeQuery("SELECT requested_event_id,rebuilt_event_id "
-                    + "FROM recommendation_profile_checkpoint WHERE user_id=99")) {
+            try (var result = statement.executeQuery("SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema='"
+                    + schema + "' AND table_name='recommendation_profile_checkpoint' "
+                    + "AND index_name='idx_profile_checkpoint_repair'")) {
+                result.next();
+                assertThat(result.getInt(1)).isZero();
+            }
+            try (var result = statement.executeQuery("""
+                    SELECT GROUP_CONCAT(column_name ORDER BY seq_in_index)
+                    FROM information_schema.statistics
+                    WHERE table_schema=DATABASE() AND table_name='recommendation_exposure'
+                      AND index_name='idx_exposure_user_author_at'
+                    """)) {
                 assertThat(result.next()).isTrue();
-                assertThat(result.getLong(1)).isPositive();
-                assertThat(result.getLong(2)).isZero();
+                assertThat(result.getString(1))
+                        .isEqualTo("user_id,article_author_id,exposed_at,id");
+            }
+            try (var result = statement.executeQuery("""
+                    SELECT GROUP_CONCAT(column_name ORDER BY seq_in_index)
+                    FROM information_schema.statistics
+                    WHERE table_schema=DATABASE() AND table_name='recommendation_profile_checkpoint'
+                      AND index_name='idx_profile_checkpoint_due'
+                    """)) {
+                assertThat(result.next()).isTrue();
+                assertThat(result.getString(1))
+                        .isEqualTo("needs_rebuild,next_attempt_at,user_id");
+            }
+            try (var result = statement.executeQuery("""
+                    SELECT article_author_id FROM recommendation_exposure
+                    WHERE session_id='legacy-session'
+                    """)) {
+                assertThat(result.next()).isTrue();
+                assertThat(result.getLong(1)).isEqualTo(99L);
+            }
+            try (var result = statement.executeQuery("""
+                    SELECT user_id,needs_rebuild FROM recommendation_profile_checkpoint
+                    WHERE user_id IN (99,100,101) ORDER BY user_id
+                    """)) {
+                assertThat(result.next()).isTrue();
+                assertThat(result.getLong(1)).isEqualTo(99L);
+                assertThat(result.getBoolean(2)).isFalse();
+                assertThat(result.next()).isTrue();
+                assertThat(result.getLong(1)).isEqualTo(100L);
+                assertThat(result.getBoolean(2)).isTrue();
+                assertThat(result.next()).isTrue();
+                assertThat(result.getLong(1)).isEqualTo(101L);
+                assertThat(result.getBoolean(2)).isTrue();
+                assertThat(result.next()).isFalse();
             }
             statement.execute("USE " + originalSchema);
         } finally {
@@ -380,7 +506,7 @@ class RecommendationTrainingIntegrationTest extends IntegrationTestSupport {
                 id, "t", "s", "c", author, LocalDateTime.of(2026, 8, 1, 0, 0), LocalDateTime.of(2026, 8, 1, 0, 0));
     }
     private void exposure(long article, LocalDateTime time, Double baseline) {
-        jdbcTemplate.update("INSERT INTO recommendation_exposure (user_id,article_id,session_id,source,tag_affinity,author_affinity,similar_score,heat_score,freshness_score,source_follow,source_tag,source_similar,source_explore,baseline_score,exposed_at,create_time) VALUES (1,?,UUID(),'TAG',?,0,0,0,0,0,1,0,0,?,?,?)", article, article, baseline, time, time);
+        jdbcTemplate.update("INSERT INTO recommendation_exposure (user_id,article_id,article_author_id,session_id,source,tag_affinity,author_affinity,similar_score,heat_score,freshness_score,source_follow,source_tag,source_similar,source_explore,baseline_score,exposed_at,create_time) VALUES (1,?,(SELECT author_id FROM article WHERE id=?),UUID(),'TAG',?,0,0,0,0,0,1,0,0,?,?,?)", article, article, article, baseline, time, time);
     }
     private void event(long article, LocalDateTime time) {
         jdbcTemplate.update("INSERT INTO user_article_event (user_id,article_id,event_type,occurred_at,dedupe_key,source,create_time) VALUES (1,?,'VIEW',?,UUID(),'recommendation',?)", article, time, time);
@@ -409,11 +535,11 @@ class RecommendationTrainingIntegrationTest extends IntegrationTestSupport {
                 List.of(1D, 1D, 1D, 1D, 1D, 1D, 1D, 1D, 1D), 0D, .75D, .6D);
     }
     private void exposure(long article, LocalDateTime time, Double baseline, double tagAffinity) {
-        jdbcTemplate.update("INSERT INTO recommendation_exposure (user_id,article_id,session_id,source,tag_affinity,author_affinity,similar_score,heat_score,freshness_score,source_follow,source_tag,source_similar,source_explore,baseline_score,exposed_at,create_time) VALUES (1,?,UUID(),'TAG',?,0,0,0,0,0,1,0,0,?,?,?)", article, tagAffinity, baseline, time, time);
+        jdbcTemplate.update("INSERT INTO recommendation_exposure (user_id,article_id,article_author_id,session_id,source,tag_affinity,author_affinity,similar_score,heat_score,freshness_score,source_follow,source_tag,source_similar,source_explore,baseline_score,exposed_at,create_time) VALUES (1,?,(SELECT author_id FROM article WHERE id=?),UUID(),'TAG',?,0,0,0,0,0,1,0,0,?,?,?)", article, article, tagAffinity, baseline, time, time);
     }
     private void exposureForUser(long user, long article, LocalDateTime time, double tagAffinity) {
-        jdbcTemplate.update("INSERT INTO recommendation_exposure (user_id,article_id,session_id,source,tag_affinity,author_affinity,similar_score,heat_score,freshness_score,source_follow,source_tag,source_similar,source_explore,baseline_score,exposed_at,create_time) VALUES (?,?,UUID(),'TAG',?,0,0,0,0,0,1,0,0,1,?,?)",
-                user, article, tagAffinity, time, time);
+        jdbcTemplate.update("INSERT INTO recommendation_exposure (user_id,article_id,article_author_id,session_id,source,tag_affinity,author_affinity,similar_score,heat_score,freshness_score,source_follow,source_tag,source_similar,source_explore,baseline_score,exposed_at,create_time) VALUES (?,?,(SELECT author_id FROM article WHERE id=?),UUID(),'TAG',?,0,0,0,0,0,1,0,0,1,?,?)",
+                user, article, article, tagAffinity, time, time);
     }
     @TestConfiguration static class FixedClockConfiguration { @Bean @Primary Clock clock() { return Clock.fixed(NOW, SHANGHAI); } }
 }

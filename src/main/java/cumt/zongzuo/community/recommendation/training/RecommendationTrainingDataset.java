@@ -7,9 +7,12 @@ import org.springframework.stereotype.Service;
 
 import java.time.Clock;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 @Service
@@ -33,32 +36,40 @@ public class RecommendationTrainingDataset {
         LocalDateTime matureBefore = now.minusDays(properties.getLabelWindowDays());
         int cohortLimit = Math.max(1, Math.min(MAX_COHORT_SIZE, properties.getTrainingSampleLimit()));
         int perUserLimit = Math.max(1, Math.min(cohortLimit, properties.getTrainingMaxSamplesPerUser()));
-        List<Row> cohort = jdbc.query("""
-                WITH per_user AS (
-                  SELECT e.id,e.exposed_at,e.baseline_score,
-                    e.tag_affinity,e.author_affinity,e.similar_score,e.heat_score,e.freshness_score,
-                    e.source_follow,e.source_tag,e.source_similar,e.source_explore,
-                    ROW_NUMBER() OVER (PARTITION BY e.user_id ORDER BY e.exposed_at DESC,e.id DESC) AS user_position
-                  FROM recommendation_exposure e
-                  WHERE e.exposed_at >= ? AND e.exposed_at < ? AND e.baseline_score IS NOT NULL
-                )
-                SELECT id,exposed_at,baseline_score,
+        int exposureScanLimit = Math.max(1, properties.getTrainingExposureScanLimit());
+        List<ScannedExposure> scannedExposures = jdbc.query("""
+                SELECT id,user_id,exposed_at,baseline_score,
                   tag_affinity,author_affinity,similar_score,heat_score,freshness_score,
                   source_follow,source_tag,source_similar,source_explore
-                FROM per_user WHERE user_position <= ?
+                FROM recommendation_exposure
+                WHERE exposed_at >= ? AND exposed_at < ?
                 ORDER BY exposed_at DESC,id DESC LIMIT ?
-                """, (rs, rowNumber) -> new Row(rs.getLong(1), rs.getObject(2, LocalDateTime.class),
-                rs.getDouble(3), new RecommendationFeatureVector(rs.getDouble(4), rs.getDouble(5),
-                rs.getDouble(6), rs.getDouble(7), rs.getDouble(8), rs.getDouble(9), rs.getDouble(10),
-                rs.getDouble(11), rs.getDouble(12))), windowStart, matureBefore, perUserLimit, cohortLimit);
+                """, (rs, rowNumber) -> new ScannedExposure(
+                rs.getLong(1), rs.getLong(2), rs.getObject(3, LocalDateTime.class),
+                (Double) rs.getObject(4), new RecommendationFeatureVector(rs.getDouble(5), rs.getDouble(6),
+                rs.getDouble(7), rs.getDouble(8), rs.getDouble(9), rs.getDouble(10), rs.getDouble(11),
+                rs.getDouble(12), rs.getDouble(13))), windowStart, matureBefore, (long) exposureScanLimit + 1L);
+        if (scannedExposures.size() > exposureScanLimit) {
+            return new Dataset(Status.EXPOSURE_SCAN_LIMIT_EXCEEDED, List.of(), List.of());
+        }
+        if (scannedExposures.isEmpty()) {
+            return new Dataset(Status.NO_DATA, List.of(), List.of());
+        }
+        Map<Long, Integer> perUserCounts = new HashMap<>();
+        List<Row> cohort = new ArrayList<>(Math.min(cohortLimit, scannedExposures.size()));
+        for (ScannedExposure exposure : scannedExposures) {
+            if (exposure.baseline() == null || cohort.size() >= cohortLimit) {
+                continue;
+            }
+            int userCount = perUserCounts.getOrDefault(exposure.userId(), 0);
+            if (userCount >= perUserLimit) {
+                continue;
+            }
+            perUserCounts.put(exposure.userId(), userCount + 1);
+            cohort.add(new Row(exposure.id(), exposure.exposedAt(), exposure.baseline(), exposure.features()));
+        }
         if (cohort.isEmpty()) {
-            Integer matureExposureExists = jdbc.queryForObject("""
-                    SELECT EXISTS(SELECT 1 FROM recommendation_exposure
-                      WHERE exposed_at >= ? AND exposed_at < ? LIMIT 1)
-                    """, Integer.class, windowStart, matureBefore);
-            Status status = Integer.valueOf(1).equals(matureExposureExists)
-                    ? Status.NO_REAL_BASELINE : Status.NO_DATA;
-            return new Dataset(status, List.of(), List.of());
+            return new Dataset(Status.NO_REAL_BASELINE, List.of(), List.of());
         }
 
         Set<Long> cohortIds = new HashSet<>(cohort.size());
@@ -101,8 +112,7 @@ public class RecommendationTrainingDataset {
                       CASE WHEN f.event_type='FOLLOW_AUTHOR' THEN (
                         SELECT e.id
                         FROM recommendation_exposure e
-                        JOIN article a ON a.id=e.article_id
-                        WHERE e.user_id=f.user_id AND a.author_id=f.target_author_id
+                        WHERE e.user_id=f.user_id AND e.article_author_id=f.target_author_id
                           AND e.exposed_at >= ? AND e.exposed_at <= f.occurred_at
                           AND f.occurred_at < TIMESTAMPADD(DAY, ?, e.exposed_at)
                         ORDER BY e.exposed_at DESC,e.id DESC LIMIT 1
@@ -139,7 +149,13 @@ public class RecommendationTrainingDataset {
         }
     }
 
-    public enum Status { READY, NO_DATA, NO_REAL_BASELINE, FACT_SCAN_LIMIT_EXCEEDED }
+    public enum Status {
+        READY,
+        NO_DATA,
+        NO_REAL_BASELINE,
+        EXPOSURE_SCAN_LIMIT_EXCEEDED,
+        FACT_SCAN_LIMIT_EXCEEDED
+    }
 
     public record Dataset(Status status, List<TrainingExample> training, List<TrainingExample> validation) {
         public Dataset {
@@ -160,6 +176,8 @@ public class RecommendationTrainingDataset {
     }
 
     private record Row(long id, LocalDateTime exposedAt, double baseline, RecommendationFeatureVector features) {}
+    private record ScannedExposure(long id, long userId, LocalDateTime exposedAt, Double baseline,
+                                   RecommendationFeatureVector features) {}
     private record Attribution(long factId, LocalDateTime occurredAt, Long exposureId) {}
     private record AttributionResult(Set<Long> positiveIds, boolean complete) {}
 }
