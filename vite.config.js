@@ -11,10 +11,10 @@ export default defineConfig({
   },
   // 【核心配置】解决 404 的关键
   server: {
-    port: 5173, // 前端端口
+    port: Number(process.env.VITE_PORT || 15173),
     proxy: {
       '/api': {
-        target: 'http://localhost:8080', // 后端接口地址
+        target: process.env.VITE_PROXY_TARGET || 'http://localhost:18080', // 后端接口地址
         changeOrigin: true,
         // rewrite: (path) => path.replace(/^\/api/, '') // ⚠️注意：如果后端 Controller 写了 /api，这里就【不要】写 rewrite
       }
