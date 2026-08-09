@@ -71,7 +71,7 @@ public class RecommendationFeedService {
                                      ObjectProvider<RecommendationModelStore> modelStoreProvider) {
         this(properties, sessionStore, articleMapper, candidateService, rankingService, exposureService,
                 userService, outboxService,
-                clockProvider.getIfAvailable(() -> Clock.system(SHANGHAI)),
+                clockProvider.getIfAvailable(Clock::systemDefaultZone),
                 eligibilityProvider.getIfAvailable(), modelStoreProvider.getIfAvailable());
     }
 

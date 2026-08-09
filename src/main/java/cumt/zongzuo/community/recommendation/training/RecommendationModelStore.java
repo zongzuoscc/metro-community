@@ -13,6 +13,7 @@ import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
@@ -29,6 +30,7 @@ public class RecommendationModelStore {
     private final ObjectMapper objectMapper;
     private final int maxAgeDays;
     private final FileOperations fileOperations;
+    private final ModelReader modelReader;
 
     @Autowired
     public RecommendationModelStore(RecommendationProperties properties, ObjectMapper objectMapper) {
@@ -38,15 +40,21 @@ public class RecommendationModelStore {
     public RecommendationModelStore(Path directory, ObjectMapper objectMapper, int maxAgeDays) {
         this(directory, objectMapper, maxAgeDays,
                 (source, target) -> Files.move(source, target, StandardCopyOption.ATOMIC_MOVE,
-                        StandardCopyOption.REPLACE_EXISTING));
+                        StandardCopyOption.REPLACE_EXISTING), defaultReader(objectMapper));
     }
 
     public RecommendationModelStore(Path directory, ObjectMapper objectMapper, int maxAgeDays,
                                     FileOperations fileOperations) {
+        this(directory, objectMapper, maxAgeDays, fileOperations, defaultReader(objectMapper));
+    }
+
+    public RecommendationModelStore(Path directory, ObjectMapper objectMapper, int maxAgeDays,
+                                    FileOperations fileOperations, ModelReader modelReader) {
         this.directory = directory.toAbsolutePath().normalize();
         this.objectMapper = objectMapper;
         this.maxAgeDays = maxAgeDays;
         this.fileOperations = fileOperations;
+        this.modelReader = modelReader;
     }
 
     public ModelPublicationResult publish(RecommendationModel model) {
@@ -77,14 +85,18 @@ public class RecommendationModelStore {
 
     public RecommendationModelLoadResult loadActive(Instant now) {
         Path active = directory.resolve("active-model.json");
-        if (!Files.exists(active)) return RecommendationModelLoadResult.unavailable(RecommendationModelLoadResult.Status.ABSENT);
         try {
-            RecommendationModel model = objectMapper.readValue(active.toFile(), RecommendationModel.class);
+            RecommendationModel model = modelReader.read(active);
+            if (model == null) {
+                return RecommendationModelLoadResult.unavailable(RecommendationModelLoadResult.Status.INVALID);
+            }
             if (model.trainedAt().isAfter(now)) return RecommendationModelLoadResult.unavailable(RecommendationModelLoadResult.Status.INVALID);
             if (model.trainedAt().plus(maxAgeDays, ChronoUnit.DAYS).isBefore(now)) {
                 return RecommendationModelLoadResult.unavailable(RecommendationModelLoadResult.Status.EXPIRED);
             }
             return RecommendationModelLoadResult.available(model);
+        } catch (NoSuchFileException exception) {
+            return RecommendationModelLoadResult.unavailable(RecommendationModelLoadResult.Status.ABSENT);
         } catch (JsonProcessingException | IllegalArgumentException exception) {
             LOGGER.warn("Ignoring invalid recommendation model at {}", active, exception);
             return RecommendationModelLoadResult.unavailable(RecommendationModelLoadResult.Status.INVALID);
@@ -92,6 +104,14 @@ public class RecommendationModelStore {
             LOGGER.warn("Recommendation model file could not be read at {}", active, exception);
             return RecommendationModelLoadResult.unavailable(RecommendationModelLoadResult.Status.IO_FAILURE);
         }
+    }
+
+    private static ModelReader defaultReader(ObjectMapper objectMapper) {
+        return path -> {
+            try (var input = Files.newInputStream(path)) {
+                return objectMapper.readValue(input, RecommendationModel.class);
+            }
+        };
     }
 
     private void writeAtomically(Path destination, RecommendationModel model) throws IOException {
@@ -112,5 +132,10 @@ public class RecommendationModelStore {
     @FunctionalInterface
     public interface FileOperations {
         void moveAtomically(Path source, Path target) throws IOException;
+    }
+
+    @FunctionalInterface
+    public interface ModelReader {
+        RecommendationModel read(Path path) throws IOException;
     }
 }

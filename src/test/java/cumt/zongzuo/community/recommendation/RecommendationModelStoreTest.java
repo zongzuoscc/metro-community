@@ -12,11 +12,14 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Path;
 import java.nio.file.Files;
 import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.AccessDeniedException;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.StandardCopyOption;
 import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -53,6 +56,15 @@ class RecommendationModelStoreTest {
     }
 
     @Test
+    void jsonNullActiveModelIsInvalidSchemaRatherThanAnOperationalFailure() throws Exception {
+        Files.writeString(directory.resolve("active-model.json"), "null");
+
+        assertThat(new RecommendationModelStore(directory, mapper(), 7)
+                .loadActive(Instant.parse("2026-08-09T13:00:00Z")).status())
+                .isEqualTo(cumt.zongzuo.community.recommendation.training.RecommendationModelLoadResult.Status.INVALID);
+    }
+
+    @Test
     void activeModelIsRetainedWhenAtomicPromotionIsUnavailable() {
         RecommendationModelStore normal = new RecommendationModelStore(directory, mapper(), 7);
         RecommendationModel previous = validModel();
@@ -64,6 +76,25 @@ class RecommendationModelStoreTest {
                 previous.means(), previous.standardDeviations(), previous.weights(), previous.bias(),
                 previous.validationAuc(), previous.baselineAuc())).reason())
                 .isEqualTo("ATOMIC_MOVE_UNSUPPORTED");
+        assertThat(normal.loadActive(Instant.parse("2026-08-09T13:00:00Z")).model()).contains(previous);
+    }
+
+    @Test
+    void activeModelIsRetainedWhenOnlyTheSecondActivePromotionFails() {
+        RecommendationModelStore normal = new RecommendationModelStore(directory, mapper(), 7);
+        RecommendationModel previous = validModel();
+        assertThat(normal.publish(previous).published()).isTrue();
+        AtomicInteger moves = new AtomicInteger();
+        RecommendationModelStore secondMoveFails = new RecommendationModelStore(directory, mapper(), 7,
+                (source, target) -> {
+                    if (moves.incrementAndGet() == 2) {
+                        throw new AtomicMoveNotSupportedException(source.toString(), target.toString(), "active promotion");
+                    }
+                    Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                });
+        RecommendationModel replacement = copyWithVersion(previous, "replacement");
+
+        assertThat(secondMoveFails.publish(replacement).reason()).isEqualTo("ATOMIC_MOVE_UNSUPPORTED");
         assertThat(normal.loadActive(Instant.parse("2026-08-09T13:00:00Z")).model()).contains(previous);
     }
 
@@ -84,6 +115,22 @@ class RecommendationModelStoreTest {
         assertThat(new RecommendationModelStore(directory, mapper(), 7)
                 .loadActive(Instant.parse("2026-08-09T13:00:00Z")).status())
                 .isEqualTo(cumt.zongzuo.community.recommendation.training.RecommendationModelLoadResult.Status.IO_FAILURE);
+    }
+
+    @Test
+    void accessDeniedFromTheActualReadIsOperationalEvenWhenThePathDoesNotExist() throws Exception {
+        RecommendationModelStore store = new RecommendationModelStore(directory.resolve("not-created"), mapper(), 7,
+                Files::move, path -> { throw new AccessDeniedException(path.toString()); });
+
+        assertThat(store.loadActive(Instant.parse("2026-08-09T13:00:00Z")).status())
+                .isEqualTo(cumt.zongzuo.community.recommendation.training.RecommendationModelLoadResult.Status.IO_FAILURE);
+    }
+
+    @Test
+    void genuinelyMissingActiveModelIsAbsent() {
+        assertThat(new RecommendationModelStore(directory, mapper(), 7)
+                .loadActive(Instant.parse("2026-08-09T13:00:00Z")).status())
+                .isEqualTo(cumt.zongzuo.community.recommendation.training.RecommendationModelLoadResult.Status.ABSENT);
     }
 
     @Test
@@ -122,6 +169,11 @@ class RecommendationModelStoreTest {
                 List.of(0D, 0D, 0D, 0D, 0D, 0D, 0D, 0D, 0D),
                 List.of(1D, 1D, 1D, 1D, 1D, 1D, 1D, 1D, 1D),
                 List.of(1D, 1D, 1D, 1D, 1D, 1D, 1D, 1D, 1D), 0D, .75, .6);
+    }
+
+    private static RecommendationModel copyWithVersion(RecommendationModel model, String version) {
+        return new RecommendationModel(version, model.trainedAt(), model.featureNames(), model.means(),
+                model.standardDeviations(), model.weights(), model.bias(), model.validationAuc(), model.baselineAuc());
     }
 
     private static ObjectMapper mapper() {

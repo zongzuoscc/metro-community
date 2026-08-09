@@ -38,6 +38,12 @@ public class RecommendationTrainingService {
         int samples = rows.sampleCount();
         int positives = rows.positiveCount();
         int negatives = rows.negativeCount();
+        if (rows.status() == RecommendationTrainingDataset.Status.NO_REAL_BASELINE) {
+            return TrainingResult.notPublished("NO_REAL_BASELINE", samples, positives, negatives);
+        }
+        if (rows.status() == RecommendationTrainingDataset.Status.NO_DATA) {
+            return TrainingResult.notPublished("NO_DATA", samples, positives, negatives);
+        }
         if (rows.isEmpty()) return TrainingResult.notPublished("NO_DATA", samples, positives, negatives);
         if (!rows.hasBothLabels()) return TrainingResult.notPublished("SPLIT_MISSING_LABEL", samples, positives, negatives);
         try {

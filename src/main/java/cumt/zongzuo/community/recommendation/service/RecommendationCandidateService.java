@@ -111,7 +111,7 @@ public class RecommendationCandidateService {
         List<Article> explore = safeList(articleMapper.selectPublishedHotFresh(userId, shown, EXPLORE_LIMIT));
         List<RecommendationCandidate> recalled = mergeRecallSources(follow, tag, similar, explore);
 
-        LocalDateTime cutoff = LocalDateTime.now(clock).minusDays(READ_WINDOW_DAYS);
+        LocalDateTime cutoff = LocalDateTime.now(clock).withNano(0).minusDays(READ_WINDOW_DAYS);
         Set<Long> recentlyInteracted = new HashSet<>(safeList(
                 eventMapper.selectRecentlyInteractedArticleIds(userId, cutoff)));
         return recalled.stream()
@@ -131,7 +131,7 @@ public class RecommendationCandidateService {
         }
         Map<String, Double> tagProfile = safeMap(profileService.profileTags(userId, PROFILE_TAG_LIMIT));
         Map<Long, Double> authorProfile = safeMap(profileService.profileAuthors(userId, PROFILE_AUTHOR_LIMIT));
-        LocalDateTime cutoff = LocalDateTime.now(clock).minusDays(READ_WINDOW_DAYS);
+        LocalDateTime cutoff = LocalDateTime.now(clock).withNano(0).minusDays(READ_WINDOW_DAYS);
         Set<Long> recentlyInteracted = new HashSet<>(safeList(
                 eventMapper.selectRecentlyInteractedArticleIds(userId, cutoff)));
         RecommendationCandidate candidate = RecommendationCandidate.unranked(
@@ -159,7 +159,7 @@ public class RecommendationCandidateService {
     }
 
     public List<Article> recallSimilar(Long userId, Set<Long> shownArticleIds) {
-        LocalDateTime cutoff = LocalDateTime.now(clock).minusDays(READ_WINDOW_DAYS);
+        LocalDateTime cutoff = LocalDateTime.now(clock).withNano(0).minusDays(READ_WINDOW_DAYS);
         List<Long> seedIds = safeList(eventMapper.selectRecentSeedArticleIds(
                 userId, cutoff, SIMILAR_SEED_LIMIT)).stream().limit(SIMILAR_SEED_LIMIT).toList();
         if (seedIds.isEmpty()) {

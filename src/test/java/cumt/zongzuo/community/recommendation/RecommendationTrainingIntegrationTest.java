@@ -2,7 +2,10 @@ package cumt.zongzuo.community.recommendation;
 
 import cumt.zongzuo.community.IntegrationTestSupport;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import cumt.zongzuo.community.recommendation.config.RecommendationProperties;
 import cumt.zongzuo.community.recommendation.service.RecommendationEligibilityService;
+import cumt.zongzuo.community.recommendation.training.RecommendationFeatureVector;
+import cumt.zongzuo.community.recommendation.training.RecommendationModel;
 import cumt.zongzuo.community.recommendation.training.RecommendationTrainingDataset;
 import cumt.zongzuo.community.recommendation.training.RecommendationModelStore;
 import cumt.zongzuo.community.recommendation.training.RecommendationTrainingService;
@@ -26,9 +29,12 @@ import java.sql.DriverManager;
 import java.sql.Statement;
 import javax.sql.DataSource;
 import java.util.UUID;
+import java.util.List;
 import org.junit.jupiter.api.io.TempDir;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 @Import(RecommendationTrainingIntegrationTest.FixedClockConfiguration.class)
 class RecommendationTrainingIntegrationTest extends IntegrationTestSupport {
@@ -38,9 +44,11 @@ class RecommendationTrainingIntegrationTest extends IntegrationTestSupport {
     @Autowired RecommendationEligibilityService eligibility;
     @Autowired ObjectMapper objectMapper;
     @Autowired DataSource dataSource;
+    @Autowired RecommendationProperties properties;
 
     @BeforeEach
     void clean() {
+        properties.setTrainingSampleLimit(50_000);
         jdbcTemplate.update("DELETE FROM user_article_event");
         jdbcTemplate.update("DELETE FROM recommendation_exposure");
         jdbcTemplate.update("DELETE FROM article");
@@ -130,15 +138,65 @@ class RecommendationTrainingIntegrationTest extends IntegrationTestSupport {
     }
 
     @Test
-    void eligibilityUsesInclusiveTwentyAndFiveHundredFactCutoffs() {
+    void boundsTheCohortBeforeAttributionAndKeepsCapExcludedWinnersOutOfSelectedLabels() {
+        properties.setTrainingSampleLimit(2);
+        article(3, 12);
+        exposure(1, LocalDateTime.of(2026, 7, 25, 20, 0), 0.1D);
+        exposure(1, LocalDateTime.of(2026, 7, 26, 20, 0), 0.2D, 2D);
+        exposure(3, LocalDateTime.of(2026, 7, 27, 20, 0), 0.3D);
+        event(1, LocalDateTime.of(2026, 7, 25, 21, 0));
+
+        RecommendationTrainingDataset.Dataset rows = dataset.load();
+
+        assertThat(all(rows)).hasSize(2);
+        assertThat(all(rows).map(row -> row.features().tagAffinity())).containsExactly(2D, 3D);
+        assertThat(rows.positiveCount()).isZero();
+    }
+
+    @Test
+    void sameTimestampAttributionUsesTheLargestExposureIdAsTheLatestPrior() {
+        LocalDateTime exposedAt = LocalDateTime.of(2026, 7, 25, 20, 0);
+        exposure(1, exposedAt, 0.1D, 1D);
+        exposure(1, exposedAt, 0.2D, 2D);
+        event(1, exposedAt.plusMinutes(1));
+
+        RecommendationTrainingDataset.Dataset rows = dataset.load();
+
+        assertThat(all(rows).filter(row -> row.label() == 1).map(row -> row.features().tagAffinity()))
+                .containsExactly(2D);
+    }
+
+    @Test
+    void continuesFactAttributionAfterOneThousandFactsUsingOccurredAtAndId() {
+        LocalDateTime exposedAt = LocalDateTime.of(2026, 7, 25, 20, 0);
+        exposure(1, exposedAt, 0.1D);
+        for (int index = 0; index < 1_000; index++) {
+            fact(2000 + index, exposedAt.plusMinutes(1), "batch-one-" + index);
+        }
+        event(1, exposedAt.plusMinutes(1));
+
+        RecommendationTrainingDataset.Dataset rows = dataset.load();
+
+        assertThat(rows.sampleCount()).isOne();
+        assertThat(rows.positiveCount()).isOne();
+    }
+
+    @Test
+    void eligibilityRequiresBothInclusiveTwentyAndFiveHundredFactCutoffs() {
         LocalDateTime userCutoff = LocalDateTime.of(2026, 7, 10, 20, 0);
         LocalDateTime globalCutoff = LocalDateTime.of(2026, 5, 11, 20, 0);
         for (int i = 0; i < 19; i++) fact(1001, userCutoff, "user-" + i);
-        for (int i = 0; i < 480; i++) fact(2000, globalCutoff, "global-" + i);
+        for (int i = 0; i < 481; i++) fact(2000, globalCutoff, "global-a-" + i);
 
         assertThat(eligibility.isEligible(1001L)).isFalse();
 
-        fact(1001, userCutoff, "twentieth-at-cutoff");
+        jdbcTemplate.update("DELETE FROM user_article_event");
+        for (int i = 0; i < 20; i++) fact(1001, userCutoff, "user-b-" + i);
+        for (int i = 0; i < 479; i++) fact(2000, globalCutoff, "global-b-" + i);
+
+        assertThat(eligibility.isEligible(1001L)).isFalse();
+
+        fact(2000, globalCutoff, "global-five-hundredth-at-cutoff");
 
         assertThat(eligibility.isEligible(1001L)).isTrue();
     }
@@ -177,6 +235,36 @@ class RecommendationTrainingIntegrationTest extends IntegrationTestSupport {
     }
 
     @Test
+    void distinguishesNoMatureExposureFromNoRealBaselineAndRetainsActiveModel(@TempDir Path modelDirectory) {
+        RecommendationModelStore store = new RecommendationModelStore(modelDirectory, objectMapper, 7);
+        RecommendationModel active = validModel("active-before-empty-loads");
+        assertThat(store.publish(active).published()).isTrue();
+        RecommendationTrainingService training = new RecommendationTrainingService(dataset, store, Clock.fixed(NOW, SHANGHAI));
+
+        assertThat(training.trainAndPublish().reason()).isEqualTo("NO_DATA");
+        assertThat(store.loadActive(NOW).model()).contains(active);
+
+        exposure(1, LocalDateTime.of(2026, 7, 25, 20, 0), null);
+
+        assertThat(training.trainAndPublish().reason()).isEqualTo("NO_REAL_BASELINE");
+        assertThat(store.loadActive(NOW).model()).contains(active);
+    }
+
+    @Test
+    void numericDatasetFailureDoesNotReplaceTheActiveModel(@TempDir Path modelDirectory) {
+        RecommendationModelStore store = new RecommendationModelStore(modelDirectory, objectMapper, 7);
+        RecommendationModel active = validModel("active-before-numeric-failure");
+        assertThat(store.publish(active).published()).isTrue();
+        RecommendationTrainingDataset failingDataset = mock(RecommendationTrainingDataset.class);
+        when(failingDataset.load()).thenThrow(new IllegalArgumentException("non-finite training input"));
+        RecommendationTrainingService training = new RecommendationTrainingService(
+                failingDataset, store, Clock.fixed(NOW, SHANGHAI));
+
+        assertThat(training.trainAndPublish().reason()).isEqualTo("NUMERIC_FAILURE");
+        assertThat(store.loadActive(NOW).model()).contains(active);
+    }
+
+    @Test
     void forwardMigrationCreatesTheRecommendationTablesAndIsIdempotentOnMySql8() throws Exception {
         String schema = "task6_migration_" + UUID.randomUUID().toString().replace("-", "");
         String jdbcUrl;
@@ -199,10 +287,17 @@ class RecommendationTrainingIntegrationTest extends IntegrationTestSupport {
                 result.next();
                 assertThat(result.getInt(1)).isEqualTo(3);
             }
-            try (var result = statement.executeQuery("SELECT COUNT(DISTINCT index_name) FROM information_schema.statistics WHERE table_schema='"
-                    + schema + "' AND index_name IN ('idx_exposure_training','idx_user_article_event_at','idx_user_author_event_at')")) {
+            try (var result = statement.executeQuery("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='"
+                    + schema + "' AND ((table_name='recommendation_exposure' AND column_name IN "
+                    + "('source_follow','source_tag','source_similar','source_explore','baseline_score')))")) {
                 result.next();
-                assertThat(result.getInt(1)).isEqualTo(3);
+                assertThat(result.getInt(1)).isEqualTo(5);
+            }
+            try (var result = statement.executeQuery("SELECT COUNT(DISTINCT index_name) FROM information_schema.statistics WHERE table_schema='"
+                    + schema + "' AND index_name IN ('idx_exposure_training','idx_user_article_event_at','idx_user_author_event_at',"
+                    + "'idx_event_occurred_at','idx_exposure_user_article_at','idx_article_recommendation_feed')")) {
+                result.next();
+                assertThat(result.getInt(1)).isEqualTo(6);
             }
             statement.execute("USE " + originalSchema);
         } finally {
@@ -243,6 +338,12 @@ class RecommendationTrainingIntegrationTest extends IntegrationTestSupport {
             exposure(article, exposedAt, baseline, tag);
             if (positive) event(article, exposedAt.plusHours(1));
         }
+    }
+    private RecommendationModel validModel(String version) {
+        return new RecommendationModel(version, NOW.minusSeconds(60), RecommendationFeatureVector.FEATURE_NAMES,
+                List.of(0D, 0D, 0D, 0D, 0D, 0D, 0D, 0D, 0D),
+                List.of(1D, 1D, 1D, 1D, 1D, 1D, 1D, 1D, 1D),
+                List.of(1D, 1D, 1D, 1D, 1D, 1D, 1D, 1D, 1D), 0D, .75D, .6D);
     }
     private void exposure(long article, LocalDateTime time, Double baseline, double tagAffinity) {
         jdbcTemplate.update("INSERT INTO recommendation_exposure (user_id,article_id,session_id,source,tag_affinity,author_affinity,similar_score,heat_score,freshness_score,source_follow,source_tag,source_similar,source_explore,baseline_score,exposed_at,create_time) VALUES (1,?,UUID(),'TAG',?,0,0,0,0,0,1,0,0,?,?,?)", article, tagAffinity, baseline, time, time);

@@ -30,7 +30,7 @@ docker compose up -d
 
 ### 2. 初始化数据库与环境变量
 
-创建 `metro_community` 数据库并执行根目录的 [script.sql](script.sql)。随后复制环境变量示例并替换占位符；不要将真实密钥提交到 Git。通过 IDE 的运行环境、Shell 或部署平台将这些变量注入 Spring Boot 进程。已有数据库在启用推荐模型训练前必须先备份，并执行 [推荐训练迁移](docs/database/migrations/2026-08-09-recommendation-training.sql)；`script.sql` 仅用于新库初始化。
+创建 `metro_community` 数据库并执行根目录的 [script.sql](script.sql)。随后复制环境变量示例并替换占位符；不要将真实密钥提交到 Git。通过 IDE 的运行环境、Shell 或部署平台将这些变量注入 Spring Boot 进程。已有数据库在启动本版本前必须先备份，并执行 [推荐训练迁移](docs/database/migrations/2026-08-09-recommendation-training.sql)；`script.sql` 仅用于新库初始化。
 
 ```bash
 cp .env.example .env
@@ -46,7 +46,7 @@ set -a && source .env && set +a
 
 默认 CORS 仅允许 `http://localhost:5173`；生产环境请通过 `CORS_ALLOWED_ORIGINS` 设置前端正式域名。
 
-推荐训练默认关闭。启用服务或调整真实曝光训练窗口时，可设置：`RECOMMENDATION_ENABLED`、`RECOMMENDATION_MODEL_WINDOW_DAYS`、`RECOMMENDATION_LABEL_WINDOW_DAYS`、`RECOMMENDATION_MODEL_MAX_AGE_DAYS`、`RECOMMENDATION_TRAINING_SAMPLE_LIMIT` 和 `RECOMMENDATION_MODEL_DIRECTORY`。模型目录应是应用进程可写的持久化绝对路径；迁移完成且训练任务已成功发布模型前，符合条件的用户仍会收到 chronology `COLD_START`。
+推荐排序 Serving 默认关闭（`RECOMMENDATION_ENABLED=false`），但训练任务仍按 Asia/Shanghai 每日 02:15 运行，且不受 Serving 开关影响。可设置：`RECOMMENDATION_MODEL_WINDOW_DAYS`、`RECOMMENDATION_LABEL_WINDOW_DAYS`、`RECOMMENDATION_MODEL_MAX_AGE_DAYS`、`RECOMMENDATION_TRAINING_SAMPLE_LIMIT` 和 `RECOMMENDATION_MODEL_DIRECTORY`。模型目录应是应用进程可写的持久化绝对路径。Serving 关闭时返回 chronology `FALLBACK`；启用 Serving 但尚无可用模型时，符合条件的用户收到 chronology `COLD_START`。
 
 RabbitMQ 工作队列现在配置了 3 次有限重试与死信队列（队列名后缀为 `.dlq`）。如果本地 RabbitMQ 已存在由旧版本创建的同名队列，需要先在管理界面删除这些**项目队列**后再启动，以便声明死信交换机参数；不要删除其他项目的队列。
 

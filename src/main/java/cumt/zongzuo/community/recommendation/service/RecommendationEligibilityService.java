@@ -31,7 +31,7 @@ public class RecommendationEligibilityService {
 
     public boolean isEligible(Long userId) {
         if (userId == null) return false;
-        LocalDateTime now = LocalDateTime.now(clock);
+        LocalDateTime now = LocalDateTime.now(clock).withNano(0);
         return eventMapper.countUserFactsSince(userId, now.minusDays(30)) >= properties.getMinimumUserEvents()
                 && eventMapper.countGlobalFactsSince(now.minusDays(90)) >= properties.getMinimumGlobalEvents();
     }

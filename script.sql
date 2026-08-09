@@ -198,6 +198,7 @@ CREATE TABLE user_article_event (
     CONSTRAINT uk_user_article_event_dedupe UNIQUE (dedupe_key),
     INDEX idx_user_event_time (user_id, occurred_at DESC),
     INDEX idx_article_event_time (article_id, occurred_at DESC),
+    INDEX idx_event_occurred_at (occurred_at, id),
     INDEX idx_user_article_event_at (user_id, article_id, occurred_at DESC, id DESC),
     INDEX idx_user_author_event_at (user_id, target_author_id, occurred_at DESC, id DESC)
 ) COMMENT='个性化推荐行为事实';
@@ -243,6 +244,7 @@ CREATE TABLE recommendation_exposure (
     UNIQUE KEY uk_recommendation_exposure (user_id, article_id, session_id),
     INDEX idx_exposure_user_time (user_id, exposed_at DESC),
     INDEX idx_exposure_article_time (article_id, exposed_at DESC),
+    INDEX idx_exposure_user_article_at (user_id, article_id, exposed_at DESC, id DESC),
     INDEX idx_exposure_training (exposed_at DESC, id DESC)
 ) COMMENT='推荐真实曝光和训练特征快照';
 

@@ -61,6 +61,7 @@ import org.springframework.http.ResponseEntity;
 
 import java.net.ServerSocket;
 import java.nio.file.Files;
+import java.nio.file.AccessDeniedException;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
@@ -275,6 +276,14 @@ class RecommendationFeedIntegrationTest extends IntegrationTestSupport {
         Files.delete(modelDirectory.resolve("active-model.json"));
         Files.createDirectory(modelDirectory.resolve("active-model.json"));
         assertThat(modelFeed.feed(USER_ID, null, 2).mode()).isEqualTo(RecommendationMode.FALLBACK);
+
+        RecommendationModelStore deniedStore = new RecommendationModelStore(
+                modelDirectory.resolve("denied-before-exists"), objectMapper, 7, Files::move,
+                path -> { throw new AccessDeniedException(path.toString()); });
+        RecommendationFeedService deniedFeed = new RecommendationFeedService(properties, sessionStore, articleMapper,
+                candidateService, rankingService, exposureService, userService, outboxService, clock,
+                eligibilityService, deniedStore);
+        assertThat(deniedFeed.feed(USER_ID, null, 2).mode()).isEqualTo(RecommendationMode.FALLBACK);
     }
 
     @Test
