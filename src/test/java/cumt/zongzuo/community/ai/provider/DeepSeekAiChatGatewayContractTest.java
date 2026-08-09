@@ -14,7 +14,11 @@ import java.io.EOFException;
 import java.net.InetSocketAddress;
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -169,6 +173,35 @@ class DeepSeekAiChatGatewayContractTest {
     }
 
     @Test
+    void appliesCapabilitySpecificReadTimeoutWithoutShorteningLongerChatCapabilities() throws Exception {
+        AtomicInteger requests = new AtomicInteger();
+        start(exchange -> {
+            requests.incrementAndGet();
+            readBody(exchange);
+            awaitDelay(400);
+            respond(exchange, 200, successJson("answer", "stop", 2, 1));
+        });
+
+        withGateway(baseUrl(), gateway -> {
+            long started = System.nanoTime();
+            assertThatThrownBy(() -> gateway.generate(command()))
+                    .isInstanceOfSatisfying(AiProviderException.class,
+                            error -> assertThat(error.reason()).isEqualTo(AiProviderErrorReason.TIMEOUT));
+            assertThat(java.time.Duration.ofNanos(System.nanoTime() - started))
+                    .isLessThan(java.time.Duration.ofMillis(500));
+
+            AiChatResult summary = gateway.generate(new AiChatCommand(AiCapability.ARTICLE_SUMMARY,
+                    List.of(new AiPromptMessage(AiPromptRole.USER, "summarize")), AiResponseMode.TEXT));
+            assertThat(summary.text()).isEqualTo("answer");
+        },
+                "metro.ai.runtime.provider-connect-timeout=PT0.1S",
+                "metro.ai.runtime.provider-timeout-margin=PT0.1S",
+                "metro.ai.agent.timeout=PT0.3S",
+                "metro.ai.article-summary.timeout=PT1S");
+        assertThat(requests).hasValue(2);
+    }
+
+    @Test
     void mapsTimeoutByThrowableTypeWithoutParsingExceptionText() {
         AiProviderException error = AiProviderException.fromTransport(
                 new ResourceAccessException("misleading status 429", new SocketTimeoutException("read timed out")));
@@ -236,19 +269,30 @@ class DeepSeekAiChatGatewayContractTest {
         withGateway(baseUrl(), assertion);
     }
 
-    private void withGateway(String baseUrl, GatewayAssertion assertion) {
+    private void withGateway(String baseUrl, GatewayAssertion assertion, String... additionalProperties) {
+        List<String> properties = new ArrayList<>(List.of(
+                "metro.ai.enabled=true",
+                "metro.ai.agent.enabled=true",
+                "metro.ai.moderation.enabled=true",
+                "metro.ai.deep-seek.base-url=" + baseUrl,
+                "metro.ai.deep-seek.api-key=contract-key",
+                "metro.ai.deep-seek.model=contract-chat"));
+        properties.addAll(Arrays.asList(additionalProperties));
         new ApplicationContextRunner().withUserConfiguration(AiProviderConfiguration.class)
-                .withPropertyValues(
-                        "metro.ai.enabled=true",
-                        "metro.ai.agent.enabled=true",
-                        "metro.ai.moderation.enabled=true",
-                        "metro.ai.deep-seek.base-url=" + baseUrl,
-                        "metro.ai.deep-seek.api-key=contract-key",
-                        "metro.ai.deep-seek.model=contract-chat")
+                .withPropertyValues(properties.toArray(String[]::new))
                 .run(context -> {
                     assertThat(context).hasNotFailed();
                     assertion.accept(context.getBean(AiChatGateway.class));
                 });
+    }
+
+    private static void awaitDelay(long millis) {
+        try {
+            new CountDownLatch(1).await(millis, TimeUnit.MILLISECONDS);
+        }
+        catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private void start(ExchangeHandler handler) throws IOException {

@@ -14,29 +14,33 @@ import org.springframework.ai.deepseek.api.ResponseFormat;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClientException;
 
+import java.util.Collections;
+import java.util.EnumMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 
 public final class DeepSeekAiChatGateway implements AiChatGateway {
 
     private static final String PROVIDER = "deepseek";
 
-    private final DeepSeekChatModel chatModel;
+    private final Map<AiCapability, DeepSeekChatModel> chatModels;
     private final String model;
-    private final Set<AiCapability> enabledCapabilities;
 
-    public DeepSeekAiChatGateway(DeepSeekChatModel chatModel, String model, Set<AiCapability> enabledCapabilities) {
-        this.chatModel = Objects.requireNonNull(chatModel, "chatModel must not be null");
+    public DeepSeekAiChatGateway(Map<AiCapability, DeepSeekChatModel> chatModels, String model) {
+        Objects.requireNonNull(chatModels, "chatModels must not be null");
+        EnumMap<AiCapability, DeepSeekChatModel> models = new EnumMap<>(AiCapability.class);
+        models.putAll(chatModels);
+        this.chatModels = Collections.unmodifiableMap(models);
         this.model = Objects.requireNonNull(model, "model must not be null");
-        this.enabledCapabilities = Set.copyOf(enabledCapabilities);
     }
 
     @Override
     public AiChatResult generate(AiChatCommand command) {
         Objects.requireNonNull(command, "command must not be null");
-        if (!enabledCapabilities.contains(command.capability())) {
+        DeepSeekChatModel chatModel = chatModels.get(command.capability());
+        if (chatModel == null) {
             throw new AiProviderException(AiProviderErrorReason.AI_DISABLED,
                     "AI capability is disabled");
         }

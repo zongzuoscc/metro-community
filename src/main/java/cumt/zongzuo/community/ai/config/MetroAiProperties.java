@@ -23,6 +23,7 @@ public class MetroAiProperties {
             Duration.ofMinutes(1), Duration.ofSeconds(20), Duration.ofSeconds(20), 2);
     private CapabilityProperties embedding = capability(false, 100_000, 0, 0, 0,
             Duration.ofMinutes(1), Duration.ofSeconds(45), Duration.ofSeconds(45), 4);
+    private RuntimeProperties runtime = new RuntimeProperties();
     private DeepSeekProperties deepSeek = new DeepSeekProperties();
     private OllamaProperties ollama = new OllamaProperties();
 
@@ -88,6 +89,14 @@ public class MetroAiProperties {
 
     public void setEmbedding(CapabilityProperties embedding) {
         this.embedding = embedding;
+    }
+
+    public RuntimeProperties getRuntime() {
+        return runtime;
+    }
+
+    public void setRuntime(RuntimeProperties runtime) {
+        this.runtime = runtime;
     }
 
     public DeepSeekProperties getDeepSeek() {
@@ -256,6 +265,118 @@ public class MetroAiProperties {
 
         public void setModel(String model) {
             this.model = model;
+        }
+    }
+
+    public static class RuntimeProperties {
+
+        private String quotaNamespace = "metro:ai:quota";
+        private Duration retryDelay = Duration.ofMillis(100);
+        private int interactiveMaxAttempts = 2;
+        private int backgroundMaxAttempts = 3;
+        private int circuitSlidingWindowSize = 20;
+        private int circuitMinimumCalls = 10;
+        private float circuitFailureRateThreshold = 50.0f;
+        private Duration circuitOpenStateWaitDuration = Duration.ofSeconds(30);
+        private int circuitPermittedCallsInHalfOpen = 2;
+        private Duration shutdownTimeout = Duration.ofSeconds(5);
+        private Duration providerConnectTimeout = Duration.ofSeconds(2);
+        private Duration providerTimeoutMargin = Duration.ofSeconds(1);
+
+        public String getQuotaNamespace() {
+            return quotaNamespace;
+        }
+
+        public void setQuotaNamespace(String quotaNamespace) {
+            this.quotaNamespace = quotaNamespace;
+        }
+
+        public Duration getRetryDelay() {
+            return retryDelay;
+        }
+
+        public void setRetryDelay(Duration retryDelay) {
+            this.retryDelay = retryDelay;
+        }
+
+        public int getInteractiveMaxAttempts() {
+            return interactiveMaxAttempts;
+        }
+
+        public void setInteractiveMaxAttempts(int interactiveMaxAttempts) {
+            this.interactiveMaxAttempts = interactiveMaxAttempts;
+        }
+
+        public int getBackgroundMaxAttempts() {
+            return backgroundMaxAttempts;
+        }
+
+        public void setBackgroundMaxAttempts(int backgroundMaxAttempts) {
+            this.backgroundMaxAttempts = backgroundMaxAttempts;
+        }
+
+        public int getCircuitSlidingWindowSize() {
+            return circuitSlidingWindowSize;
+        }
+
+        public void setCircuitSlidingWindowSize(int circuitSlidingWindowSize) {
+            this.circuitSlidingWindowSize = circuitSlidingWindowSize;
+        }
+
+        public int getCircuitMinimumCalls() {
+            return circuitMinimumCalls;
+        }
+
+        public void setCircuitMinimumCalls(int circuitMinimumCalls) {
+            this.circuitMinimumCalls = circuitMinimumCalls;
+        }
+
+        public float getCircuitFailureRateThreshold() {
+            return circuitFailureRateThreshold;
+        }
+
+        public void setCircuitFailureRateThreshold(float circuitFailureRateThreshold) {
+            this.circuitFailureRateThreshold = circuitFailureRateThreshold;
+        }
+
+        public Duration getCircuitOpenStateWaitDuration() {
+            return circuitOpenStateWaitDuration;
+        }
+
+        public void setCircuitOpenStateWaitDuration(Duration circuitOpenStateWaitDuration) {
+            this.circuitOpenStateWaitDuration = circuitOpenStateWaitDuration;
+        }
+
+        public int getCircuitPermittedCallsInHalfOpen() {
+            return circuitPermittedCallsInHalfOpen;
+        }
+
+        public void setCircuitPermittedCallsInHalfOpen(int circuitPermittedCallsInHalfOpen) {
+            this.circuitPermittedCallsInHalfOpen = circuitPermittedCallsInHalfOpen;
+        }
+
+        public Duration getShutdownTimeout() {
+            return shutdownTimeout;
+        }
+
+        public void setShutdownTimeout(Duration shutdownTimeout) {
+            this.shutdownTimeout = shutdownTimeout;
+        }
+
+        public Duration getProviderConnectTimeout() {
+            return providerConnectTimeout;
+        }
+
+        public void setProviderConnectTimeout(Duration providerConnectTimeout) {
+            this.providerConnectTimeout = providerConnectTimeout;
+        }
+
+        public Duration getProviderTimeoutMargin() {
+            return providerTimeoutMargin;
+        }
+
+        public void setProviderTimeoutMargin(Duration providerTimeoutMargin) {
+            this.providerTimeoutMargin = providerTimeoutMargin;
         }
     }
 

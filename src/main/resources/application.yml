@@ -132,6 +132,19 @@ metro:
       enabled: ${METRO_AI_EMBEDDING_ENABLED:false}
       timeout: PT45S
       bulkhead: 4
+    runtime:
+      quota-namespace: metro:ai:quota
+      retry-delay: PT0.1S
+      interactive-max-attempts: 2
+      background-max-attempts: 3
+      circuit-sliding-window-size: 20
+      circuit-minimum-calls: 10
+      circuit-failure-rate-threshold: 50
+      circuit-open-state-wait-duration: PT30S
+      circuit-permitted-calls-in-half-open: 2
+      shutdown-timeout: PT5S
+      provider-connect-timeout: PT2S
+      provider-timeout-margin: PT1S
     deep-seek:
       base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
       api-key: ${DEEPSEEK_API_KEY:}
@@ -178,3 +191,28 @@ management:
       enabled: false
     mail:
       enabled: false
+
+resilience4j:
+  bulkhead:
+    metrics:
+      enabled: false
+      legacy:
+        enabled: false
+  circuitbreaker:
+    metrics:
+      enabled: false
+      legacy:
+        enabled: false
+  retry:
+    metrics:
+      enabled: false
+      legacy:
+        enabled: false
+  thread-pool-bulkhead:
+    metrics:
+      enabled: false
+  timelimiter:
+    metrics:
+      enabled: false
+      legacy:
+        enabled: false

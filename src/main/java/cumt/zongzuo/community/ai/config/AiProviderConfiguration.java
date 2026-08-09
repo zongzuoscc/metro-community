@@ -32,6 +32,8 @@ import org.springframework.web.reactive.function.client.WebClient;
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
+import java.time.Duration;
+import java.util.EnumMap;
 import java.util.EnumSet;
 import java.util.Set;
 
@@ -52,19 +54,14 @@ public class AiProviderConfiguration {
             return new DisabledAiChatGateway(AiProviderErrorReason.AI_UNAVAILABLE);
         }
 
-        DeepSeekApi api = DeepSeekApi.builder()
-                .baseUrl(deepSeek.getBaseUrl())
-                .apiKey(deepSeek.getApiKey())
-                .restClientBuilder(jdkRestClientBuilder())
-                .webClientBuilder(jdkWebClientBuilder())
-                .responseErrorHandler(statusOnlyErrorHandler())
-                .build();
-        DeepSeekChatModel model = DeepSeekChatModel.builder()
-                .deepSeekApi(api)
-                .defaultOptions(DeepSeekChatOptions.builder().model(deepSeek.getModel()).build())
-                .retryTemplate(RetryTemplate.builder().maxAttempts(1).build())
-                .build();
-        return new DeepSeekAiChatGateway(model, deepSeek.getModel(), enabledChatCapabilities(properties));
+        EnumMap<AiCapability, DeepSeekChatModel> models = new EnumMap<>(AiCapability.class);
+        for (AiCapability capability : enabledChatCapabilities(properties)) {
+            Duration readTimeout = providerReadTimeout(capabilityTimeout(properties, capability),
+                    properties.getRuntime());
+            models.put(capability, deepSeekChatModel(deepSeek,
+                    properties.getRuntime().getProviderConnectTimeout(), readTimeout));
+        }
+        return new DeepSeekAiChatGateway(models, deepSeek.getModel());
     }
 
     @Bean
@@ -78,10 +75,14 @@ public class AiProviderConfiguration {
             return new DisabledEmbeddingGateway(AiProviderErrorReason.AI_UNAVAILABLE);
         }
 
+        Duration readTimeout = providerReadTimeout(properties.getEmbedding().getTimeout(),
+                properties.getRuntime());
         OllamaApi api = OllamaApi.builder()
                 .baseUrl(ollama.getBaseUrl())
-                .restClientBuilder(jdkRestClientBuilder())
-                .webClientBuilder(jdkWebClientBuilder())
+                .restClientBuilder(jdkRestClientBuilder(
+                        properties.getRuntime().getProviderConnectTimeout(), readTimeout))
+                .webClientBuilder(jdkWebClientBuilder(
+                        properties.getRuntime().getProviderConnectTimeout(), readTimeout))
                 .responseErrorHandler(statusOnlyErrorHandler())
                 .build();
         OllamaEmbeddingModel model = OllamaEmbeddingModel.builder()
@@ -106,13 +107,61 @@ public class AiProviderConfiguration {
         };
     }
 
-    private static WebClient.Builder jdkWebClientBuilder() {
-        return WebClient.builder().clientConnector(new JdkClientHttpConnector());
+    private static DeepSeekChatModel deepSeekChatModel(MetroAiProperties.DeepSeekProperties properties,
+                                                       Duration connectTimeout, Duration readTimeout) {
+        DeepSeekApi api = DeepSeekApi.builder()
+                .baseUrl(properties.getBaseUrl())
+                .apiKey(properties.getApiKey())
+                .restClientBuilder(jdkRestClientBuilder(connectTimeout, readTimeout))
+                .webClientBuilder(jdkWebClientBuilder(connectTimeout, readTimeout))
+                .responseErrorHandler(statusOnlyErrorHandler())
+                .build();
+        return DeepSeekChatModel.builder()
+                .deepSeekApi(api)
+                .defaultOptions(DeepSeekChatOptions.builder().model(properties.getModel()).build())
+                .retryTemplate(RetryTemplate.builder().maxAttempts(1).build())
+                .build();
     }
 
-    private static RestClient.Builder jdkRestClientBuilder() {
-        return RestClient.builder()
-                .requestFactory(new JdkClientHttpRequestFactory(HttpClient.newHttpClient()));
+    private static WebClient.Builder jdkWebClientBuilder(Duration connectTimeout, Duration readTimeout) {
+        HttpClient client = jdkHttpClient(connectTimeout);
+        JdkClientHttpConnector connector = new JdkClientHttpConnector(client);
+        connector.setReadTimeout(readTimeout);
+        return WebClient.builder().clientConnector(connector);
+    }
+
+    private static RestClient.Builder jdkRestClientBuilder(Duration connectTimeout, Duration readTimeout) {
+        JdkClientHttpRequestFactory requestFactory = new JdkClientHttpRequestFactory(
+                jdkHttpClient(connectTimeout));
+        requestFactory.setReadTimeout(readTimeout);
+        return RestClient.builder().requestFactory(requestFactory);
+    }
+
+    private static HttpClient jdkHttpClient(Duration connectTimeout) {
+        requirePositive(connectTimeout, "metro.ai.runtime.provider-connect-timeout");
+        return HttpClient.newBuilder().connectTimeout(connectTimeout).build();
+    }
+
+    private static Duration providerReadTimeout(Duration capabilityTimeout,
+                                                MetroAiProperties.RuntimeProperties runtime) {
+        requirePositive(capabilityTimeout, "capability timeout");
+        Duration connectTimeout = runtime.getProviderConnectTimeout();
+        Duration margin = runtime.getProviderTimeoutMargin();
+        requirePositive(connectTimeout, "metro.ai.runtime.provider-connect-timeout");
+        requirePositive(margin, "metro.ai.runtime.provider-timeout-margin");
+        if (connectTimeout.compareTo(capabilityTimeout) >= 0) {
+            throw new IllegalStateException("Provider connect timeout must be shorter than capability timeout");
+        }
+        if (margin.compareTo(capabilityTimeout) >= 0) {
+            throw new IllegalStateException("Provider timeout margin must be shorter than capability timeout");
+        }
+        return capabilityTimeout.minus(margin);
+    }
+
+    private static void requirePositive(Duration value, String property) {
+        if (value == null || value.isZero() || value.isNegative()) {
+            throw new IllegalStateException(property + " must be positive");
+        }
     }
 
     private static Set<AiCapability> enabledChatCapabilities(MetroAiProperties properties) {
@@ -123,5 +172,17 @@ public class AiProviderConfiguration {
             }
         }
         return Set.copyOf(capabilities);
+    }
+
+    private static Duration capabilityTimeout(MetroAiProperties properties, AiCapability capability) {
+        return switch (capability) {
+            case AGENT -> properties.getAgent().getTimeout();
+            case ARTICLE_SUMMARY -> properties.getArticleSummary().getTimeout();
+            case WRITING -> properties.getWriting().getTimeout();
+            case HYDE -> properties.getHyde().getTimeout();
+            case MODERATION -> properties.getModeration().getTimeout();
+            case MEMORY_EXTRACTION -> properties.getMemory().getTimeout();
+            case EMBEDDING -> properties.getEmbedding().getTimeout();
+        };
     }
 }

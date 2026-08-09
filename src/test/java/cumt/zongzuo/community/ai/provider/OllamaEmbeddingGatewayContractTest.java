@@ -12,7 +12,11 @@ import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -102,6 +106,30 @@ class OllamaEmbeddingGatewayContractTest {
     }
 
     @Test
+    void appliesEmbeddingSpecificReadTimeout() throws Exception {
+        AtomicInteger requests = new AtomicInteger();
+        start(exchange -> {
+            requests.incrementAndGet();
+            readBody(exchange);
+            awaitDelay(1_000);
+            respond(exchange, 200, embeddingsJson(vector(0.25f, 1024)));
+        });
+
+        withGateway(baseUrl(), gateway -> {
+            long started = System.nanoTime();
+            assertThatThrownBy(() -> gateway.embed(command("one")))
+                    .isInstanceOfSatisfying(AiProviderException.class,
+                            error -> assertThat(error.reason()).isEqualTo(AiProviderErrorReason.TIMEOUT));
+            assertThat(java.time.Duration.ofNanos(System.nanoTime() - started))
+                    .isLessThan(java.time.Duration.ofMillis(700));
+        },
+                "metro.ai.runtime.provider-connect-timeout=PT0.1S",
+                "metro.ai.runtime.provider-timeout-margin=PT0.1S",
+                "metro.ai.embedding.timeout=PT0.35S");
+        assertThat(requests).hasValue(1);
+    }
+
+    @Test
     void rejectsMalformedAndEmptyResponses() throws Exception {
         assertResponseFailure("{not-json", AiProviderErrorReason.MALFORMED_RESPONSE);
         restart();
@@ -177,17 +205,28 @@ class OllamaEmbeddingGatewayContractTest {
         withGateway(baseUrl(), assertion);
     }
 
-    private void withGateway(String baseUrl, GatewayAssertion assertion) {
+    private void withGateway(String baseUrl, GatewayAssertion assertion, String... additionalProperties) {
+        List<String> properties = new ArrayList<>(List.of(
+                "metro.ai.enabled=true",
+                "metro.ai.embedding.enabled=true",
+                "metro.ai.ollama.base-url=" + baseUrl,
+                "metro.ai.ollama.model=contract-embed"));
+        properties.addAll(Arrays.asList(additionalProperties));
         new ApplicationContextRunner().withUserConfiguration(AiProviderConfiguration.class)
-                .withPropertyValues(
-                        "metro.ai.enabled=true",
-                        "metro.ai.embedding.enabled=true",
-                        "metro.ai.ollama.base-url=" + baseUrl,
-                        "metro.ai.ollama.model=contract-embed")
+                .withPropertyValues(properties.toArray(String[]::new))
                 .run(context -> {
                     assertThat(context).hasNotFailed();
                     assertion.accept(context.getBean(EmbeddingGateway.class));
                 });
+    }
+
+    private static void awaitDelay(long millis) {
+        try {
+            new CountDownLatch(1).await(millis, TimeUnit.MILLISECONDS);
+        }
+        catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private void start(ExchangeHandler handler) throws IOException {
