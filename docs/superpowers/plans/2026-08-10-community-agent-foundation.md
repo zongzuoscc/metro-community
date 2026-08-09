@@ -237,15 +237,21 @@ git commit -m "build(ai): upgrade spring ai foundation"
 - Create: `src/main/java/cumt/zongzuo/community/ai/provider/EmbeddingGateway.java`
 - Create: `src/main/java/cumt/zongzuo/community/ai/provider/AiChatCommand.java`
 - Create: `src/main/java/cumt/zongzuo/community/ai/provider/AiChatResult.java`
+- Create: `src/main/java/cumt/zongzuo/community/ai/provider/AiPromptMessage.java`
+- Create: `src/main/java/cumt/zongzuo/community/ai/provider/AiPromptRole.java`
+- Create: `src/main/java/cumt/zongzuo/community/ai/provider/AiResponseMode.java`
 - Create: `src/main/java/cumt/zongzuo/community/ai/provider/EmbeddingCommand.java`
 - Create: `src/main/java/cumt/zongzuo/community/ai/provider/EmbeddingResult.java`
+- Create: `src/main/java/cumt/zongzuo/community/ai/provider/AiProviderErrorReason.java`
 - Create: `src/main/java/cumt/zongzuo/community/ai/provider/AiProviderException.java`
+- Create: `src/main/java/cumt/zongzuo/community/ai/provider/ProviderHttpStatusException.java`
 - Create: `src/main/java/cumt/zongzuo/community/ai/provider/DeepSeekAiChatGateway.java`
 - Create: `src/main/java/cumt/zongzuo/community/ai/provider/OllamaEmbeddingGateway.java`
 - Create: `src/main/java/cumt/zongzuo/community/ai/provider/DisabledAiChatGateway.java`
 - Create: `src/main/java/cumt/zongzuo/community/ai/provider/DisabledEmbeddingGateway.java`
 - Modify: `src/main/resources/application.yml`
 - Create: `src/test/java/cumt/zongzuo/community/ai/config/MetroAiPropertiesTest.java`
+- Create: `src/test/java/cumt/zongzuo/community/ai/config/AiProviderConfigurationTest.java`
 - Create: `src/test/java/cumt/zongzuo/community/ai/provider/DeepSeekAiChatGatewayContractTest.java`
 - Create: `src/test/java/cumt/zongzuo/community/ai/provider/OllamaEmbeddingGatewayContractTest.java`
 
@@ -272,23 +278,41 @@ public record EmbeddingResult(List<float[]> vectors, String provider, String mod
 
 - [ ] **Step 1: Write typed-config and local-stub contract tests**
 
-Bind a complete property set and assert defaults: all flags false, DeepSeek model `deepseek-v4-flash`, Ollama model `bge-m3`. Use JDK `HttpServer` on `127.0.0.1:0` to return deterministic DeepSeek `/chat/completions` and Ollama `/api/embed` JSON; assert parsed text/tokens and a 1024-float vector. A stub returning 429/500 increments an `AtomicInteger`; assert one gateway call produces exactly one HTTP request and a typed `AiProviderException` rather than a fallback string.
+Bind a complete property set and assert defaults: all flags false, DeepSeek model `deepseek-v4-flash`, Ollama model `bge-m3`. Verify the all-off context has disabled gateways and no `DeepSeekApi`, `DeepSeekChatModel`, `OllamaApi` or `OllamaEmbeddingModel` bean. Use JDK `HttpServer` on `127.0.0.1:0` to return deterministic DeepSeek `/chat/completions` and Ollama `/api/embed` JSON; assert parsed text/tokens and a 1024-float vector. A stub returning 429/500 increments an `AtomicInteger`; assert one gateway call produces exactly one HTTP request and a typed `AiProviderException` rather than a fallback string. Also cover empty/invalid JSON, missing choices, `finish_reason=length`, embedding count mismatch and any vector whose dimension is not exactly 1024.
 
 - [ ] **Step 2: Run red gateway tests**
 
-Run: `./mvnw -Dtest=MetroAiPropertiesTest,DeepSeekAiChatGatewayContractTest,OllamaEmbeddingGatewayContractTest test`
+Run: `./mvnw -Dtest=MetroAiPropertiesTest,AiProviderConfigurationTest,DeepSeekAiChatGatewayContractTest,OllamaEmbeddingGatewayContractTest test`
 
 Expected: FAIL because typed config and gateways do not exist.
 
 - [ ] **Step 3: Implement config, adapters, availability fallback and retry-off**
 
-Bind `metro.ai.enabled`, `agent.enabled`, `memory.enabled`, `writing.enabled`, `moderation.enabled`, `embedding.enabled`, provider base URL/key/model and per-capability limits. Construct `DeepSeekApi`/`DeepSeekChatModel` and `OllamaApi`/`OllamaEmbeddingModel` only when the root flag, relevant capability flag and credential/endpoint are present. Pass a Spring Retry `RetryTemplate` with `maxAttempts(1)` to the DeepSeek model. Register disabled gateways with `@ConditionalOnMissingBean`; they throw `AI_DISABLED` or `AI_UNAVAILABLE` without network I/O.
+Bind `metro.ai.enabled`, `agent.enabled`, `memory.enabled`, `writing.enabled`, `moderation.enabled`, `embedding.enabled`, provider base URL/key/model and per-capability limits. Exclude Spring AI's DeepSeek/Ollama model auto-configurations and `OllamaApiAutoConfiguration`; the project configuration is the only owner of Provider clients, so the all-off context creates neither model nor low-level API beans. Construct `DeepSeekApi`/`DeepSeekChatModel` and `OllamaApi`/`OllamaEmbeddingModel` only when the root flag, relevant capability flag and credential/endpoint are present; otherwise return a disabled gateway that distinguishes `AI_DISABLED` from `AI_UNAVAILABLE` without network I/O.
 
-Map connect/timeout, 429, retryable 5xx, non-retryable 4xx, malformed response and empty response to typed provider error reasons. Never catch and return a user-facing sentence.
+Use the real Spring AI 1.1.8 builder API:
+
+```java
+DeepSeekApi.builder().baseUrl(baseUrl).apiKey(apiKey)
+    .responseErrorHandler(statusOnlyErrorHandler).build();
+DeepSeekChatModel.builder().deepSeekApi(api)
+    .defaultOptions(DeepSeekChatOptions.builder().model(model).build())
+    .retryTemplate(RetryTemplate.builder().maxAttempts(1).build()).build();
+
+OllamaApi.builder().baseUrl(baseUrl)
+    .responseErrorHandler(statusOnlyErrorHandler).build();
+OllamaEmbeddingModel.builder().ollamaApi(api)
+    .defaultOptions(OllamaEmbeddingOptions.builder().model(model).build())
+    .modelManagementOptions(ModelManagementOptions.defaults()).build();
+```
+
+`ModelManagementOptions.defaults()` must keep pull strategy `NEVER`; do not call `dimensions()` because it performs an extra embedding request for an unknown model. `AiResponseMode.JSON_OBJECT` maps to DeepSeek `ResponseFormat` locally, while no gateway registers tools. Validate non-null text/result/metadata and normalize finish reason; validate embedding result count, order, finiteness and 1024 dimensions in Java.
+
+Inject a project `ResponseErrorHandler` into both API builders so HTTP status is preserved in an internal exception without retaining or exposing the Provider body. Map connect/timeout, 429, retryable 5xx, non-retryable 4xx, malformed response and empty response to typed provider error reasons. Never parse status from exception text and never catch and return a user-facing sentence.
 
 - [ ] **Step 4: Run green protocol and no-Key tests**
 
-Run: `./mvnw -Dtest=MetroAiPropertiesTest,DeepSeekAiChatGatewayContractTest,OllamaEmbeddingGatewayContractTest,NoAiStartupIntegrationTest test`
+Run: `./mvnw -Dtest=MetroAiPropertiesTest,AiProviderConfigurationTest,DeepSeekAiChatGatewayContractTest,OllamaEmbeddingGatewayContractTest,NoAiStartupIntegrationTest test`
 
 Expected: PASS; stub counters prove no hidden retry, and empty keys still start with disabled gateways.
 
