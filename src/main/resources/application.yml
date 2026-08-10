@@ -90,6 +90,14 @@ app:
     ticket-ttl: ${WEBSOCKET_TICKET_TTL:PT30S}
 
 metro:
+  migration:
+    stage-b:
+      action: ${METRO_STAGE_B_MIGRATION_ACTION:NONE}
+      batch-size: ${METRO_STAGE_B_MIGRATION_BATCH_SIZE:100}
+      verification-page-size: ${METRO_STAGE_B_VERIFICATION_PAGE_SIZE:500}
+      maximum-reported-mismatches: ${METRO_STAGE_B_MAX_MISMATCHES:100}
+      elasticsearch-read-alias: ${METRO_STAGE_B_ES_READ_ALIAS:article-read}
+      elasticsearch-pit-keep-alive: ${METRO_STAGE_B_ES_PIT_KEEP_ALIVE:PT1M}
   article:
     revision-mode: ${METRO_ARTICLE_REVISION_MODE:LEGACY}
   events:

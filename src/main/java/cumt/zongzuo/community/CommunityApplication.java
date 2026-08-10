@@ -3,6 +3,7 @@ package cumt.zongzuo.community;
 import cumt.zongzuo.community.config.SecurityProperties;
 import cumt.zongzuo.community.config.WebSocketProperties;
 import cumt.zongzuo.community.article.config.ArticleRevisionProperties;
+import cumt.zongzuo.community.article.migration.StageBMigrationProperties;
 import cumt.zongzuo.community.recommendation.config.RecommendationProperties;
 import org.mybatis.spring.annotation.MapperScan;
 import org.apache.ibatis.annotations.Mapper;
@@ -28,7 +29,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
         "cumt.zongzuo.community.ai.moderation.revision"}, annotationClass = Mapper.class)
 @EnableScheduling
 @EnableConfigurationProperties({SecurityProperties.class, WebSocketProperties.class, RecommendationProperties.class,
-        ArticleRevisionProperties.class})
+        ArticleRevisionProperties.class, StageBMigrationProperties.class})
 public class CommunityApplication {
 
 	public static void main(String[] args) {
