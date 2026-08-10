@@ -22,6 +22,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -235,6 +236,241 @@ class AiCapabilityExecutorTest {
 
         assertThat(entered.getCount()).isZero();
         await().atMost(Duration.ofSeconds(2)).untilTrue(interrupted);
+    }
+
+    @Test
+    void observedTimeoutCompletesTheStartedAttemptExactlyOnceAndDiscardsLateResult() {
+        Map<AiCapability, AiCapabilityPolicy> policies = defaultPolicies();
+        policies.put(AiCapability.AGENT, policy(AiCapability.AGENT, 4_000,
+                Duration.ofMillis(60), 1));
+        AtomicInteger began = new AtomicInteger();
+        AtomicInteger completed = new AtomicInteger();
+        AtomicReference<Throwable> completionError = new AtomicReference<>();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        executor = executor(policies, context -> { }, runtimeDefaults());
+
+        assertReason(AiExecutionErrorReason.TIMEOUT, () -> executor.execute(
+                context(AiCapability.AGENT, 10, Instant.now().plusSeconds(2), false),
+                new AiCapabilityExecutor.AttemptObserver<Integer, String>() {
+                    @Override
+                    public Integer begin() {
+                        return began.incrementAndGet();
+                    }
+
+                    @Override
+                    public void complete(Integer attempt, String result, Throwable error) {
+                        completed.incrementAndGet();
+                        completionError.set(error);
+                    }
+                }, attempt -> {
+                    entered.countDown();
+                    boolean released = false;
+                    while (!released) {
+                        try {
+                            released = release.await(2, TimeUnit.SECONDS);
+                        }
+                        catch (InterruptedException ignored) {
+                            // Model a transport that returns after cancellation.
+                        }
+                    }
+                    return "late";
+                }));
+
+        assertThat(entered.getCount()).isZero();
+        assertThat(began).hasValue(1);
+        assertThat(completed).hasValue(1);
+        assertThat(completionError.get()).isInstanceOf(AiExecutionException.class);
+        release.countDown();
+        await().during(Duration.ofMillis(150)).atMost(Duration.ofSeconds(1))
+                .untilAsserted(() -> assertThat(completed).hasValue(1));
+    }
+
+    @Test
+    void saturatedLaneRejectsObservedInvocationWithoutBeginningAnAttempt() throws Exception {
+        Map<AiCapability, AiCapabilityPolicy> policies = defaultPolicies();
+        policies.put(AiCapability.AGENT, policy(AiCapability.AGENT, 4_000,
+                Duration.ofSeconds(3), 1));
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicInteger began = new AtomicInteger();
+        ExecutorService callers = Executors.newSingleThreadExecutor();
+        executor = executor(policies, context -> { }, runtimeDefaults());
+        try {
+            Future<String> active = callers.submit(() -> executor.execute(
+                    context(AiCapability.AGENT, 10, Instant.now().plusSeconds(5), false), () -> {
+                        entered.countDown();
+                        release.await();
+                        return "active";
+                    }));
+            assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue();
+
+            assertReason(AiExecutionErrorReason.BULKHEAD_FULL, () -> executor.execute(
+                    context(AiCapability.AGENT, 10, Instant.now().plusSeconds(1), false),
+                    new AiCapabilityExecutor.AttemptObserver<Integer, String>() {
+                        @Override
+                        public Integer begin() {
+                            return began.incrementAndGet();
+                        }
+
+                        @Override
+                        public void complete(Integer attempt, String result, Throwable error) {
+                        }
+                    }, attempt -> "unexpected"));
+
+            assertThat(began).hasValue(0);
+            release.countDown();
+            assertThat(active.get(2, TimeUnit.SECONDS)).isEqualTo("active");
+        }
+        finally {
+            release.countDown();
+            callers.shutdownNow();
+        }
+    }
+
+    @Test
+    void observedAuditFailureWinsOverConcurrentTimeoutInsteadOfBeingLost() throws Exception {
+        Map<AiCapability, AiCapabilityPolicy> policies = defaultPolicies();
+        policies.put(AiCapability.AGENT, policy(AiCapability.AGENT, 4_000,
+                Duration.ofMillis(60), 1));
+        CountDownLatch auditEntered = new CountDownLatch(1);
+        CountDownLatch releaseAudit = new CountDownLatch(1);
+        AtomicInteger completions = new AtomicInteger();
+        ExecutorService releaser = Executors.newSingleThreadExecutor();
+        executor = executor(policies, context -> { }, runtimeDefaults());
+        try {
+            releaser.submit(() -> {
+                auditEntered.await(2, TimeUnit.SECONDS);
+                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(120));
+                releaseAudit.countDown();
+                return null;
+            });
+
+            assertThatThrownBy(() -> executor.execute(
+                    context(AiCapability.AGENT, 10, Instant.now().plusSeconds(2), false),
+                    new AiCapabilityExecutor.AttemptObserver<Integer, String>() {
+                        @Override
+                        public Integer begin() {
+                            return 1;
+                        }
+
+                        @Override
+                        public void complete(Integer attempt, String result, Throwable error) {
+                            completions.incrementAndGet();
+                            auditEntered.countDown();
+                            try {
+                                releaseAudit.await(2, TimeUnit.SECONDS);
+                            }
+                            catch (InterruptedException ignored) {
+                                Thread.currentThread().interrupt();
+                            }
+                            throw new IllegalStateException("audit write failed");
+                        }
+                    }, attempt -> "ok"))
+                    .isInstanceOf(AiExecutionException.class)
+                    .satisfies(error -> assertThat(error)
+                            .hasRootCauseMessage("audit write failed"));
+
+            assertThat(completions).hasValue(1);
+        }
+        finally {
+            releaseAudit.countDown();
+            releaser.shutdownNow();
+        }
+    }
+
+    @Test
+    void observedRetriesCompleteOneLifecycleForEachRealProviderCall() {
+        AtomicInteger began = new AtomicInteger();
+        AtomicInteger providerCalls = new AtomicInteger();
+        List<Throwable> outcomes = new java.util.concurrent.CopyOnWriteArrayList<>();
+        executor = executor(defaultPolicies(), context -> { }, runtimeDefaults());
+
+        String result = executor.execute(context(AiCapability.AGENT, 10,
+                        Instant.now().plusSeconds(2), false),
+                new AiCapabilityExecutor.AttemptObserver<Integer, String>() {
+                    @Override
+                    public Integer begin() {
+                        return began.incrementAndGet();
+                    }
+
+                    @Override
+                    public void complete(Integer attempt, String value, Throwable error) {
+                        outcomes.add(error);
+                    }
+                }, attempt -> {
+                    if (providerCalls.incrementAndGet() == 1) {
+                        throw provider(AiProviderErrorReason.RETRYABLE_PROVIDER_FAILURE, 503);
+                    }
+                    return "ok";
+                });
+
+        assertThat(result).isEqualTo("ok");
+        assertThat(providerCalls).hasValue(2);
+        assertThat(began).hasValue(2);
+        assertThat(outcomes).hasSize(2);
+        assertThat(outcomes.get(0)).isInstanceOf(AiProviderException.class);
+        assertThat(outcomes.get(1)).isNull();
+    }
+
+    @Test
+    void observedBackgroundExhaustionAuditsAllThreeProviderCalls() {
+        AtomicInteger began = new AtomicInteger();
+        AtomicInteger providerCalls = new AtomicInteger();
+        AtomicInteger completions = new AtomicInteger();
+        executor = executor(defaultPolicies(), context -> { }, runtimeDefaults());
+
+        assertThatThrownBy(() -> executor.execute(context(AiCapability.ARTICLE_SUMMARY, 10,
+                        Instant.now().plusSeconds(2), true),
+                new AiCapabilityExecutor.AttemptObserver<Integer, String>() {
+                    @Override
+                    public Integer begin() {
+                        return began.incrementAndGet();
+                    }
+
+                    @Override
+                    public void complete(Integer attempt, String result, Throwable error) {
+                        completions.incrementAndGet();
+                        assertThat(error).isInstanceOf(AiProviderException.class);
+                    }
+                }, attempt -> {
+                    providerCalls.incrementAndGet();
+                    throw provider(AiProviderErrorReason.RETRYABLE_PROVIDER_FAILURE, 503);
+                })).isInstanceOf(AiProviderException.class);
+
+        assertThat(providerCalls).hasValue(3);
+        assertThat(began).hasValue(3);
+        assertThat(completions).hasValue(3);
+    }
+
+    @Test
+    void observedAuditFailureStopsRetryBeforeAnotherProviderCall() {
+        AtomicInteger providerCalls = new AtomicInteger();
+        AtomicInteger completions = new AtomicInteger();
+        executor = executor(defaultPolicies(), context -> { }, runtimeDefaults());
+
+        assertThatThrownBy(() -> executor.execute(context(AiCapability.ARTICLE_SUMMARY, 10,
+                        Instant.now().plusSeconds(2), true),
+                new AiCapabilityExecutor.AttemptObserver<Integer, String>() {
+                    @Override
+                    public Integer begin() {
+                        return 1;
+                    }
+
+                    @Override
+                    public void complete(Integer attempt, String result, Throwable error) {
+                        completions.incrementAndGet();
+                        throw new IllegalStateException("audit persistence failed");
+                    }
+                }, attempt -> {
+                    providerCalls.incrementAndGet();
+                    throw provider(AiProviderErrorReason.RETRYABLE_PROVIDER_FAILURE, 503);
+                }))
+                .isInstanceOf(AiExecutionException.class)
+                .hasRootCauseMessage("audit persistence failed");
+
+        assertThat(providerCalls).hasValue(1);
+        assertThat(completions).hasValue(1);
     }
 
     @Test

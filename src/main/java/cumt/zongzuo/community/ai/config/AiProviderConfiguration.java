@@ -61,7 +61,8 @@ public class AiProviderConfiguration {
             models.put(capability, deepSeekChatModel(deepSeek,
                     properties.getRuntime().getProviderConnectTimeout(), readTimeout));
         }
-        return new DeepSeekAiChatGateway(models, deepSeek.getModel());
+        return new DeepSeekAiChatGateway(models, deepSeek.getModel(),
+                properties.getModeration().getMaxOutputTokens());
     }
 
     @Bean

@@ -23,6 +23,7 @@ public class RabbitConfig {
     public static final String DEAD_LETTER_EXCHANGE = "community.dlx";
     public static final String DOMAIN_EVENT_EXCHANGE = "community.domain.events";
     public static final String ARTICLE_MODERATION_QUEUE = "article.moderation.queue";
+    public static final String ARTICLE_MODERATION_RETRY_QUEUE = "article.moderation.retry.queue";
     public static final String ARTICLE_SEARCH_PROJECTION_QUEUE = "article.search.projection.queue";
     public static final String ARTICLE_MODERATION_NOTIFICATION_QUEUE = "article.moderation.notification.queue";
 

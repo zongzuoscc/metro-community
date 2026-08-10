@@ -20,6 +20,7 @@ public class AiRuntimeConfiguration {
 
     @Bean
     AiCapabilityPolicyResolver aiCapabilityPolicyResolver(MetroAiProperties properties) {
+        properties.validateModeration();
         return new AiCapabilityPolicyResolver(properties);
     }
 

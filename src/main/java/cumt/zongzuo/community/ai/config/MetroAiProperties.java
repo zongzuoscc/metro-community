@@ -3,6 +3,7 @@ package cumt.zongzuo.community.ai.config;
 import cumt.zongzuo.community.ai.provider.AiCapability;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
+import java.math.BigDecimal;
 import java.time.Duration;
 
 @ConfigurationProperties(prefix = "metro.ai")
@@ -17,8 +18,7 @@ public class MetroAiProperties {
             Duration.ofMinutes(10), Duration.ofSeconds(60), Duration.ofSeconds(60), 4);
     private CapabilityProperties hyde = capability(false, 4_000, 600, 0, 0,
             Duration.ofMinutes(1), Duration.ofSeconds(8), Duration.ofSeconds(8), 8);
-    private CapabilityProperties moderation = capability(false, 100_000, 0, 0, 0,
-            Duration.ofMinutes(1), Duration.ofSeconds(20), Duration.ofSeconds(90), 2);
+    private ModerationProperties moderation = moderation();
     private CapabilityProperties memory = capability(false, 20_000, 0, 0, 0,
             Duration.ofMinutes(1), Duration.ofSeconds(20), Duration.ofSeconds(20), 2);
     private CapabilityProperties embedding = capability(false, 100_000, 0, 0, 0,
@@ -67,11 +67,11 @@ public class MetroAiProperties {
         this.hyde = hyde;
     }
 
-    public CapabilityProperties getModeration() {
+    public ModerationProperties getModeration() {
         return moderation;
     }
 
-    public void setModeration(CapabilityProperties moderation) {
+    public void setModeration(ModerationProperties moderation) {
         this.moderation = moderation;
     }
 
@@ -135,6 +135,52 @@ public class MetroAiProperties {
         };
     }
 
+    public void validateModeration() {
+        ModerationProperties value = moderation;
+        if (value == null || value.getTimeout() == null || value.getTimeout().isZero()
+                || value.getTimeout().isNegative()
+                || value.getTimeout().compareTo(Duration.ofSeconds(20)) > 0
+                || value.getTaskTimeout() == null || value.getTaskTimeout().isZero()
+                || value.getTaskTimeout().isNegative()
+                || value.getTaskTimeout().compareTo(Duration.ofSeconds(90)) > 0
+                || value.getTaskTimeout().compareTo(value.getTimeout()) < 0
+                || value.getLeaseDuration() == null
+                || value.getLeaseDuration().compareTo(value.getTaskTimeout().plusSeconds(1)) < 0
+                || value.getMaxOutputTokens() <= 0 || value.getMaxChunkTokens() <= 0
+                || value.getOverlapTokens() < 0
+                || value.getOverlapTokens() >= value.getMaxChunkTokens()
+                || value.getMaxChunks() <= 0 || value.getMaxEstimatedTokens() <= 0
+                || value.getMaxEstimatedCostMicros() <= 0
+                || value.getInputCostMicrosPerMillionTokens() <= 0
+                || value.getOutputCostMicrosPerMillionTokens() <= 0
+                || value.getMinimumConfidence() == null
+                || value.getMinimumConfidence().compareTo(BigDecimal.ZERO) <= 0
+                || value.getMinimumConfidence().compareTo(BigDecimal.ONE) > 0) {
+            throw new IllegalStateException("Invalid metro.ai.moderation safety configuration");
+        }
+        try {
+            int reservedOutput = Math.multiplyExact(
+                    Math.multiplyExact(value.getMaxChunks(), value.getMaxOutputTokens()),
+                    runtime.getBackgroundMaxAttempts());
+            if (reservedOutput >= value.getMaxEstimatedTokens()) {
+                throw new ArithmeticException("moderation output reserve consumes whole task budget");
+            }
+            long reservedOutputCost = ceilingCost(reservedOutput,
+                    value.getOutputCostMicrosPerMillionTokens());
+            if (reservedOutputCost >= value.getMaxEstimatedCostMicros()) {
+                throw new ArithmeticException("moderation output reserve consumes whole cost budget");
+            }
+        }
+        catch (ArithmeticException error) {
+            throw new IllegalStateException("Invalid metro.ai.moderation token budget", error);
+        }
+    }
+
+    private static long ceilingCost(long tokens, long microsPerMillionTokens) {
+        return Math.addExact(Math.multiplyExact(tokens, microsPerMillionTokens),
+                999_999L) / 1_000_000L;
+    }
+
     private static CapabilityProperties capability(boolean enabled, int maxInputCharacters,
                                                    int maxOutputCharacters, int perMinute, int perDay,
                                                    Duration quotaWindow, Duration timeout,
@@ -149,6 +195,20 @@ public class MetroAiProperties {
         properties.setTimeout(timeout);
         properties.setTaskTimeout(taskTimeout);
         properties.setBulkhead(bulkhead);
+        return properties;
+    }
+
+    private static ModerationProperties moderation() {
+        ModerationProperties properties = new ModerationProperties();
+        properties.setEnabled(false);
+        properties.setMaxInputCharacters(100_000);
+        properties.setMaxOutputCharacters(0);
+        properties.setPerMinute(0);
+        properties.setPerDay(0);
+        properties.setQuotaWindow(Duration.ofMinutes(1));
+        properties.setTimeout(Duration.ofSeconds(20));
+        properties.setTaskTimeout(Duration.ofSeconds(90));
+        properties.setBulkhead(2);
         return properties;
     }
 
@@ -265,6 +325,100 @@ public class MetroAiProperties {
 
         public void setModel(String model) {
             this.model = model;
+        }
+    }
+
+    public static class ModerationProperties extends CapabilityProperties {
+
+        private int maxOutputTokens = 800;
+        private int maxChunkTokens = 3_000;
+        private int overlapTokens = 200;
+        private int maxChunks = 16;
+        private int maxEstimatedTokens = 48_000;
+        private long maxEstimatedCostMicros = 100_000L;
+        private long inputCostMicrosPerMillionTokens = 500_000L;
+        private long outputCostMicrosPerMillionTokens = 2_000_000L;
+        private BigDecimal minimumConfidence = new BigDecimal("0.80");
+        private Duration leaseDuration = Duration.ofSeconds(120);
+
+        public int getMaxOutputTokens() {
+            return maxOutputTokens;
+        }
+
+        public void setMaxOutputTokens(int maxOutputTokens) {
+            this.maxOutputTokens = maxOutputTokens;
+        }
+
+        public int getMaxChunkTokens() {
+            return maxChunkTokens;
+        }
+
+        public void setMaxChunkTokens(int maxChunkTokens) {
+            this.maxChunkTokens = maxChunkTokens;
+        }
+
+        public int getOverlapTokens() {
+            return overlapTokens;
+        }
+
+        public void setOverlapTokens(int overlapTokens) {
+            this.overlapTokens = overlapTokens;
+        }
+
+        public int getMaxChunks() {
+            return maxChunks;
+        }
+
+        public void setMaxChunks(int maxChunks) {
+            this.maxChunks = maxChunks;
+        }
+
+        public int getMaxEstimatedTokens() {
+            return maxEstimatedTokens;
+        }
+
+        public void setMaxEstimatedTokens(int maxEstimatedTokens) {
+            this.maxEstimatedTokens = maxEstimatedTokens;
+        }
+
+        public long getMaxEstimatedCostMicros() {
+            return maxEstimatedCostMicros;
+        }
+
+        public void setMaxEstimatedCostMicros(long maxEstimatedCostMicros) {
+            this.maxEstimatedCostMicros = maxEstimatedCostMicros;
+        }
+
+        public long getInputCostMicrosPerMillionTokens() {
+            return inputCostMicrosPerMillionTokens;
+        }
+
+        public void setInputCostMicrosPerMillionTokens(long value) {
+            this.inputCostMicrosPerMillionTokens = value;
+        }
+
+        public long getOutputCostMicrosPerMillionTokens() {
+            return outputCostMicrosPerMillionTokens;
+        }
+
+        public void setOutputCostMicrosPerMillionTokens(long value) {
+            this.outputCostMicrosPerMillionTokens = value;
+        }
+
+        public BigDecimal getMinimumConfidence() {
+            return minimumConfidence;
+        }
+
+        public void setMinimumConfidence(BigDecimal minimumConfidence) {
+            this.minimumConfidence = minimumConfidence;
+        }
+
+        public Duration getLeaseDuration() {
+            return leaseDuration;
+        }
+
+        public void setLeaseDuration(Duration leaseDuration) {
+            this.leaseDuration = leaseDuration;
         }
     }
 

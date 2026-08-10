@@ -153,6 +153,20 @@ metro:
       timeout: PT20S
       task-timeout: PT90S
       bulkhead: 2
+      max-output-tokens: 800
+      max-chunk-tokens: 3000
+      overlap-tokens: 200
+      max-chunks: 16
+      max-estimated-tokens: 48000
+      # Budget coefficients are conservative configured ceilings, not live price discovery.
+      max-estimated-cost-micros: ${METRO_AI_MODERATION_MAX_COST_MICROS:100000}
+      input-cost-micros-per-million-tokens: ${METRO_AI_MODERATION_INPUT_COST_MICROS_PER_MILLION:500000}
+      output-cost-micros-per-million-tokens: ${METRO_AI_MODERATION_OUTPUT_COST_MICROS_PER_MILLION:2000000}
+      minimum-confidence: 0.80
+      lease-duration: PT120S
+      recovery-enabled: ${METRO_AI_MODERATION_RECOVERY_ENABLED:true}
+      recovery-delay-ms: ${METRO_AI_MODERATION_RECOVERY_DELAY_MS:30000}
+      recovery-initial-delay-ms: ${METRO_AI_MODERATION_RECOVERY_INITIAL_DELAY_MS:30000}
     memory:
       enabled: ${METRO_AI_MEMORY_ENABLED:false}
       timeout: PT20S

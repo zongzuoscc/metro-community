@@ -27,13 +27,19 @@ public final class DeepSeekAiChatGateway implements AiChatGateway {
 
     private final Map<AiCapability, DeepSeekChatModel> chatModels;
     private final String model;
+    private final int moderationMaxOutputTokens;
 
-    public DeepSeekAiChatGateway(Map<AiCapability, DeepSeekChatModel> chatModels, String model) {
+    public DeepSeekAiChatGateway(Map<AiCapability, DeepSeekChatModel> chatModels, String model,
+                                 int moderationMaxOutputTokens) {
         Objects.requireNonNull(chatModels, "chatModels must not be null");
         EnumMap<AiCapability, DeepSeekChatModel> models = new EnumMap<>(AiCapability.class);
         models.putAll(chatModels);
         this.chatModels = Collections.unmodifiableMap(models);
         this.model = Objects.requireNonNull(model, "model must not be null");
+        if (moderationMaxOutputTokens <= 0) {
+            throw new IllegalArgumentException("moderationMaxOutputTokens must be positive");
+        }
+        this.moderationMaxOutputTokens = moderationMaxOutputTokens;
     }
 
     @Override
@@ -45,7 +51,7 @@ public final class DeepSeekAiChatGateway implements AiChatGateway {
                     "AI capability is disabled");
         }
         Prompt prompt = new Prompt(command.messages().stream().map(this::toSpringMessage).toList(),
-                requestOptions(command.responseMode()));
+                requestOptions(command));
 
         try {
             return toResult(chatModel.call(prompt));
@@ -69,10 +75,13 @@ public final class DeepSeekAiChatGateway implements AiChatGateway {
         }
     }
 
-    private DeepSeekChatOptions requestOptions(AiResponseMode responseMode) {
+    private DeepSeekChatOptions requestOptions(AiChatCommand command) {
         DeepSeekChatOptions.Builder builder = DeepSeekChatOptions.builder().model(model);
-        if (responseMode == AiResponseMode.JSON_OBJECT) {
+        if (command.responseMode() == AiResponseMode.JSON_OBJECT) {
             builder.responseFormat(ResponseFormat.builder().type(ResponseFormat.Type.JSON_OBJECT).build());
+        }
+        if (command.capability() == AiCapability.MODERATION) {
+            builder.temperature(0.0).maxTokens(moderationMaxOutputTokens);
         }
         return builder.build();
     }

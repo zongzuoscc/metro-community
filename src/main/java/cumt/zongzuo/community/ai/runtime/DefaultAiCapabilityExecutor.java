@@ -70,7 +70,25 @@ public final class DefaultAiCapabilityExecutor implements AiCapabilityExecutor, 
 
     @Override
     public <T> T execute(AiInvocationContext context, CheckedSupplier<T> operation) {
+        Objects.requireNonNull(operation, "operation");
+        return execute(context, new AttemptObserver<>() {
+            @Override
+            public Object begin() {
+                return new Object();
+            }
+
+            @Override
+            public void complete(Object attempt, T result, Throwable error) {
+                // The original API intentionally has no per-attempt observer.
+            }
+        }, ignored -> operation.get());
+    }
+
+    @Override
+    public <A, T> T execute(AiInvocationContext context, AttemptObserver<A, T> observer,
+                            AttemptOperation<A, T> operation) {
         Objects.requireNonNull(context, "context");
+        Objects.requireNonNull(observer, "observer");
         Objects.requireNonNull(operation, "operation");
         AiCapabilityPolicy policy = policyResolver.resolve(context.capability());
         Instant invocationStarted = clock.instant();
@@ -89,7 +107,8 @@ public final class DefaultAiCapabilityExecutor implements AiCapabilityExecutor, 
             CapabilityLane lane = lane(context);
             RetryDeadlineGuard retryDeadlineGuard = new RetryDeadlineGuard();
             Retry retry = retry(context, effectiveDeadline, retryDeadlineGuard);
-            CheckedSupplier<T> timed = () -> executeTimedAttempt(lane, effectiveDeadline, operation);
+            CheckedSupplier<T> timed = () -> executeTimedAttempt(lane, effectiveDeadline,
+                    observer, operation);
             CheckedSupplier<T> bulkheaded = Bulkhead.decorateCheckedSupplier(lane.bulkhead(), timed);
             CheckedSupplier<T> circuitProtected = CircuitBreaker.decorateCheckedSupplier(
                     lane.circuitBreaker(), bulkheaded);
@@ -113,8 +132,9 @@ public final class DefaultAiCapabilityExecutor implements AiCapabilityExecutor, 
         }
     }
 
-    private <T> T executeTimedAttempt(CapabilityLane lane, EffectiveDeadline effectiveDeadline,
-                                      CheckedSupplier<T> operation) throws Throwable {
+    private <A, T> T executeTimedAttempt(CapabilityLane lane, EffectiveDeadline effectiveDeadline,
+                                         AttemptObserver<A, T> observer,
+                                         AttemptOperation<A, T> operation) throws Throwable {
         Duration remaining = Duration.between(clock.instant(), effectiveDeadline.instant());
         if (remaining.isZero() || remaining.isNegative()) {
             throw expired(effectiveDeadline);
@@ -126,26 +146,40 @@ public final class DefaultAiCapabilityExecutor implements AiCapabilityExecutor, 
         TimeLimiter limiter = TimeLimiter.of("ai-" + lane.policy().capability().name().toLowerCase(Locale.ROOT),
                 config);
         AtomicReference<Future<T>> submitted = new AtomicReference<>();
+        AttemptScope<A, T> attempt = new AttemptScope<>(observer);
         try {
             return TimeLimiter.decorateFutureSupplier(limiter, () -> {
-                Future<T> future = lane.executor().submit(() -> invokeProvider(lane.policy(), operation));
+                Future<T> future = lane.executor().submit(() -> invokeProvider(lane.policy(),
+                        () -> attempt.execute(operation)));
                 submitted.set(future);
                 return future;
             }).call();
         }
         catch (TimeoutException error) {
-            cancel(submitted.get());
-            if (effectiveDeadline.reason() == AiExecutionErrorReason.TIMEOUT) {
-                metrics.recordProviderTimeout(lane.policy());
+            AiExecutionException expired = expired(effectiveDeadline, error);
+            try {
+                attempt.forceFailure(expired);
             }
-            throw expired(effectiveDeadline, error);
+            finally {
+                cancel(submitted.get());
+                if (effectiveDeadline.reason() == AiExecutionErrorReason.TIMEOUT) {
+                    metrics.recordProviderTimeout(lane.policy());
+                }
+            }
+            throw expired;
         }
         catch (InterruptedException error) {
-            Future<T> future = submitted.get();
-            cancel(future);
-            Thread.currentThread().interrupt();
-            throw new AiExecutionException(AiExecutionErrorReason.CANCELLED,
+            AiExecutionException cancelled = new AiExecutionException(
+                    AiExecutionErrorReason.CANCELLED,
                     "AI capability execution was cancelled", error);
+            try {
+                attempt.forceFailure(cancelled);
+            }
+            finally {
+                cancel(submitted.get());
+                Thread.currentThread().interrupt();
+            }
+            throw cancelled;
         }
         catch (OperationThrowable error) {
             throw error.getCause();
@@ -427,5 +461,165 @@ public final class DefaultAiCapabilityExecutor implements AiCapabilityExecutor, 
         private OperationThrowable(Throwable cause) {
             super(cause);
         }
+    }
+
+    private static final class AttemptScope<A, T> {
+
+        private final AttemptObserver<A, T> observer;
+        private AttemptState state = AttemptState.NEW;
+        private A attempt;
+        private Throwable forcedFailure;
+        private Throwable completionFailure;
+
+        private AttemptScope(AttemptObserver<A, T> observer) {
+            this.observer = observer;
+        }
+
+        private T execute(AttemptOperation<A, T> operation) throws Throwable {
+            synchronized (this) {
+                if (state != AttemptState.NEW) {
+                    throw forcedFailure == null
+                            ? new CancellationException("observed attempt was cancelled before start")
+                            : forcedFailure;
+                }
+                state = AttemptState.ACTIVE;
+            }
+            A started;
+            try {
+                started = Objects.requireNonNull(observer.begin(),
+                        "observed attempt must not be null");
+            }
+            catch (Throwable error) {
+                synchronized (this) {
+                    state = AttemptState.FINALIZED;
+                    completionFailure = error;
+                    notifyAll();
+                }
+                throw error;
+            }
+            Throwable forced;
+            synchronized (this) {
+                attempt = started;
+                forced = forcedFailure;
+                notifyAll();
+            }
+            if (forced != null) {
+                finish(started, null, forced);
+                throw forced;
+            }
+            try {
+                T result = operation.execute(started);
+                finish(started, result, null);
+                return result;
+            }
+            catch (Throwable error) {
+                finish(started, null, error);
+                throw error;
+            }
+        }
+
+        private void forceFailure(Throwable error) {
+            A started;
+            synchronized (this) {
+                if (state == AttemptState.NEW) {
+                    forcedFailure = error;
+                    state = AttemptState.CANCELLED;
+                    notifyAll();
+                    return;
+                }
+                if (forcedFailure == null) {
+                    forcedFailure = error;
+                }
+                while (state == AttemptState.ACTIVE && attempt == null) {
+                    waitUninterruptibly();
+                }
+                if (state == AttemptState.FINALIZING) {
+                    awaitFinalized();
+                    rethrowCompletionFailure();
+                    return;
+                }
+                if (state == AttemptState.FINALIZED || state == AttemptState.CANCELLED) {
+                    rethrowCompletionFailure();
+                    return;
+                }
+                started = attempt;
+            }
+            finish(started, null, forcedFailure);
+        }
+
+        private void finish(A started, T result, Throwable error) {
+            synchronized (this) {
+                if (state == AttemptState.FINALIZING) {
+                    awaitFinalized();
+                    rethrowCompletionFailure();
+                    return;
+                }
+                if (state == AttemptState.FINALIZED || state == AttemptState.CANCELLED) {
+                    rethrowCompletionFailure();
+                    return;
+                }
+                state = AttemptState.FINALIZING;
+                if (forcedFailure != null) {
+                    result = null;
+                    error = forcedFailure;
+                }
+            }
+            Throwable callbackFailure = null;
+            try {
+                observer.complete(started, result, error);
+            }
+            catch (Throwable failure) {
+                callbackFailure = failure;
+            }
+            synchronized (this) {
+                completionFailure = callbackFailure;
+                state = AttemptState.FINALIZED;
+                notifyAll();
+            }
+            rethrowCompletionFailure();
+        }
+
+        private void awaitFinalized() {
+            while (state == AttemptState.FINALIZING) {
+                waitUninterruptibly();
+            }
+        }
+
+        private void waitUninterruptibly() {
+            boolean interrupted = false;
+            while (true) {
+                try {
+                    wait();
+                    break;
+                }
+                catch (InterruptedException ignored) {
+                    interrupted = true;
+                }
+            }
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
+        private void rethrowCompletionFailure() {
+            if (completionFailure instanceof RuntimeException runtime) {
+                throw runtime;
+            }
+            if (completionFailure instanceof Error fatal) {
+                throw fatal;
+            }
+            if (completionFailure != null) {
+                throw new IllegalStateException("observed attempt completion failed",
+                        completionFailure);
+            }
+        }
+    }
+
+    private enum AttemptState {
+        NEW,
+        ACTIVE,
+        FINALIZING,
+        FINALIZED,
+        CANCELLED
     }
 }

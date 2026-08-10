@@ -52,6 +52,7 @@ class ModerationEnabledFallbackIntegrationTest extends IntegrationTestSupport {
     static void aiProviderProperties(DynamicPropertyRegistry registry) {
         registry.add("metro.ai.enabled", () -> "true");
         registry.add("metro.ai.moderation.enabled", () -> "true");
+        registry.add("metro.ai.moderation.recovery-enabled", () -> "false");
         registry.add("metro.ai.deep-seek.api-key", () -> "test-only-key");
         registry.add("metro.ai.deep-seek.base-url",
                 () -> "http://127.0.0.1:" + PROVIDER.getAddress().getPort());

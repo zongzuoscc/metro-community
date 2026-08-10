@@ -74,6 +74,8 @@ class DeepSeekAiChatGatewayContractTest {
             assertThat(requestJson.path("messages").get(0).path("role").asText()).isEqualTo("system");
             assertThat(requestJson.path("messages").get(1).path("role").asText()).isEqualTo("user");
             assertThat(requestJson.path("messages").get(2).path("role").asText()).isEqualTo("assistant");
+            assertThat(requestJson.has("temperature")).isFalse();
+            assertThat(requestJson.has("max_tokens")).isFalse();
         });
     }
 
@@ -90,8 +92,41 @@ class DeepSeekAiChatGatewayContractTest {
 
         JsonNode requestJson = readJson(body.get());
         assertThat(requestJson.path("response_format").path("type").asText()).isEqualTo("json_object");
+        assertThat(requestJson.has("temperature")).isTrue();
+        assertThat(requestJson.path("temperature").decimalValue()).isEqualByComparingTo("0.0");
+        assertThat(requestJson.has("max_tokens")).isTrue();
+        assertThat(requestJson.path("max_tokens").asInt()).isEqualTo(800);
         assertThat(requestJson.has("tools")).isFalse();
         assertThat(requestJson.has("tool_choice")).isFalse();
+    }
+
+    @Test
+    void moderationOptionsFollowCapabilityWhileJsonFormatFollowsResponseMode() throws Exception {
+        List<String> bodies = new ArrayList<>();
+        start(exchange -> {
+            bodies.add(readBody(exchange));
+            respond(exchange, 200, successJson("{}", "stop", 2, 1));
+        });
+
+        withGateway(gateway -> {
+            gateway.generate(new AiChatCommand(AiCapability.MODERATION,
+                    List.of(new AiPromptMessage(AiPromptRole.USER, "classify")), AiResponseMode.TEXT));
+            gateway.generate(new AiChatCommand(AiCapability.AGENT,
+                    List.of(new AiPromptMessage(AiPromptRole.USER, "json")), AiResponseMode.JSON_OBJECT));
+        });
+
+        JsonNode moderationText = readJson(bodies.get(0));
+        assertThat(moderationText.path("temperature").decimalValue()).isEqualByComparingTo("0.0");
+        assertThat(moderationText.path("max_tokens").asInt()).isEqualTo(800);
+        assertThat(moderationText.has("response_format")).isFalse();
+        assertThat(moderationText.has("tools")).isFalse();
+
+        JsonNode agentJson = readJson(bodies.get(1));
+        assertThat(agentJson.path("response_format").path("type").asText())
+                .isEqualTo("json_object");
+        assertThat(agentJson.has("temperature")).isFalse();
+        assertThat(agentJson.has("max_tokens")).isFalse();
+        assertThat(agentJson.has("tools")).isFalse();
     }
 
     @Test

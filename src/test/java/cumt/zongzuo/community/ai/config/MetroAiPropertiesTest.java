@@ -7,8 +7,10 @@ import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Configuration;
 
 import java.time.Duration;
+import java.math.BigDecimal;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class MetroAiPropertiesTest {
 
@@ -52,6 +54,20 @@ class MetroAiPropertiesTest {
             assertThat(properties.getModeration().getTimeout()).isEqualTo(Duration.ofSeconds(20));
             assertThat(properties.getModeration().getTaskTimeout()).isEqualTo(Duration.ofSeconds(90));
             assertThat(properties.getModeration().getBulkhead()).isEqualTo(2);
+            assertThat(properties.getModeration().getMaxOutputTokens()).isEqualTo(800);
+            assertThat(properties.getModeration().getMaxChunkTokens()).isEqualTo(3_000);
+            assertThat(properties.getModeration().getOverlapTokens()).isEqualTo(200);
+            assertThat(properties.getModeration().getMaxChunks()).isEqualTo(16);
+            assertThat(properties.getModeration().getMaxEstimatedTokens()).isEqualTo(48_000);
+            assertThat(properties.getModeration().getMaxEstimatedCostMicros()).isEqualTo(100_000);
+            assertThat(properties.getModeration().getInputCostMicrosPerMillionTokens())
+                    .isEqualTo(500_000);
+            assertThat(properties.getModeration().getOutputCostMicrosPerMillionTokens())
+                    .isEqualTo(2_000_000);
+            assertThat(properties.getModeration().getMinimumConfidence())
+                    .isEqualByComparingTo("0.80");
+            assertThat(properties.getModeration().getLeaseDuration()).isEqualTo(Duration.ofSeconds(120));
+            properties.validateModeration();
             assertThat(properties.getMemory().getTimeout()).isEqualTo(Duration.ofSeconds(20));
             assertThat(properties.getMemory().getBulkhead()).isEqualTo(2);
             assertThat(properties.getEmbedding().getTimeout()).isEqualTo(Duration.ofSeconds(45));
@@ -70,6 +86,33 @@ class MetroAiPropertiesTest {
             assertThat(properties.getRuntime().getProviderConnectTimeout()).isEqualTo(Duration.ofSeconds(2));
             assertThat(properties.getRuntime().getProviderTimeoutMargin()).isEqualTo(Duration.ofSeconds(1));
         });
+    }
+
+    @Test
+    void rejectsUnsafeModerationBudgetsEvenWhenAiIsOff() {
+        MetroAiProperties properties = new MetroAiProperties();
+        properties.getModeration().setOverlapTokens(3_000);
+        assertThatThrownBy(properties::validateModeration).isInstanceOf(IllegalStateException.class);
+
+        properties = new MetroAiProperties();
+        properties.getModeration().setLeaseDuration(Duration.ofSeconds(90));
+        assertThatThrownBy(properties::validateModeration).isInstanceOf(IllegalStateException.class);
+
+        properties = new MetroAiProperties();
+        properties.getModeration().setMinimumConfidence(new BigDecimal("1.01"));
+        assertThatThrownBy(properties::validateModeration).isInstanceOf(IllegalStateException.class);
+
+        properties = new MetroAiProperties();
+        properties.getModeration().setTimeout(Duration.ofSeconds(21));
+        assertThatThrownBy(properties::validateModeration).isInstanceOf(IllegalStateException.class);
+
+        properties = new MetroAiProperties();
+        properties.getModeration().setMaxEstimatedTokens(12_800);
+        assertThatThrownBy(properties::validateModeration).isInstanceOf(IllegalStateException.class);
+
+        properties = new MetroAiProperties();
+        properties.getModeration().setMaxEstimatedCostMicros(76_800);
+        assertThatThrownBy(properties::validateModeration).isInstanceOf(IllegalStateException.class);
     }
 
     @Test
