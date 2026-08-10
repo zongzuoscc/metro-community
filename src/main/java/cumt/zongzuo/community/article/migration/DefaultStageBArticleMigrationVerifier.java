@@ -18,9 +18,6 @@ import org.elasticsearch.client.Response;
 import org.elasticsearch.client.RestClient;
 import org.apache.http.util.EntityUtils;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
@@ -48,6 +45,8 @@ public class DefaultStageBArticleMigrationVerifier implements StageBArticleMigra
     private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
     private final ArticleRevisionModeResolver modeResolver;
     private final StageBMigrationProperties properties;
+    private final StageBArticleFingerprintService fingerprintService;
+    private final StageBRevisionAwareStateValidator revisionAwareValidator;
 
     public DefaultStageBArticleMigrationVerifier(JdbcTemplate jdbc,
                                                  ElasticsearchClient elasticsearch,
@@ -55,7 +54,8 @@ public class DefaultStageBArticleMigrationVerifier implements StageBArticleMigra
                                                  ArticleContentCanonicalizer canonicalizer,
                                                  com.fasterxml.jackson.databind.ObjectMapper objectMapper,
                                                  ArticleRevisionModeResolver modeResolver,
-                                                 StageBMigrationProperties properties) {
+                                                 StageBMigrationProperties properties,
+                                                 StageBArticleFingerprintService fingerprintService) {
         this.jdbc = jdbc;
         this.elasticsearch = elasticsearch;
         this.elasticsearchRestClient = elasticsearchRestClient;
@@ -63,6 +63,9 @@ public class DefaultStageBArticleMigrationVerifier implements StageBArticleMigra
         this.objectMapper = objectMapper;
         this.modeResolver = modeResolver;
         this.properties = properties;
+        this.fingerprintService = fingerprintService;
+        this.revisionAwareValidator = new StageBRevisionAwareStateValidator(
+                canonicalizer, objectMapper);
     }
 
     @Override
@@ -73,7 +76,7 @@ public class DefaultStageBArticleMigrationVerifier implements StageBArticleMigra
         int pageSize = verifiedPageSize();
         MismatchCollector mismatches = new MismatchCollector(properties.getMaximumReportedMismatches());
         LocalDateTime startedAt = databaseNow();
-        String startFingerprint = databaseFingerprint(pageSize);
+        String startFingerprint = fingerprintService.fingerprint();
 
         long articleCount = count("article");
         long draftCount = count("article_draft");
@@ -107,7 +110,7 @@ public class DefaultStageBArticleMigrationVerifier implements StageBArticleMigra
         verifyEveryRevisionHash(pageSize, mismatches);
         ElasticsearchScan es = verifyElasticsearch(expectedPublicDocumentCount, pageSize, mismatches);
 
-        String endFingerprint = databaseFingerprint(pageSize);
+        String endFingerprint = fingerprintService.fingerprint();
         LocalDateTime finishedAt = databaseNow();
         if (!startFingerprint.equals(endFingerprint)) {
             mismatches.add("VERIFY_FENCE_FINGERPRINT_CHANGED", null,
@@ -163,6 +166,19 @@ public class DefaultStageBArticleMigrationVerifier implements StageBArticleMigra
         ArticleContentSnapshot legacy = canonicalizer.canonicalize(article.title(), article.summary(),
                 article.content(), article.cover(), legacyTags);
         StoredDraft draft = loadDraft(article.id());
+        StageBRevisionAwareStateValidator.Validation revisionAware =
+                validateRevisionAware(article, draft, legacy);
+        if (revisionAware.classification()
+                != StageBRevisionAwareStateValidator.Classification.LEGACY) {
+            if (revisionAware.classification()
+                    == StageBRevisionAwareStateValidator.Classification.NEEDS_BASELINE) {
+                mismatches.add("BASELINE_REVISION_MISSING", article.id(),
+                        "final backfill did not freeze the native draft baseline");
+            }
+            revisionAware.violations().forEach(violation ->
+                    mismatches.add(violation.code(), article.id(), violation.detail()));
+            return;
+        }
         if (draft == null) {
             mismatches.add("DRAFT_MISSING", article.id(), "article has no current draft");
         } else {
@@ -212,6 +228,45 @@ public class DefaultStageBArticleMigrationVerifier implements StageBArticleMigra
         }
     }
 
+    private StageBRevisionAwareStateValidator.Validation validateRevisionAware(
+            VerifierArticle article, StoredDraft draft, ArticleContentSnapshot legacy) {
+        StageBRevisionAwareStateValidator.DraftState draftState = draft == null ? null
+                : new StageBRevisionAwareStateValidator.DraftState(
+                draft.articleId(), draft.userId(), draft.title(), draft.summary(),
+                draft.bodyMarkdown(), draft.bodyPlain(), draft.cover(), draft.tagsJson(),
+                draft.contentHash());
+        List<StageBRevisionAwareStateValidator.RevisionState> revisions =
+                loadRevisions(article.id()).stream()
+                        .map(revision -> new StageBRevisionAwareStateValidator.RevisionState(
+                                revision.id(), revision.articleId(), revision.revisionNo(),
+                                revision.title(), revision.summary(), revision.bodyMarkdown(),
+                                revision.bodyPlain(), revision.cover(), revision.tagsJson(),
+                                revision.contentHash(), revision.createdBy()))
+                        .toList();
+        List<StageBRevisionAwareStateValidator.JobState> jobs = loadJobs(article.id()).stream()
+                .map(job -> new StageBRevisionAwareStateValidator.JobState(
+                        job.id(), job.articleId(), job.revisionId(), job.contentHash(), job.state(),
+                        job.modelDecision(), job.riskScore(), job.policyHitsJson(), job.attemptCount(),
+                        job.nextAttemptAt(), job.leaseOwner(), job.leaseUntil(), job.lastError(),
+                        job.reviewerId(), job.reviewReason(), job.reviewedAt(), job.lockVersion()))
+                .toList();
+        List<StageBRevisionAwareStateValidator.AttemptState> attempts =
+                loadAttempts(article.id()).stream()
+                        .map(attempt -> new StageBRevisionAwareStateValidator.AttemptState(
+                                attempt.id(), attempt.jobId(), attempt.attemptNo(),
+                                attempt.provider(), attempt.model(), attempt.promptVersion(),
+                                attempt.inputHash(), attempt.structuredOutputJson(),
+                                attempt.latencyMs(), attempt.tokenUsageJson(),
+                                attempt.finishReason(), attempt.errorCode(), attempt.createdAt()))
+                        .toList();
+        return revisionAwareValidator.validate(
+                new StageBRevisionAwareStateValidator.ArticleState(
+                        article.id(), article.authorId(), article.status(), article.isDeleted(),
+                        article.latestRevisionId(), article.pendingRevisionId(),
+                        article.publishedRevisionId(), article.visibilityState(), article.reviewState()),
+                draftState, revisions, jobs, attempts, legacy);
+    }
+
     private void verifyStatusZero(VerifierArticle article, MismatchCollector mismatches) {
         if (article.latestRevisionId() != null || article.pendingRevisionId() != null
                 || article.publishedRevisionId() != null) {
@@ -252,21 +307,9 @@ public class DefaultStageBArticleMigrationVerifier implements StageBArticleMigra
                     "pending revision does not match the frozen legacy snapshot");
             return;
         }
-        List<StoredJob> jobs = jdbc.query("""
-                SELECT id,revision_id,content_hash,state,model_decision,risk_score,policy_hits_json,
-                       attempt_count,next_attempt_at,lease_owner,lease_until,last_error,reviewer_id,
-                       review_reason,reviewed_at,lock_version
-                FROM article_moderation_job
-                WHERE article_id=? AND revision_id=? ORDER BY id
-                """, (rs, rowNum) -> new StoredJob(
-                rs.getLong("id"), rs.getLong("revision_id"), rs.getString("content_hash"),
-                rs.getString("state"), rs.getString("model_decision"), rs.getString("risk_score"),
-                rs.getString("policy_hits_json"), rs.getInt("attempt_count"),
-                rs.getTimestamp("next_attempt_at"), rs.getString("lease_owner"),
-                rs.getTimestamp("lease_until"), rs.getString("last_error"),
-                nullableLong(rs, "reviewer_id"), rs.getString("review_reason"),
-                rs.getTimestamp("reviewed_at"), rs.getLong("lock_version")),
-                article.id(), revision.id());
+        List<StoredJob> jobs = loadJobs(article.id()).stream()
+                .filter(job -> job.revisionId() == revision.id())
+                .toList();
         if (jobs.size() != 1) {
             mismatches.add("MODERATION_JOB_COUNT_MISMATCH", article.id(),
                     "pending revision must have exactly one bound job");
@@ -474,28 +517,6 @@ public class DefaultStageBArticleMigrationVerifier implements StageBArticleMigra
         return java.util.Collections.unmodifiableMap(byId);
     }
 
-    private String databaseFingerprint(int pageSize) {
-        MessageDigest digest = sha256();
-        fingerprintTable(digest, "article", "id", """
-                id,title,summary,content,cover,author_id,status,is_deleted,update_time,
-                latest_revision_id,pending_revision_id,published_revision_id,visibility_state,
-                review_state,lifecycle_epoch,lock_version
-                """, pageSize);
-        fingerprintTable(digest, "article_draft", "article_id", """
-                article_id,user_id,draft_version,title,summary,body_markdown,body_plain,cover,
-                tags_json,content_hash,created_at,updated_at,lock_version
-                """, pageSize);
-        fingerprintTable(digest, "article_revision", "id", """
-                id,article_id,revision_no,title,summary,body_markdown,body_plain,cover,tags_json,
-                content_hash,source_draft_version,created_by,created_at
-                """, pageSize);
-        fingerprintTable(digest, "article_moderation_job", "id", """
-                id,article_id,revision_id,content_hash,state,attempt_count,next_attempt_at,lease_owner,
-                lease_until,last_error,reviewer_id,review_reason,reviewed_at,created_at,updated_at,lock_version
-                """, pageSize);
-        return java.util.HexFormat.of().formatHex(digest.digest());
-    }
-
     private String openPointInTime(String keepAlive) throws Exception {
         String alias = exactAlias();
         Request request = new Request("POST", "/" + alias + "/_pit");
@@ -523,40 +544,6 @@ public class DefaultStageBArticleMigrationVerifier implements StageBArticleMigra
             throw new IllegalStateException("Elasticsearch verification requires one exact alias name");
         }
         return alias;
-    }
-
-    private void fingerprintTable(MessageDigest digest, String table, String idColumn,
-                                  String columns, int pageSize) {
-        digest.update((table + "\n").getBytes(StandardCharsets.UTF_8));
-        int columnCount = columns.split(",").length;
-        long cursor = 0;
-        while (true) {
-            List<FingerprintRow> rows = jdbc.query("SELECT " + columns + " FROM " + table
-                            + " WHERE " + idColumn + ">? ORDER BY " + idColumn + " LIMIT ?",
-                    (rs, rowNum) -> fingerprintRow(rs, idColumn, columnCount), cursor, pageSize);
-            if (rows.isEmpty()) {
-                return;
-            }
-            for (FingerprintRow row : rows) {
-                cursor = row.id();
-                for (String value : row.values()) {
-                    updateDigest(digest, value);
-                }
-            }
-            if (rows.size() < pageSize) {
-                return;
-            }
-        }
-    }
-
-    private FingerprintRow fingerprintRow(ResultSet resultSet, String idColumn, int columnCount)
-            throws SQLException {
-        ArrayList<String> values = new ArrayList<>(columnCount);
-        for (int index = 1; index <= columnCount; index++) {
-            values.add(resultSet.getString(index));
-        }
-        return new FingerprintRow(resultSet.getLong(idColumn),
-                java.util.Collections.unmodifiableList(new ArrayList<>(values)));
     }
 
     private long countWindowWrites(LocalDateTime start, LocalDateTime end) {
@@ -587,6 +574,49 @@ public class DefaultStageBArticleMigrationVerifier implements StageBArticleMigra
                 WHERE article_id=? AND revision_no=1
                 """, (rs, rowNum) -> revision(rs), articleId);
         return rows.isEmpty() ? null : rows.getFirst();
+    }
+
+    private List<StoredRevision> loadRevisions(long articleId) {
+        return jdbc.query("""
+                SELECT id,article_id,revision_no,title,summary,body_markdown,body_plain,cover,
+                       tags_json,content_hash,created_by FROM article_revision
+                WHERE article_id=? ORDER BY revision_no,id
+                """, (rs, rowNum) -> revision(rs), articleId);
+    }
+
+    private List<StoredJob> loadJobs(long articleId) {
+        return jdbc.query("""
+                SELECT id,article_id,revision_id,content_hash,state,model_decision,risk_score,
+                       policy_hits_json,attempt_count,next_attempt_at,lease_owner,lease_until,
+                       last_error,reviewer_id,review_reason,reviewed_at,lock_version
+                FROM article_moderation_job WHERE article_id=? ORDER BY id
+                """, (rs, rowNum) -> new StoredJob(
+                rs.getLong("id"), rs.getLong("article_id"), rs.getLong("revision_id"),
+                rs.getString("content_hash"), rs.getString("state"),
+                rs.getString("model_decision"), rs.getString("risk_score"),
+                rs.getString("policy_hits_json"), rs.getInt("attempt_count"),
+                rs.getTimestamp("next_attempt_at"), rs.getString("lease_owner"),
+                rs.getTimestamp("lease_until"), rs.getString("last_error"),
+                nullableLong(rs, "reviewer_id"), rs.getString("review_reason"),
+                rs.getTimestamp("reviewed_at"), rs.getLong("lock_version")), articleId);
+    }
+
+    private List<StoredAttempt> loadAttempts(long articleId) {
+        return jdbc.query("""
+                SELECT ma.id,ma.job_id,ma.attempt_no,ma.provider,ma.model,ma.prompt_version,
+                       ma.input_hash,ma.structured_output_json,ma.latency_ms,ma.token_usage_json,
+                       ma.finish_reason,ma.error_code,ma.created_at
+                FROM article_moderation_attempt ma
+                JOIN article_moderation_job mj ON mj.id=ma.job_id
+                WHERE mj.article_id=?
+                ORDER BY ma.id
+                """, (rs, rowNum) -> new StoredAttempt(
+                rs.getLong("id"), rs.getLong("job_id"), rs.getInt("attempt_no"),
+                rs.getString("provider"), rs.getString("model"),
+                rs.getString("prompt_version"), rs.getString("input_hash"),
+                rs.getString("structured_output_json"), rs.getLong("latency_ms"),
+                rs.getString("token_usage_json"), rs.getString("finish_reason"),
+                rs.getString("error_code"), rs.getTimestamp("created_at")), articleId);
     }
 
     private StoredRevision loadRevision(long revisionId) {
@@ -666,25 +696,6 @@ public class DefaultStageBArticleMigrationVerifier implements StageBArticleMigra
         return seconds + "s";
     }
 
-    private static MessageDigest sha256() {
-        try {
-            return MessageDigest.getInstance("SHA-256");
-        } catch (NoSuchAlgorithmException impossible) {
-            throw new IllegalStateException(impossible);
-        }
-    }
-
-    private static void updateDigest(MessageDigest digest, String value) {
-        if (value == null) {
-            digest.update("-1:\n".getBytes(StandardCharsets.UTF_8));
-            return;
-        }
-        byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
-        digest.update((bytes.length + ":").getBytes(StandardCharsets.UTF_8));
-        digest.update(bytes);
-        digest.update((byte) '\n');
-    }
-
     private static Long nullableLong(ResultSet resultSet, String column) throws SQLException {
         long value = resultSet.getLong(column);
         return resultSet.wasNull() ? null : value;
@@ -708,9 +719,6 @@ public class DefaultStageBArticleMigrationVerifier implements StageBArticleMigra
     private record ElasticsearchScan(long documentCount, int pages, int maximumLookupBatchSize) {
     }
 
-    private record FingerprintRow(long id, List<String> values) {
-    }
-
     private record VerifierArticle(
             long id, String title, String summary, String content, String cover, long authorId,
             int viewCount, int likeCount, int commentCount, int collectCount, LocalDateTime createTime,
@@ -730,7 +738,7 @@ public class DefaultStageBArticleMigrationVerifier implements StageBArticleMigra
     }
 
     private record StoredJob(
-            long id, long revisionId, String contentHash, String state, String modelDecision,
+            long id, long articleId, long revisionId, String contentHash, String state, String modelDecision,
             String riskScore, String policyHitsJson, int attemptCount, Timestamp nextAttemptAt,
             String leaseOwner, Timestamp leaseUntil, String lastError, Long reviewerId,
             String reviewReason, Timestamp reviewedAt, long lockVersion) {
@@ -741,6 +749,13 @@ public class DefaultStageBArticleMigrationVerifier implements StageBArticleMigra
                     && leaseUntil == null && reviewerId == null && reviewReason == null
                     && reviewedAt == null && lockVersion == 0;
         }
+    }
+
+    private record StoredAttempt(
+            long id, long jobId, int attemptNo, String provider, String model,
+            String promptVersion, String inputHash, String structuredOutputJson,
+            long latencyMs, String tokenUsageJson, String finishReason,
+            String errorCode, Timestamp createdAt) {
     }
 
     private record ExpectedDocument(

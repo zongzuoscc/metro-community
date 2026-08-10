@@ -38,6 +38,7 @@ public class ArticleSubmissionService {
     private static final String AGGREGATE_TYPE = "ARTICLE";
 
     private final ArticleRevisionModeResolver modeResolver;
+    private final ArticleMutationGate mutationGate;
     private final ArticleMapper articleMapper;
     private final ArticleDraftMapper draftMapper;
     private final ArticleRevisionMapper revisionMapper;
@@ -49,6 +50,7 @@ public class ArticleSubmissionService {
     private final ArticleLegacyTagWriter legacyTagWriter;
 
     public ArticleSubmissionService(ArticleRevisionModeResolver modeResolver,
+                                    ArticleMutationGate mutationGate,
                                     ArticleMapper articleMapper,
                                     ArticleDraftMapper draftMapper,
                                     ArticleRevisionMapper revisionMapper,
@@ -59,6 +61,7 @@ public class ArticleSubmissionService {
                                     ObjectMapper objectMapper,
                                     ArticleLegacyTagWriter legacyTagWriter) {
         this.modeResolver = modeResolver;
+        this.mutationGate = mutationGate;
         this.articleMapper = articleMapper;
         this.draftMapper = draftMapper;
         this.revisionMapper = revisionMapper;
@@ -80,10 +83,8 @@ public class ArticleSubmissionService {
         if (!Integer.valueOf(0).equals(article.getIsDeleted())) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "ARTICLE_RECYCLED");
         }
-        if (modeResolver.current() == ArticleRevisionMode.SHADOW
-                && Integer.valueOf(1).equals(article.getStatus())) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT,
-                    "PUBLISHED_ARTICLE_EDIT_REQUIRES_CUTOVER");
+        if (Integer.valueOf(1).equals(article.getStatus())) {
+            mutationGate.requirePublishedRevisionEditAllowed();
         }
 
         ArticleDraft draft = draftMapper.selectOwnerDraftForUpdate(command.articleId(), command.userId());
@@ -154,14 +155,7 @@ public class ArticleSubmissionService {
     }
 
     private void requireRevisionWriteMode() {
-        ArticleRevisionMode mode = modeResolver.current();
-        if (mode == ArticleRevisionMode.VERIFY_FENCE || mode == ArticleRevisionMode.POINTER_READ) {
-            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
-                    "ARTICLE_CUTOVER_IN_PROGRESS");
-        }
-        if (mode == ArticleRevisionMode.LEGACY) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "REVISION_WRITE_NOT_ENABLED");
-        }
+        mutationGate.requireRevisionWriteMode();
     }
 
     private ArticleRevision revision(ArticleContentSnapshot snapshot,

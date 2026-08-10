@@ -15,7 +15,7 @@ import java.util.Set;
 @Service
 class ArticleSearchProjectionService {
 
-    static final String CONSUMER = "article-search-current-pointer";
+    static final String CONSUMER = ArticleProjectionConsumers.SEARCH_CURRENT_POINTER;
     private static final Set<DomainEventType> SUPPORTED = EnumSet.of(
             DomainEventType.ARTICLE_REVISION_PUBLISHED,
             DomainEventType.ARTICLE_REVISION_REJECTED,

@@ -32,6 +32,9 @@ public class DomainEventOutbox {
     private LocalDateTime createdAt;
     private LocalDateTime publishedAt;
     private LocalDateTime failedAt;
+    private LocalDateTime deadResolvedAt;
+    private String deadResolvedBy;
+    private String deadResolution;
     private boolean dispatchExhausted;
 
     public DomainEvent toEvent(ObjectMapper objectMapper) {

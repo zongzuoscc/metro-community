@@ -4,17 +4,21 @@ import cumt.zongzuo.community.IntegrationTestSupport;
 import cumt.zongzuo.community.article.config.ArticleRevisionMode;
 import cumt.zongzuo.community.article.config.ArticleRevisionProperties;
 import cumt.zongzuo.community.article.config.ConfiguredArticleRevisionModeResolver;
+import cumt.zongzuo.community.article.rollout.ArticleRevisionBuildIdentity;
 import cumt.zongzuo.community.article.model.ArticleContentSnapshot;
 import cumt.zongzuo.community.article.service.ArticleContentCanonicalizer;
 import cumt.zongzuo.community.article.service.ArticleMutationFacade;
 import cumt.zongzuo.community.article.web.SaveArticleDraftCommand;
 import cumt.zongzuo.community.article.web.SubmissionResult;
 import cumt.zongzuo.community.article.web.SubmitArticleRevisionCommand;
+import cumt.zongzuo.community.ai.moderation.revision.ArticleModerationStateMachine;
 import cumt.zongzuo.community.event.outbox.DomainEventConflictException;
+import cumt.zongzuo.community.event.domain.DomainEvent;
 import cumt.zongzuo.community.event.domain.DomainEventType;
 import cumt.zongzuo.community.dto.ArticleDTO;
 import cumt.zongzuo.community.service.ArticleService;
 import cumt.zongzuo.community.service.ReportService;
+import cumt.zongzuo.community.mapper.ArticleMapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -29,9 +33,13 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 
 import java.util.List;
 import java.util.Map;
+import java.time.LocalDateTime;
+import java.time.Instant;
+import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -39,6 +47,9 @@ import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 
 @TestPropertySource(properties = "metro.article.revision-mode=SHADOW")
 class ArticleDraftRevisionIntegrationTest extends IntegrationTestSupport {
@@ -65,6 +76,12 @@ class ArticleDraftRevisionIntegrationTest extends IntegrationTestSupport {
 
     @Autowired
     private ArticleContentCanonicalizer canonicalizer;
+
+    @Autowired
+    private ArticleModerationStateMachine moderationStateMachine;
+
+    @MockitoSpyBean
+    private ArticleMapper articleMapper;
 
     @BeforeEach
     void cleanArticleRevisionFixture() {
@@ -111,7 +128,9 @@ class ArticleDraftRevisionIntegrationTest extends IntegrationTestSupport {
     void configuredModeIsFrozenAtStartupInsteadOfFollowingMutablePropertyChanges() {
         ArticleRevisionProperties properties = new ArticleRevisionProperties();
         properties.setRevisionMode(ArticleRevisionMode.SHADOW);
-        ConfiguredArticleRevisionModeResolver resolver = new ConfiguredArticleRevisionModeResolver(properties);
+        ConfiguredArticleRevisionModeResolver resolver = new ConfiguredArticleRevisionModeResolver(
+                properties, (mode, build) -> { },
+                new ArticleRevisionBuildIdentity(1, 1, "a".repeat(64)));
 
         properties.setRevisionMode(ArticleRevisionMode.CUTOVER);
 
@@ -219,6 +238,47 @@ class ArticleDraftRevisionIntegrationTest extends IntegrationTestSupport {
     }
 
     @Test
+    void tagNameUsesFiftyUnicodeCodePointsAndRejectsFiftyOneBeforeFreezingAnything()
+            throws Exception {
+        long articleId = insertLegacyArticle(91_116L, 0, "tag-boundary", "old-body");
+        String fiftyCodePoints = "😀".repeat(50);
+        assertThat(canonicalizer.canonicalize("title", "", "body", "",
+                List.of(fiftyCodePoints)).tags()).containsExactly(fiftyCodePoints);
+        String tooLong = "😀".repeat(51);
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(jwtService.generate(AUTHOR_ID));
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        String request = new ObjectMapper().writeValueAsString(Map.of(
+                "id", articleId,
+                "title", "changed",
+                "summary", "",
+                "content", "changed-body",
+                "cover", "",
+                "tags", List.of(tooLong)));
+
+        ResponseEntity<String> response = restTemplate.postForEntity(
+                url("/api/article/draft"), new HttpEntity<>(request, headers), String.class);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(400);
+        assertThat(response.getBody()).contains("ARTICLE_TAG_NAME_TOO_LONG");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT content FROM article WHERE id=?", String.class, articleId))
+                .isEqualTo("old-body");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM article_draft WHERE article_id=?", Integer.class, articleId))
+                .isZero();
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM article_revision WHERE article_id=?", Integer.class, articleId))
+                .isZero();
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM article_moderation_job WHERE article_id=?", Integer.class, articleId))
+                .isZero();
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM domain_event_outbox WHERE aggregate_id=?", Integer.class, articleId))
+                .isZero();
+    }
+
+    @Test
     void submissionRejectsAStoredDraftWhoseCanonicalHashWasTampered() {
         long articleId = insertLegacyArticle(91_112L, 0, "old", "old-body");
         mutationFacade.saveDraft(new SaveArticleDraftCommand(
@@ -299,6 +359,53 @@ class ArticleDraftRevisionIntegrationTest extends IntegrationTestSupport {
     }
 
     @Test
+    void futureDraftDoesNotInvalidateADelayedUnavailableSubmission() {
+        long articleId = insertLegacyArticle(91_120L, 0, "future-unavailable", "old");
+        mutationFacade.saveDraft(new SaveArticleDraftCommand(
+                articleId, 0, "submitted", "", "frozen-v1", "", List.of()), AUTHOR_ID);
+        SubmissionResult submitted = mutationFacade.submit(
+                new SubmitArticleRevisionCommand(articleId, AUTHOR_ID, 1));
+        DomainEvent delayed = submittedEvent(articleId, submitted, 1);
+
+        mutationFacade.saveDraft(new SaveArticleDraftCommand(
+                articleId, 1, "future", "", "future-v2", "", List.of()), AUTHOR_ID);
+
+        assertFutureDraftPreservesSubmission(
+                articleId, submitted, delayed.aggregateVersion(), "HUMAN_PENDING");
+        moderationStateMachine.routeUnavailable(delayed, "AI_UNAVAILABLE");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT state FROM article_moderation_job WHERE id=?",
+                String.class, submitted.moderationJobId())).isEqualTo("HUMAN_PENDING");
+    }
+
+    @Test
+    void futureDraftDoesNotInvalidateADelayedClaimableSubmission() throws Exception {
+        long articleId = insertLegacyArticle(91_121L, 0, "future-claim", "old");
+        mutationFacade.saveDraft(new SaveArticleDraftCommand(
+                articleId, 0, "submitted", "", "frozen-v1", "", List.of()), AUTHOR_ID);
+        SubmissionResult submitted = mutationFacade.submit(
+                new SubmitArticleRevisionCommand(articleId, AUTHOR_ID, 1));
+        DomainEvent delayed = submittedEvent(articleId, submitted, 1);
+        jdbcTemplate.update("""
+                UPDATE article_moderation_job SET state='PENDING',last_error=NULL
+                WHERE id=?
+                """, submitted.moderationJobId());
+
+        mutationFacade.saveDraft(new SaveArticleDraftCommand(
+                articleId, 1, "future", "", "future-v2", "", List.of()), AUTHOR_ID);
+
+        assertFutureDraftPreservesSubmission(
+                articleId, submitted, delayed.aggregateVersion(), "PENDING");
+        var claimed = (java.util.Optional<?>) ArticleModerationStateMachine.class
+                .getMethod("claim", DomainEvent.class)
+                .invoke(moderationStateMachine, delayed);
+        assertThat(claimed).isPresent();
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT state FROM article_moderation_job WHERE id=?",
+                String.class, submitted.moderationJobId())).isEqualTo("RUNNING");
+    }
+
+    @Test
     void resubmissionSupersedesEveryNonTerminalJobWithOneOrderedBatchEvent() throws Exception {
         long articleId = insertLegacyArticle(91_103L, 0, "old", "old-body");
         mutationFacade.saveDraft(new SaveArticleDraftCommand(
@@ -350,12 +457,12 @@ class ArticleDraftRevisionIntegrationTest extends IntegrationTestSupport {
         assertThat(DomainEventType.valueOf("ARTICLE_REVISION_SUPERSEDED"))
                 .isEqualTo(DomainEventType.ARTICLE_REVISION_SUPERSEDED);
         assertThat(jdbcTemplate.queryForObject(
-                "SELECT lock_version FROM article WHERE id=?", Long.class, articleId)).isEqualTo(6L);
+                "SELECT lock_version FROM article WHERE id=?", Long.class, articleId)).isEqualTo(5L);
         assertThat(jdbcTemplate.queryForObject("""
                 SELECT aggregate_version FROM domain_event_outbox
                 WHERE aggregate_id=? AND event_type='ARTICLE_REVISION_SUBMITTED'
                 ORDER BY aggregate_version DESC LIMIT 1
-                """, Long.class, articleId)).isEqualTo(6L);
+                """, Long.class, articleId)).isEqualTo(5L);
     }
 
     @Test
@@ -412,7 +519,7 @@ class ArticleDraftRevisionIntegrationTest extends IntegrationTestSupport {
     }
 
     @Test
-    void shadowManualDecisionLazilyFreezesLegacyPendingArticleAndUsesOutboxOnly() {
+    void shadowLegacyAuditIsRejectedBeforeLazyMirrorOrAnySideEffect() {
         long articleId = insertLegacyArticle(91_105L, 2, "pending", "pending-body");
         HttpHeaders headers = new HttpHeaders();
         headers.setBearerAuth(jwtService.generate(91_002L));
@@ -423,22 +530,30 @@ class ArticleDraftRevisionIntegrationTest extends IntegrationTestSupport {
                 new HttpEntity<>("{\"id\":" + articleId + ",\"pass\":true,\"reason\":\"ok\"}", headers),
                 String.class);
 
-        assertThat(response.getStatusCode().value()).isEqualTo(200);
+        assertThat(response.getStatusCode().value()).isEqualTo(409);
         assertThat(jdbcTemplate.queryForMap("""
-                SELECT status,published_revision_id,pending_revision_id,visibility_state,review_state
+                SELECT status,published_revision_id,pending_revision_id,visibility_state,review_state,
+                       lock_version
                 FROM article WHERE id=?
                 """, articleId))
-                .containsEntry("status", 1)
+                .containsEntry("status", 2)
+                .containsEntry("published_revision_id", null)
                 .containsEntry("pending_revision_id", null)
-                .containsEntry("visibility_state", "PUBLIC")
-                .containsEntry("review_state", "APPROVED");
+                .containsEntry("visibility_state", null)
+                .containsEntry("review_state", null)
+                .containsEntry("lock_version", 0L);
         assertThat(jdbcTemplate.queryForObject("""
-                SELECT state FROM article_moderation_job WHERE article_id=?
-                """, String.class, articleId)).isEqualTo("HUMAN_APPROVED");
+                SELECT COUNT(*) FROM article_draft WHERE article_id=?
+                """, Integer.class, articleId)).isZero();
         assertThat(jdbcTemplate.queryForObject("""
-                SELECT COUNT(*) FROM domain_event_outbox
-                WHERE aggregate_id=? AND event_type='ARTICLE_REVISION_PUBLISHED'
-                """, Integer.class, articleId)).isEqualTo(1);
+                SELECT COUNT(*) FROM article_revision WHERE article_id=?
+                """, Integer.class, articleId)).isZero();
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM article_moderation_job WHERE article_id=?
+                """, Integer.class, articleId)).isZero();
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM domain_event_outbox WHERE aggregate_id=?
+                """, Integer.class, articleId)).isZero();
         assertThat(rabbitTemplate.receive("es.sync.queue", 100)).isNull();
         assertThat(rabbitTemplate.receive("message.notify.queue", 100)).isNull();
     }
@@ -448,30 +563,158 @@ class ArticleDraftRevisionIntegrationTest extends IntegrationTestSupport {
         long articleId = insertLegacyArticle(91_106L, 0, "lifecycle", "body");
 
         articleService.moveToRecycleBin(articleId, AUTHOR_ID);
-        assertThat(jdbcTemplate.queryForObject(
-                "SELECT visibility_state FROM article WHERE id=?", String.class, articleId))
-                .isEqualTo("RECYCLED");
+        assertThat(jdbcTemplate.queryForMap(
+                "SELECT visibility_state,lifecycle_epoch FROM article WHERE id=?", articleId))
+                .containsEntry("visibility_state", "RECYCLED")
+                .containsEntry("lifecycle_epoch", 2L);
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM article_draft WHERE article_id=?", Integer.class, articleId))
                 .isEqualTo(1);
 
         articleService.restoreArticle(articleId, AUTHOR_ID);
-        assertThat(jdbcTemplate.queryForObject(
-                "SELECT is_deleted FROM article WHERE id=?", Integer.class, articleId)).isZero();
+        assertThat(jdbcTemplate.queryForMap(
+                "SELECT is_deleted,lifecycle_epoch FROM article WHERE id=?", articleId))
+                .containsEntry("is_deleted", 0)
+                .containsEntry("lifecycle_epoch", 2L);
 
         articleService.moveToRecycleBin(articleId, AUTHOR_ID);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT lifecycle_epoch FROM article WHERE id=?", Long.class, articleId)).isEqualTo(3L);
         articleService.deletePermanently(articleId, AUTHOR_ID);
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM article WHERE id=?", Integer.class, articleId)).isEqualTo(1);
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT visibility_state FROM article WHERE id=?", String.class, articleId))
                 .isEqualTo("PURGED");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT lifecycle_epoch FROM article WHERE id=?", Long.class, articleId)).isEqualTo(4L);
         assertThat(articleService.getRecycleBin(AUTHOR_ID).stream().map(a -> a.getId()))
                 .doesNotContain(articleId);
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM domain_event_outbox WHERE aggregate_id=?", Integer.class, articleId))
                 .isEqualTo(4);
+        assertThat(jdbcTemplate.queryForList("""
+                SELECT lifecycle_epoch FROM domain_event_outbox
+                WHERE aggregate_id=? ORDER BY id
+                """, Long.class, articleId)).containsExactly(2L, 2L, 3L, 4L);
         assertThat(rabbitTemplate.receive("es.sync.queue", 100)).isNull();
+    }
+
+    @Test
+    void recycleAtomicallySupersedesPendingBeforeRestoreAndLateSubmissionDelivery() {
+        long articleId = insertLegacyArticle(91_116L, 0, "pending-recycle", "body");
+        mutationFacade.saveDraft(new SaveArticleDraftCommand(
+                articleId, 0, "pending-recycle", "", "frozen", "", List.of()), AUTHOR_ID);
+        SubmissionResult submitted = mutationFacade.submit(
+                new SubmitArticleRevisionCommand(articleId, AUTHOR_ID, 1));
+        DomainEvent delayed = submittedEvent(articleId, submitted, 1);
+        long submittedVersion = delayed.aggregateVersion();
+
+        articleService.moveToRecycleBin(articleId, AUTHOR_ID);
+        articleService.restoreArticle(articleId, AUTHOR_ID);
+        moderationStateMachine.routeUnavailable(delayed, "AI_DISABLED");
+
+        assertThat(jdbcTemplate.queryForMap("""
+                SELECT status,is_deleted,latest_revision_id,pending_revision_id,
+                       published_revision_id,visibility_state,review_state,lock_version
+                FROM article WHERE id=?
+                """, articleId))
+                .containsEntry("status", 0)
+                .containsEntry("is_deleted", 0)
+                .containsEntry("latest_revision_id", null)
+                .containsEntry("pending_revision_id", null)
+                .containsEntry("published_revision_id", null)
+                .containsEntry("visibility_state", "PRIVATE")
+                .containsEntry("review_state", "NOT_SUBMITTED")
+                .containsEntry("lock_version", submittedVersion + 3);
+        assertThat(jdbcTemplate.queryForMap("""
+                SELECT state,lease_owner,lease_until FROM article_moderation_job WHERE id=?
+                """, submitted.moderationJobId()))
+                .containsEntry("state", "SUPERSEDED")
+                .containsEntry("lease_owner", null)
+                .containsEntry("lease_until", null);
+        assertSingleLifecycleSupersededBatch(articleId, submitted, submittedVersion);
+    }
+
+    @Test
+    void recycleSupersedesAClaimedWorkerAndRestoreCannotReviveItsPendingPointer() throws Exception {
+        long articleId = insertLegacyArticle(91_117L, 0, "claimed-recycle", "body");
+        mutationFacade.saveDraft(new SaveArticleDraftCommand(
+                articleId, 0, "claimed-recycle", "", "frozen", "", List.of()), AUTHOR_ID);
+        SubmissionResult submitted = mutationFacade.submit(
+                new SubmitArticleRevisionCommand(articleId, AUTHOR_ID, 1));
+        DomainEvent event = submittedEvent(articleId, submitted, 1);
+        jdbcTemplate.update("""
+                UPDATE article_moderation_job SET state='PENDING',last_error=NULL
+                WHERE id=?
+                """, submitted.moderationJobId());
+        var claimed = (java.util.Optional<?>) ArticleModerationStateMachine.class
+                .getMethod("claim", DomainEvent.class)
+                .invoke(moderationStateMachine, event);
+        Object lease = claimed.orElseThrow();
+
+        articleService.moveToRecycleBin(articleId, AUTHOR_ID);
+        articleService.restoreArticle(articleId, AUTHOR_ID);
+        var recordFailure = java.util.Arrays.stream(ArticleModerationStateMachine.class.getMethods())
+                .filter(method -> method.getName().equals("recordPreProviderFailure"))
+                .findFirst()
+                .orElseThrow();
+        recordFailure.invoke(moderationStateMachine, lease, "LATE_WORKER");
+
+        assertThat(jdbcTemplate.queryForMap("""
+                SELECT state,lease_owner,lease_until FROM article_moderation_job WHERE id=?
+                """, submitted.moderationJobId()))
+                .containsEntry("state", "SUPERSEDED")
+                .containsEntry("lease_owner", null)
+                .containsEntry("lease_until", null);
+        assertThat(jdbcTemplate.queryForMap("""
+                SELECT status,is_deleted,pending_revision_id,visibility_state,review_state
+                FROM article WHERE id=?
+                """, articleId))
+                .containsEntry("status", 0)
+                .containsEntry("is_deleted", 0)
+                .containsEntry("pending_revision_id", null)
+                .containsEntry("visibility_state", "PRIVATE")
+                .containsEntry("review_state", "NOT_SUBMITTED");
+        assertSingleLifecycleSupersededBatch(
+                articleId, submitted, event.aggregateVersion());
+    }
+
+    @Test
+    void manualPurgeDefensivelyTerminalizesAResidualNonterminalJob() {
+        long articleId = insertLegacyArticle(91_118L, 0, "manual-purge", "body");
+        mutationFacade.saveDraft(new SaveArticleDraftCommand(
+                articleId, 0, "manual-purge", "", "frozen", "", List.of()), AUTHOR_ID);
+        SubmissionResult submitted = mutationFacade.submit(
+                new SubmitArticleRevisionCommand(articleId, AUTHOR_ID, 1));
+        articleService.moveToRecycleBin(articleId, AUTHOR_ID);
+        reintroduceResidualNonterminal(articleId, submitted, false);
+        long baseVersion = jdbcTemplate.queryForObject(
+                "SELECT lock_version FROM article WHERE id=?", Long.class, articleId);
+
+        articleService.deletePermanently(articleId, AUTHOR_ID);
+
+        assertPurgedResidualTerminalized(articleId, submitted, baseVersion, "PURGED");
+    }
+
+    @Test
+    void expiredCleanerDefensivelyTerminalizesAResidualClaimedJob() {
+        long articleId = insertLegacyArticle(91_119L, 0, "expired-purge", "body");
+        mutationFacade.saveDraft(new SaveArticleDraftCommand(
+                articleId, 0, "expired-purge", "", "frozen", "", List.of()), AUTHOR_ID);
+        SubmissionResult submitted = mutationFacade.submit(
+                new SubmitArticleRevisionCommand(articleId, AUTHOR_ID, 1));
+        articleService.moveToRecycleBin(articleId, AUTHOR_ID);
+        reintroduceResidualNonterminal(articleId, submitted, true);
+        LocalDateTime cutoff = LocalDateTime.now().minusDays(7).withNano(0);
+        jdbcTemplate.update("UPDATE article SET delete_time=? WHERE id=?",
+                cutoff.minusSeconds(1), articleId);
+        long baseVersion = jdbcTemplate.queryForObject(
+                "SELECT lock_version FROM article WHERE id=?", Long.class, articleId);
+
+        mutationFacade.cleanExpiredArticles(cutoff, 10);
+
+        assertPurgedResidualTerminalized(articleId, submitted, baseVersion, "EXPIRED_PURGE");
     }
 
     @Test
@@ -498,6 +741,12 @@ class ArticleDraftRevisionIntegrationTest extends IntegrationTestSupport {
                 SELECT COUNT(*) FROM domain_event_outbox
                 WHERE aggregate_id=? AND event_type='ARTICLE_UNPUBLISHED'
                 """, Integer.class, articleId)).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT lifecycle_epoch FROM article WHERE id=?", Long.class, articleId)).isEqualTo(2L);
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT lifecycle_epoch FROM domain_event_outbox
+                WHERE aggregate_id=? AND event_type='ARTICLE_UNPUBLISHED'
+                """, Long.class, articleId)).isEqualTo(2L);
         long versionAfterFirstDecision = jdbcTemplate.queryForObject(
                 "SELECT lock_version FROM article WHERE id=?", Long.class, articleId);
         int messagesAfterFirstDecision = jdbcTemplate.queryForObject(
@@ -515,6 +764,125 @@ class ArticleDraftRevisionIntegrationTest extends IntegrationTestSupport {
                 "SELECT COUNT(*) FROM message WHERE target_id=?", Integer.class, articleId))
                 .isEqualTo(messagesAfterFirstDecision);
         assertThat(rabbitTemplate.receive("es.sync.queue", 100)).isNull();
+    }
+
+    @Test
+    void reportPenaltyWithoutPublishedPointerRejectsPendingContentWithoutNewLifecycle() {
+        long articleId = insertLegacyArticle(91_114L, 2, "reported-pending", "reported-pending-body");
+        long reportId = 91_114L;
+        jdbcTemplate.update("""
+                INSERT INTO report (id,reporter_id,target_id,target_type,reason,status,create_time)
+                VALUES (?,?,?,?,?,0,NOW(6))
+                """, reportId, AUTHOR_ID, articleId, 1, "policy");
+
+        reportService.processReport(91_002L, reportId, true, "confirmed");
+
+        assertThat(jdbcTemplate.queryForMap("""
+                SELECT status,published_revision_id,pending_revision_id,visibility_state,review_state,
+                       lifecycle_epoch
+                FROM article WHERE id=?
+                """, articleId))
+                .containsEntry("status", 3)
+                .containsEntry("published_revision_id", null)
+                .containsEntry("pending_revision_id", null)
+                .containsEntry("visibility_state", "PRIVATE")
+                .containsEntry("review_state", "REJECTED")
+                .containsEntry("lifecycle_epoch", 1L);
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM domain_event_outbox
+                WHERE aggregate_id=? AND event_type='ARTICLE_REVISION_REJECTED'
+                """, Integer.class, articleId)).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM domain_event_outbox
+                WHERE aggregate_id=? AND event_type='ARTICLE_UNPUBLISHED'
+                """, Integer.class, articleId)).isZero();
+        assertThat(jdbcTemplate.queryForList("""
+                SELECT lifecycle_epoch FROM domain_event_outbox
+                WHERE aggregate_id=? ORDER BY id
+                """, Long.class, articleId)).allMatch(epoch -> epoch == 1L);
+    }
+
+    @Test
+    void expiredRecycleCleanerAdvancesASecondLifecycleAndLeavesDurableTruth() {
+        long articleId = insertLegacyArticle(91_111L, 0, "expired", "expired-body");
+        articleService.moveToRecycleBin(articleId, AUTHOR_ID);
+        jdbcTemplate.update("UPDATE article SET delete_time=? WHERE id=?",
+                LocalDateTime.now().minusDays(8), articleId);
+
+        mutationFacade.cleanExpiredArticles(LocalDateTime.now().minusDays(7), 10);
+
+        assertThat(jdbcTemplate.queryForMap("""
+                SELECT is_deleted,visibility_state,lifecycle_epoch FROM article WHERE id=?
+                """, articleId))
+                .containsEntry("is_deleted", 1)
+                .containsEntry("visibility_state", "PURGED")
+                .containsEntry("lifecycle_epoch", 3L);
+        assertThat(jdbcTemplate.queryForList("""
+                SELECT lifecycle_epoch FROM domain_event_outbox
+                WHERE aggregate_id=? AND event_type='ARTICLE_DELETED' ORDER BY id
+                """, Long.class, articleId)).containsExactly(2L, 3L);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM article_revision WHERE article_id=?", Integer.class, articleId))
+                .isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM article_draft WHERE article_id=?", Integer.class, articleId))
+                .isEqualTo(1);
+    }
+
+    @Test
+    void cleanerCandidateCannotPurgeARestoreAndFreshRecyclePastTheOriginalCutoff()
+            throws Exception {
+        long articleId = insertLegacyArticle(91_115L, 0, "cleaner-race", "cleaner-race-body");
+        articleService.moveToRecycleBin(articleId, AUTHOR_ID);
+        LocalDateTime expiredBefore = LocalDateTime.now().minusDays(7).withNano(0);
+        jdbcTemplate.update("UPDATE article SET delete_time=? WHERE id=?",
+                expiredBefore.minusSeconds(1), articleId);
+        CountDownLatch candidatesSelected = new CountDownLatch(1);
+        CountDownLatch releaseCleaner = new CountDownLatch(1);
+        doAnswer(invocation -> {
+            LocalDateTime cutoff = invocation.getArgument(0);
+            int limit = invocation.getArgument(1);
+            List<Long> selected = jdbcTemplate.queryForList("""
+                    SELECT id FROM article
+                    WHERE is_deleted=1 AND delete_time<=?
+                      AND (visibility_state IS NULL OR visibility_state<>'PURGED')
+                    ORDER BY id LIMIT ?
+                    """, Long.class, cutoff, limit);
+            candidatesSelected.countDown();
+            await(releaseCleaner);
+            return selected;
+        }).when(articleMapper).selectExpiredArticleIds(any(LocalDateTime.class), anyInt());
+
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<?> cleaner = executor.submit(
+                    () -> mutationFacade.cleanExpiredArticles(expiredBefore, 10));
+            if (!candidatesSelected.await(10, TimeUnit.SECONDS)) {
+                cleaner.get(1, TimeUnit.SECONDS);
+                throw new AssertionError("cleaner did not expose the selected candidate");
+            }
+
+            articleService.restoreArticle(articleId, AUTHOR_ID);
+            articleService.moveToRecycleBin(articleId, AUTHOR_ID);
+            releaseCleaner.countDown();
+            cleaner.get(10, TimeUnit.SECONDS);
+        }
+
+        assertThat(jdbcTemplate.queryForMap("""
+                SELECT is_deleted,visibility_state,lifecycle_epoch,delete_time > ? AS fresh
+                FROM article WHERE id=?
+                """, expiredBefore, articleId))
+                .containsEntry("is_deleted", 1)
+                .containsEntry("visibility_state", "RECYCLED")
+                .containsEntry("lifecycle_epoch", 3L)
+                .containsEntry("fresh", 1L);
+        long currentVersion = jdbcTemplate.queryForObject(
+                "SELECT lock_version FROM article WHERE id=?", Long.class, articleId);
+        assertThat(articleMapper.purgeExpiredLocked(articleId, AUTHOR_ID, currentVersion,
+                expiredBefore, LocalDateTime.now())).isZero();
+        assertThat(jdbcTemplate.queryForList("""
+                SELECT lifecycle_epoch FROM domain_event_outbox
+                WHERE aggregate_id=? AND event_type='ARTICLE_DELETED' ORDER BY id
+                """, Long.class, articleId)).containsExactly(2L, 3L);
     }
 
     @Test
@@ -681,6 +1049,156 @@ class ArticleDraftRevisionIntegrationTest extends IntegrationTestSupport {
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM domain_event_outbox WHERE aggregate_id=?", Integer.class, articleId))
                 .isZero();
+    }
+
+    private DomainEvent submittedEvent(long articleId, SubmissionResult submitted,
+                                       long sourceDraftVersion) {
+        Map<String, Object> row = jdbcTemplate.queryForMap("""
+                SELECT aggregate_version,lifecycle_epoch
+                FROM domain_event_outbox
+                WHERE aggregate_type='ARTICLE' AND aggregate_id=?
+                  AND event_type='ARTICLE_REVISION_SUBMITTED'
+                ORDER BY aggregate_version DESC LIMIT 1
+                """, articleId);
+        var payload = new ObjectMapper().createObjectNode();
+        payload.put("articleId", articleId);
+        payload.put("revisionId", submitted.revisionId());
+        payload.put("revisionNo", submitted.revisionNo());
+        payload.put("moderationJobId", submitted.moderationJobId());
+        payload.put("contentHash", submitted.contentHash());
+        payload.put("sourceDraftVersion", sourceDraftVersion);
+        return new DomainEvent(UUID.randomUUID(), "ARTICLE", articleId,
+                ((Number) row.get("aggregate_version")).longValue(),
+                ((Number) row.get("lifecycle_epoch")).longValue(),
+                DomainEventType.ARTICLE_REVISION_SUBMITTED, 1, payload, Instant.now());
+    }
+
+    private void assertFutureDraftPreservesSubmission(
+            long articleId, SubmissionResult submitted, long submittedVersion,
+            String expectedJobState) {
+        assertThat(jdbcTemplate.queryForMap("""
+                SELECT status,pending_revision_id,review_state,lock_version,content
+                FROM article WHERE id=?
+                """, articleId))
+                .containsEntry("status", 2)
+                .containsEntry("pending_revision_id", submitted.revisionId())
+                .containsEntry("review_state", "HUMAN_PENDING")
+                .containsEntry("lock_version", submittedVersion)
+                .containsEntry("content", "future-v2");
+        assertThat(jdbcTemplate.queryForMap("""
+                SELECT draft_version,body_markdown FROM article_draft WHERE article_id=?
+                """, articleId))
+                .containsEntry("draft_version", 2L)
+                .containsEntry("body_markdown", "future-v2");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT body_markdown FROM article_revision WHERE id=?",
+                String.class, submitted.revisionId())).isEqualTo("frozen-v1");
+        assertThat(jdbcTemplate.queryForMap("""
+                SELECT state,content_hash FROM article_moderation_job WHERE id=?
+                """, submitted.moderationJobId()))
+                .containsEntry("state", expectedJobState)
+                .containsEntry("content_hash", submitted.contentHash());
+    }
+
+    private void assertSingleLifecycleSupersededBatch(
+            long articleId, SubmissionResult submitted, long submittedVersion) {
+        List<Map<String, Object>> superseded = jdbcTemplate.queryForList("""
+                SELECT aggregate_version,lifecycle_epoch,payload_json
+                FROM domain_event_outbox
+                WHERE aggregate_type='ARTICLE' AND aggregate_id=?
+                  AND event_type='ARTICLE_REVISION_SUPERSEDED'
+                ORDER BY aggregate_version
+                """, articleId);
+        assertThat(superseded).hasSize(1);
+        assertThat(((Number) superseded.getFirst().get("aggregate_version")).longValue())
+                .isEqualTo(submittedVersion + 1);
+        assertThat(((Number) superseded.getFirst().get("lifecycle_epoch")).longValue())
+                .isEqualTo(1);
+        try {
+            var payload = new ObjectMapper().readTree(
+                    (String) superseded.getFirst().get("payload_json"));
+            assertThat(payload.path("replacementRevisionId").isNull()).isTrue();
+            assertThat(payload.path("supersededJobIds").toString())
+                    .isEqualTo("[" + submitted.moderationJobId() + "]");
+            assertThat(payload.path("supersededRevisionIds").toString())
+                    .isEqualTo("[" + submitted.revisionId() + "]");
+        }
+        catch (Exception invalidPayload) {
+            throw new AssertionError(invalidPayload);
+        }
+        assertThat(jdbcTemplate.queryForMap("""
+                SELECT aggregate_version,lifecycle_epoch
+                FROM domain_event_outbox
+                WHERE aggregate_type='ARTICLE' AND aggregate_id=?
+                  AND event_type='ARTICLE_DELETED'
+                  AND JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.transition'))='RECYCLED'
+                """, articleId))
+                .containsEntry("aggregate_version", submittedVersion + 2)
+                .containsEntry("lifecycle_epoch", 2L);
+    }
+
+    private void reintroduceResidualNonterminal(
+            long articleId, SubmissionResult submitted, boolean claimed) {
+        jdbcTemplate.update("""
+                UPDATE article
+                SET latest_revision_id=?,pending_revision_id=?,status=2,
+                    review_state='HUMAN_PENDING'
+                WHERE id=? AND is_deleted=1 AND visibility_state='RECYCLED'
+                """, submitted.revisionId(), submitted.revisionId(), articleId);
+        if (claimed) {
+            jdbcTemplate.update("""
+                    UPDATE article_moderation_job
+                    SET state='RUNNING',lease_owner='pre-upgrade-worker',
+                        lease_until=TIMESTAMPADD(MINUTE,5,CURRENT_TIMESTAMP(6))
+                    WHERE id=?
+                    """, submitted.moderationJobId());
+        }
+        else {
+            jdbcTemplate.update("""
+                    UPDATE article_moderation_job
+                    SET state='HUMAN_PENDING',lease_owner=NULL,lease_until=NULL
+                    WHERE id=?
+                    """, submitted.moderationJobId());
+        }
+    }
+
+    private void assertPurgedResidualTerminalized(
+            long articleId, SubmissionResult submitted, long baseVersion, String transition) {
+        assertThat(jdbcTemplate.queryForMap("""
+                SELECT status,is_deleted,latest_revision_id,pending_revision_id,
+                       published_revision_id,visibility_state,review_state,
+                       lifecycle_epoch,lock_version
+                FROM article WHERE id=?
+                """, articleId))
+                .containsEntry("status", 0)
+                .containsEntry("is_deleted", 1)
+                .containsEntry("latest_revision_id", null)
+                .containsEntry("pending_revision_id", null)
+                .containsEntry("published_revision_id", null)
+                .containsEntry("visibility_state", "PURGED")
+                .containsEntry("review_state", "NOT_SUBMITTED")
+                .containsEntry("lifecycle_epoch", 3L)
+                .containsEntry("lock_version", baseVersion + 2);
+        assertThat(jdbcTemplate.queryForMap("""
+                SELECT state,lease_owner,lease_until
+                FROM article_moderation_job WHERE id=?
+                """, submitted.moderationJobId()))
+                .containsEntry("state", "SUPERSEDED")
+                .containsEntry("lease_owner", null)
+                .containsEntry("lease_until", null);
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM domain_event_outbox
+                WHERE aggregate_type='ARTICLE' AND aggregate_id=?
+                  AND event_type='ARTICLE_REVISION_SUPERSEDED'
+                  AND aggregate_version=? AND lifecycle_epoch=2
+                """, Integer.class, articleId, baseVersion + 1)).isOne();
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM domain_event_outbox
+                WHERE aggregate_type='ARTICLE' AND aggregate_id=?
+                  AND event_type='ARTICLE_DELETED'
+                  AND aggregate_version=? AND lifecycle_epoch=3
+                  AND JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.transition'))=?
+                """, Integer.class, articleId, baseVersion + 2, transition)).isOne();
     }
 
     private static void await(CountDownLatch latch) {

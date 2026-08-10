@@ -4,7 +4,7 @@ create table article
         primary key,
     title         varchar(100)                       not null comment '标题',
     summary       varchar(255)                       null comment '摘要',
-    content       text                               null comment '内容',
+    content       mediumtext                         null comment '内容',
     author_id     bigint                             not null comment '作者ID',
     view_count    int      default 0                 null comment '阅读数',
     like_count    int      default 0                 null comment '点赞数',
@@ -192,7 +192,8 @@ create table tag
 (
     id            bigint auto_increment comment '主键'
         primary key,
-    name          varchar(50)   not null comment '标签名',
+    name          varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin
+                               not null comment '标签名',
     article_count int default 0 null comment '该标签下的文章数(冗余字段用于排序)',
     create_time   datetime      null,
     constraint uk_name
@@ -381,6 +382,7 @@ CREATE TABLE article_revision_migration_issue (
     resolution_note VARCHAR(500) NULL,
     UNIQUE KEY uk_revision_migration_issue (article_id, issue_code),
     INDEX idx_revision_migration_unresolved (resolved_at, article_id),
+    INDEX idx_revision_migration_retention (resolved_at, id),
     CONSTRAINT fk_revision_migration_article FOREIGN KEY (article_id)
         REFERENCES article (id) ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -406,10 +408,15 @@ CREATE TABLE domain_event_outbox (
     created_at        DATETIME(6)  NOT NULL,
     published_at      DATETIME(6)  NULL,
     failed_at         DATETIME(6)  NULL,
+    dead_resolved_at  DATETIME(6)  NULL,
+    dead_resolved_by  VARCHAR(96)  NULL,
+    dead_resolution   VARCHAR(32)  NULL,
     UNIQUE KEY uk_domain_event_id (event_id),
     UNIQUE KEY uk_domain_event_dedupe (dedupe_key),
     INDEX idx_domain_outbox_dispatch (state, next_attempt_at, id),
-    INDEX idx_domain_outbox_recovery (state, lease_until, id)
+    INDEX idx_domain_outbox_recovery (state, lease_until, id),
+    INDEX idx_domain_outbox_published_retention (state, published_at, id),
+    INDEX idx_domain_outbox_dead_retention (state, dead_resolved_at, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE consumer_inbox (
@@ -417,7 +424,8 @@ CREATE TABLE consumer_inbox (
     event_id      BINARY(16)  NOT NULL,
     processed_at  DATETIME(6) NOT NULL,
     result_hash   CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
-    PRIMARY KEY (consumer_name, event_id)
+    PRIMARY KEY (consumer_name, event_id),
+    INDEX idx_consumer_inbox_retention (processed_at, consumer_name, event_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE projection_watermark (
@@ -432,6 +440,28 @@ CREATE TABLE projection_watermark (
     updated_at           DATETIME(6) NOT NULL,
     PRIMARY KEY (consumer_name, aggregate_type, aggregate_id),
     INDEX idx_projection_lease (lease_until)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE article_revision_rollout_checkpoint (
+    checkpoint_id             TINYINT     NOT NULL,
+    mode                      VARCHAR(24) NOT NULL,
+    schema_generation         BIGINT      NOT NULL,
+    minimum_binary_generation BIGINT      NOT NULL,
+    required_build_digest     CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    backfill_started_at       DATETIME(6) NULL,
+    verified_build_digest     CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    verified_fingerprint      CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    verify_report_hash        CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    verified_at               DATETIME(6) NULL,
+    sentinel_build_digest     CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    sentinel_report_hash      CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    sentinel_verified_at      DATETIME(6) NULL,
+    cutover_epoch             BIGINT      NOT NULL DEFAULT 0,
+    updated_by                VARCHAR(96) NOT NULL,
+    updated_at                DATETIME(6) NOT NULL,
+    lock_version              BIGINT      NOT NULL DEFAULT 0,
+    PRIMARY KEY (checkpoint_id),
+    CONSTRAINT chk_article_revision_rollout_singleton CHECK (checkpoint_id = 1)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 ALTER TABLE article

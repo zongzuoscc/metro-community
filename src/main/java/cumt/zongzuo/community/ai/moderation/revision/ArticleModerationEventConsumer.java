@@ -19,8 +19,12 @@ public class ArticleModerationEventConsumer {
             queues = RabbitConfig.ARTICLE_MODERATION_QUEUE,
             containerFactory = "articleModerationRabbitListenerContainerFactory")
     public void consume(DomainEvent event) {
-        if (worker.process(event) == ArticleModerationWorker.ProcessOutcome.BUSY) {
+        ArticleModerationWorker.ProcessOutcome outcome = worker.process(event);
+        if (outcome == ArticleModerationWorker.ProcessOutcome.BUSY) {
             throw new ModerationBusyException("moderation job lease is still active");
+        }
+        if (outcome == ArticleModerationWorker.ProcessOutcome.DEFERRED) {
+            throw new ModerationBusyException("moderation processing is fenced");
         }
     }
 

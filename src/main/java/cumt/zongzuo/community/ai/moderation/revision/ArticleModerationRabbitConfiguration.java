@@ -2,6 +2,8 @@ package cumt.zongzuo.community.ai.moderation.revision;
 
 import cumt.zongzuo.community.ai.config.MetroAiProperties;
 import cumt.zongzuo.community.config.RabbitConfig;
+import cumt.zongzuo.community.article.config.ArticleRevisionMode;
+import cumt.zongzuo.community.article.config.ArticleRevisionModeResolver;
 import org.aopalliance.aop.Advice;
 import org.springframework.amqp.core.Queue;
 import org.springframework.amqp.core.QueueBuilder;
@@ -11,6 +13,7 @@ import org.springframework.amqp.rabbit.connection.ConnectionFactory;
 import org.springframework.amqp.rabbit.retry.MessageRecoverer;
 import org.springframework.amqp.rabbit.retry.RejectAndDontRequeueRecoverer;
 import org.springframework.amqp.support.converter.MessageConverter;
+import org.springframework.boot.autoconfigure.amqp.RabbitProperties;
 import org.springframework.boot.autoconfigure.amqp.SimpleRabbitListenerContainerFactoryConfigurer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -39,7 +42,9 @@ class ArticleModerationRabbitConfiguration {
             SimpleRabbitListenerContainerFactoryConfigurer configurer,
             ConnectionFactory connectionFactory,
             ConfirmedModerationRetryPublisher retryPublisher,
-            MetroAiProperties properties) {
+            MetroAiProperties properties,
+            RabbitProperties rabbitProperties,
+            ArticleRevisionModeResolver modeResolver) {
         SimpleRabbitListenerContainerFactory factory = new SimpleRabbitListenerContainerFactory();
         configurer.configure(factory, connectionFactory);
         RejectAndDontRequeueRecoverer poisonRecoverer = new RejectAndDontRequeueRecoverer();
@@ -61,6 +66,10 @@ class ArticleModerationRabbitConfiguration {
         factory.setAdviceChain(retry);
         factory.setDefaultRequeueRejected(false);
         factory.setPrefetchCount(1);
+        ArticleRevisionMode mode = modeResolver.current();
+        factory.setAutoStartup(rabbitProperties.getListener().getSimple().isAutoStartup()
+                && mode != ArticleRevisionMode.VERIFY_FENCE
+                && mode != ArticleRevisionMode.POINTER_READ);
         return factory;
     }
 

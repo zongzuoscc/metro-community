@@ -42,6 +42,7 @@ public class JdbcStageBArticleMigrationService implements StageBArticleMigration
     private final ArticleContentCanonicalizer canonicalizer;
     private final ObjectMapper objectMapper;
     private final ArticleRevisionModeResolver modeResolver;
+    private final StageBRevisionAwareStateValidator revisionAwareValidator;
 
     public JdbcStageBArticleMigrationService(DataSource dataSource,
                                              ArticleContentCanonicalizer canonicalizer,
@@ -51,6 +52,8 @@ public class JdbcStageBArticleMigrationService implements StageBArticleMigration
         this.canonicalizer = canonicalizer;
         this.objectMapper = objectMapper;
         this.modeResolver = modeResolver;
+        this.revisionAwareValidator = new StageBRevisionAwareStateValidator(
+                canonicalizer, objectMapper);
     }
 
     @Override
@@ -118,6 +121,32 @@ public class JdbcStageBArticleMigrationService implements StageBArticleMigration
             }
 
             ExistingShadow existing = loadExistingShadow(jdbc, row.id());
+            StageBRevisionAwareStateValidator.Validation revisionAware =
+                    validateRevisionAware(row, legacy, existing);
+            if (revisionAware.classification()
+                    != StageBRevisionAwareStateValidator.Classification.LEGACY) {
+                if (!revisionAware.valid()) {
+                    recordIssue(jdbc, row.id(), "BACKFILL_MISMATCH", legacy.contentHash(),
+                            details("reason", revisionAware.violations().getFirst().code()));
+                    issues++;
+                    continue;
+                }
+                if (revisionAware.classification()
+                        == StageBRevisionAwareStateValidator.Classification.NEEDS_BASELINE) {
+                    StoredDraft draft = existing.draft();
+                    ArticleContentSnapshot draftSnapshot = canonicalizeStored(
+                            draft.title(), draft.summary(), draft.bodyMarkdown(),
+                            draft.cover(), draft.tagsJson());
+                    if (draftSnapshot == null) {
+                        throw new IllegalStateException(
+                                "validated native draft cannot be canonicalized");
+                    }
+                    insertBaselineRevision(jdbc, row, draftSnapshot, draft.draftVersion());
+                }
+                resolveIssues(jdbc, row.id());
+                migrated++;
+                continue;
+            }
             String mismatch = findMismatch(row, legacy, existing);
             if (mismatch != null) {
                 recordIssue(jdbc, row.id(), "BACKFILL_MISMATCH", legacy.contentHash(),
@@ -148,6 +177,43 @@ public class JdbcStageBArticleMigrationService implements StageBArticleMigration
         }
         return new MigrationBatchResult(afterArticleId, lastArticleId, rows.size(), migrated, issues,
                 rows.size() == limit);
+    }
+
+    private StageBRevisionAwareStateValidator.Validation validateRevisionAware(
+            LegacyArticleRow article, ArticleContentSnapshot legacy, ExistingShadow shadow) {
+        StageBRevisionAwareStateValidator.DraftState draft = shadow.draft() == null ? null
+                : new StageBRevisionAwareStateValidator.DraftState(
+                shadow.draft().articleId(), shadow.draft().userId(), shadow.draft().title(),
+                shadow.draft().summary(), shadow.draft().bodyMarkdown(), shadow.draft().bodyPlain(),
+                shadow.draft().cover(), shadow.draft().tagsJson(), shadow.draft().contentHash());
+        List<StageBRevisionAwareStateValidator.RevisionState> revisions = shadow.revisions().stream()
+                .map(revision -> new StageBRevisionAwareStateValidator.RevisionState(
+                        revision.id(), revision.articleId(), revision.revisionNo(), revision.title(),
+                        revision.summary(), revision.bodyMarkdown(), revision.bodyPlain(),
+                        revision.cover(), revision.tagsJson(), revision.contentHash(),
+                        revision.createdBy()))
+                .toList();
+        List<StageBRevisionAwareStateValidator.JobState> jobs = shadow.jobs().stream()
+                .map(job -> new StageBRevisionAwareStateValidator.JobState(
+                        job.id(), job.articleId(), job.revisionId(), job.contentHash(), job.state(),
+                        job.modelDecision(), job.riskScore(), job.policyHitsJson(), job.attemptCount(),
+                        job.nextAttemptAt(), job.leaseOwner(), job.leaseUntil(), job.lastError(),
+                        job.reviewerId(), job.reviewReason(), job.reviewedAt(), job.lockVersion()))
+                .toList();
+        List<StageBRevisionAwareStateValidator.AttemptState> attempts = shadow.attempts().stream()
+                .map(attempt -> new StageBRevisionAwareStateValidator.AttemptState(
+                        attempt.id(), attempt.jobId(), attempt.attemptNo(), attempt.provider(),
+                        attempt.model(), attempt.promptVersion(), attempt.inputHash(),
+                        attempt.structuredOutputJson(), attempt.latencyMs(),
+                        attempt.tokenUsageJson(), attempt.finishReason(), attempt.errorCode(),
+                        attempt.createdAt()))
+                .toList();
+        return revisionAwareValidator.validate(
+                new StageBRevisionAwareStateValidator.ArticleState(
+                        article.id(), article.authorId(), article.status(), article.isDeleted(),
+                        article.latestRevisionId(), article.pendingRevisionId(),
+                        article.publishedRevisionId(), article.visibilityState(), article.reviewState()),
+                draft, revisions, jobs, attempts, legacy);
     }
 
     private String findMismatch(LegacyArticleRow article, ArticleContentSnapshot legacy,
@@ -375,7 +441,22 @@ public class JdbcStageBArticleMigrationService implements StageBArticleMigration
                 rs.getTimestamp("reviewed_at"),
                 rs.getTimestamp("created_at").toLocalDateTime(),
                 rs.getTimestamp("updated_at").toLocalDateTime(), rs.getLong("lock_version")), articleId);
-        return new ExistingShadow(draft, revisions, jobs);
+        List<StoredAttempt> attempts = jdbc.query("""
+                SELECT ma.id,ma.job_id,ma.attempt_no,ma.provider,ma.model,ma.prompt_version,
+                       ma.input_hash,ma.structured_output_json,ma.latency_ms,ma.token_usage_json,
+                       ma.finish_reason,ma.error_code,ma.created_at
+                FROM article_moderation_attempt ma
+                JOIN article_moderation_job mj ON mj.id=ma.job_id
+                WHERE mj.article_id=?
+                ORDER BY ma.id
+                """, (rs, rowNum) -> new StoredAttempt(
+                rs.getLong("id"), rs.getLong("job_id"), rs.getInt("attempt_no"),
+                rs.getString("provider"), rs.getString("model"),
+                rs.getString("prompt_version"), rs.getString("input_hash"),
+                rs.getString("structured_output_json"), rs.getLong("latency_ms"),
+                rs.getString("token_usage_json"), rs.getString("finish_reason"),
+                rs.getString("error_code"), rs.getTimestamp("created_at")), articleId);
+        return new ExistingShadow(draft, revisions, jobs, attempts);
     }
 
     private StoredDraft loadDraft(JdbcTemplate jdbc, long articleId) {
@@ -559,8 +640,15 @@ public class JdbcStageBArticleMigrationService implements StageBArticleMigration
         }
     }
 
+    private record StoredAttempt(
+            long id, long jobId, int attemptNo, String provider, String model,
+            String promptVersion, String inputHash, String structuredOutputJson,
+            long latencyMs, String tokenUsageJson, String finishReason,
+            String errorCode, java.sql.Timestamp createdAt) {
+    }
+
     private record ExistingShadow(StoredDraft draft, List<StoredRevision> revisions,
-                                  List<StoredJob> jobs) {
+                                  List<StoredJob> jobs, List<StoredAttempt> attempts) {
         StoredRevision revisionOne() {
             return revisions.stream().filter(revision -> revision.revisionNo() == 1).findFirst().orElse(null);
         }

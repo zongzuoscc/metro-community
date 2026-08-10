@@ -13,6 +13,8 @@ public class StageBMigrationProperties {
     private int maximumReportedMismatches = 100;
     private String elasticsearchReadAlias = "article-read";
     private Duration elasticsearchPitKeepAlive = Duration.ofMinutes(1);
+    private String operatorIdentity;
+    private String verificationReportPath;
 
     public StageBMigrationAction getAction() {
         return action;
@@ -60,5 +62,21 @@ public class StageBMigrationProperties {
 
     public void setElasticsearchPitKeepAlive(Duration elasticsearchPitKeepAlive) {
         this.elasticsearchPitKeepAlive = elasticsearchPitKeepAlive;
+    }
+
+    public String getOperatorIdentity() {
+        return operatorIdentity;
+    }
+
+    public void setOperatorIdentity(String operatorIdentity) {
+        this.operatorIdentity = operatorIdentity;
+    }
+
+    public String getVerificationReportPath() {
+        return verificationReportPath;
+    }
+
+    public void setVerificationReportPath(String verificationReportPath) {
+        this.verificationReportPath = verificationReportPath;
     }
 }

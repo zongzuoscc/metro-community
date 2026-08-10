@@ -16,12 +16,50 @@ PREPARE stage_b_stmt FROM @ddl;
 EXECUTE stage_b_stmt;
 DEALLOCATE PREPARE stage_b_stmt;
 
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=@schema_name AND table_name='tag' AND table_type='BASE TABLE' AND LOWER(engine)='innodb')=1, 'SELECT 1', 'SELECT SCHEMA_DRIFT_prerequisite_tag_table');
+PREPARE stage_b_stmt FROM @ddl;
+EXECUTE stage_b_stmt;
+DEALLOCATE PREPARE stage_b_stmt;
+
 SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@schema_name AND table_name='article' AND column_name='id' AND LOWER(column_type)='bigint' AND is_nullable='NO' AND column_default IS NULL AND LOWER(extra)='auto_increment' AND character_set_name IS NULL AND collation_name IS NULL)=1, 'SELECT 1', 'SELECT SCHEMA_DRIFT_prerequisite_article_id');
 PREPARE stage_b_stmt FROM @ddl;
 EXECUTE stage_b_stmt;
 DEALLOCATE PREPARE stage_b_stmt;
 
 SET @ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@schema_name AND table_name='article' AND column_name='author_id' AND LOWER(column_type)='bigint' AND is_nullable='NO' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1, 'SELECT 1', 'SELECT SCHEMA_DRIFT_prerequisite_article_author_id');
+PREPARE stage_b_stmt FROM @ddl;
+EXECUTE stage_b_stmt;
+DEALLOCATE PREPARE stage_b_stmt;
+
+-- Widen the compatibility mirror before any revision can freeze content that TEXT cannot represent.
+-- Only the exact legacy and exact target definitions are accepted; every other shape is drift.
+SET @object_count = (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@schema_name AND table_name='article' AND column_name='content');
+SET @object_legacy_valid = (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@schema_name AND table_name='article' AND column_name='content' AND LOWER(column_type)='text' AND is_nullable='YES' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND LOWER(character_set_name)='utf8mb4' AND LOWER(collation_name)='utf8mb4_unicode_ci' AND column_comment='内容');
+SET @object_target_valid = (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@schema_name AND table_name='article' AND column_name='content' AND LOWER(column_type)='mediumtext' AND is_nullable='YES' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND LOWER(character_set_name)='utf8mb4' AND LOWER(collation_name)='utf8mb4_unicode_ci' AND column_comment='内容');
+SET @ddl = IF(@object_count=1 AND @object_target_valid=1, 'SELECT 1', IF(@object_count=1 AND @object_legacy_valid=1, 'ALTER TABLE article MODIFY COLUMN content MEDIUMTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL COMMENT ''内容''', 'SELECT SCHEMA_DRIFT_article_content'));
+PREPARE stage_b_stmt FROM @ddl;
+EXECUTE stage_b_stmt;
+DEALLOCATE PREPARE stage_b_stmt;
+
+-- Canonical frozen tags use exact Unicode code-point identity. MySQL 8 0900_bin is NO PAD,
+-- so case, accents and trailing spaces cannot silently collapse to a different immutable tag.
+SET @ddl = IF((SELECT COUNT(*) FROM information_schema.collations WHERE collation_name='utf8mb4_0900_bin' AND character_set_name='utf8mb4' AND pad_attribute='NO PAD')=1, 'SELECT 1', 'SELECT SCHEMA_DRIFT_required_utf8mb4_0900_bin_no_pad');
+PREPARE stage_b_stmt FROM @ddl;
+EXECUTE stage_b_stmt;
+DEALLOCATE PREPARE stage_b_stmt;
+
+SET @object_count = (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@schema_name AND table_name='tag' AND column_name='name');
+SET @object_legacy_valid = (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@schema_name AND table_name='tag' AND column_name='name' AND LOWER(column_type)='varchar(50)' AND is_nullable='NO' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND LOWER(character_set_name)='utf8mb4' AND LOWER(collation_name)='utf8mb4_unicode_ci' AND column_comment='标签名');
+SET @object_target_valid = (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@schema_name AND table_name='tag' AND column_name='name' AND LOWER(column_type)='varchar(50)' AND is_nullable='NO' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND LOWER(character_set_name)='utf8mb4' AND LOWER(collation_name)='utf8mb4_0900_bin' AND column_comment='标签名');
+SET @ddl = IF(@object_count=1 AND @object_target_valid=1, 'SELECT 1', IF(@object_count=1 AND @object_legacy_valid=1, 'ALTER TABLE tag MODIFY COLUMN name VARCHAR(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL COMMENT ''标签名''', 'SELECT SCHEMA_DRIFT_tag_name'));
+PREPARE stage_b_stmt FROM @ddl;
+EXECUTE stage_b_stmt;
+DEALLOCATE PREPARE stage_b_stmt;
+
+-- The historical name constraint must remain a visible, full-width, one-column unique BTREE.
+SET @object_count = (SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=@schema_name AND table_name='tag' AND index_name='uk_name');
+SET @object_valid = (SELECT IF(COUNT(*)=1 AND COALESCE(GROUP_CONCAT(CONCAT(seq_in_index,':',column_name) ORDER BY seq_in_index SEPARATOR ','),'')='1:name' AND SUM(non_unique=0 AND sub_part IS NULL AND index_type='BTREE' AND is_visible='YES')=1,1,0) FROM information_schema.statistics WHERE table_schema=@schema_name AND table_name='tag' AND index_name='uk_name');
+SET @ddl = IF(@object_count=1 AND @object_valid=1, 'SELECT 1', 'SELECT SCHEMA_DRIFT_tag_uk_name');
 PREPARE stage_b_stmt FROM @ddl;
 EXECUTE stage_b_stmt;
 DEALLOCATE PREPARE stage_b_stmt;
@@ -250,9 +288,34 @@ CREATE TABLE IF NOT EXISTS domain_event_outbox (
   created_at DATETIME(6) NOT NULL,
   published_at DATETIME(6) NULL,
   failed_at DATETIME(6) NULL,
+  dead_resolved_at DATETIME(6) NULL,
+  dead_resolved_by VARCHAR(96) NULL,
+  dead_resolution VARCHAR(32) NULL,
   PRIMARY KEY (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-SET @ddl = IF((SELECT IF(COUNT(*)=20 AND SUM(column_name='id' AND LOWER(column_type)='bigint' AND is_nullable='NO' AND column_default IS NULL AND LOWER(extra)='auto_increment' AND character_set_name IS NULL AND collation_name IS NULL)=1 AND SUM(column_name='event_id' AND LOWER(column_type)='binary(16)' AND is_nullable='NO' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1 AND SUM(column_name='aggregate_type' AND LOWER(column_type)='varchar(64)' AND is_nullable='NO' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND LOWER(character_set_name)='utf8mb4' AND LOWER(collation_name)='utf8mb4_unicode_ci')=1 AND SUM(column_name='aggregate_id' AND LOWER(column_type)='bigint' AND is_nullable='NO' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1 AND SUM(column_name='aggregate_version' AND LOWER(column_type)='bigint' AND is_nullable='NO' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1 AND SUM(column_name='lifecycle_epoch' AND LOWER(column_type)='bigint' AND is_nullable='NO' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1 AND SUM(column_name='event_type' AND LOWER(column_type)='varchar(64)' AND is_nullable='NO' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND LOWER(character_set_name)='utf8mb4' AND LOWER(collation_name)='utf8mb4_unicode_ci')=1 AND SUM(column_name='payload_version' AND LOWER(column_type)='int' AND is_nullable='NO' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1 AND SUM(column_name='payload_json' AND LOWER(column_type)='json' AND is_nullable='NO' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1 AND SUM(column_name='dedupe_key' AND LOWER(column_type)='varchar(190)' AND is_nullable='NO' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND LOWER(character_set_name)='utf8mb4' AND LOWER(collation_name)='utf8mb4_unicode_ci')=1 AND SUM(column_name='occurred_at' AND LOWER(column_type)='datetime(6)' AND is_nullable='NO' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1 AND SUM(column_name='state' AND LOWER(column_type)='varchar(16)' AND is_nullable='NO' AND CAST(column_default AS CHAR)='PENDING' AND COALESCE(LOWER(extra),'')='' AND LOWER(character_set_name)='utf8mb4' AND LOWER(collation_name)='utf8mb4_unicode_ci')=1 AND SUM(column_name='retry_count' AND LOWER(column_type)='int' AND is_nullable='NO' AND CAST(column_default AS CHAR)='0' AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1 AND SUM(column_name='next_attempt_at' AND LOWER(column_type)='datetime(6)' AND is_nullable='NO' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1 AND SUM(column_name='lease_owner' AND LOWER(column_type)='varchar(96)' AND is_nullable='YES' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND LOWER(character_set_name)='utf8mb4' AND LOWER(collation_name)='utf8mb4_unicode_ci')=1 AND SUM(column_name='lease_until' AND LOWER(column_type)='datetime(6)' AND is_nullable='YES' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1 AND SUM(column_name='last_error' AND LOWER(column_type)='varchar(500)' AND is_nullable='YES' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND LOWER(character_set_name)='utf8mb4' AND LOWER(collation_name)='utf8mb4_unicode_ci')=1 AND SUM(column_name='created_at' AND LOWER(column_type)='datetime(6)' AND is_nullable='NO' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1 AND SUM(column_name='published_at' AND LOWER(column_type)='datetime(6)' AND is_nullable='YES' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1 AND SUM(column_name='failed_at' AND LOWER(column_type)='datetime(6)' AND is_nullable='YES' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1,1,0) FROM information_schema.columns WHERE table_schema=@schema_name AND table_name='domain_event_outbox')=1 AND (SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=@schema_name AND table_name='domain_event_outbox' AND LOWER(engine)='innodb' AND LOWER(table_collation)='utf8mb4_unicode_ci')=1, 'SELECT 1', 'SELECT SCHEMA_DRIFT_domain_event_outbox_columns' );
+
+-- Upgrade the historical 20-column table before validating the 23-column target manifest.
+SET @object_count = (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@schema_name AND table_name='domain_event_outbox' AND column_name='dead_resolved_at');
+SET @object_valid = (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@schema_name AND table_name='domain_event_outbox' AND column_name='dead_resolved_at' AND LOWER(column_type)='datetime(6)' AND is_nullable='YES' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL);
+SET @ddl = IF(@object_count=0, 'ALTER TABLE domain_event_outbox ADD COLUMN dead_resolved_at DATETIME(6) NULL AFTER failed_at', IF(@object_count=1 AND @object_valid=1, 'SELECT 1', 'SELECT SCHEMA_DRIFT_domain_event_outbox_dead_resolved_at'));
+PREPARE stage_b_stmt FROM @ddl;
+EXECUTE stage_b_stmt;
+DEALLOCATE PREPARE stage_b_stmt;
+
+SET @object_count = (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@schema_name AND table_name='domain_event_outbox' AND column_name='dead_resolved_by');
+SET @object_valid = (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@schema_name AND table_name='domain_event_outbox' AND column_name='dead_resolved_by' AND LOWER(column_type)='varchar(96)' AND is_nullable='YES' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND LOWER(character_set_name)='utf8mb4' AND LOWER(collation_name)='utf8mb4_unicode_ci');
+SET @ddl = IF(@object_count=0, 'ALTER TABLE domain_event_outbox ADD COLUMN dead_resolved_by VARCHAR(96) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL AFTER dead_resolved_at', IF(@object_count=1 AND @object_valid=1, 'SELECT 1', 'SELECT SCHEMA_DRIFT_domain_event_outbox_dead_resolved_by'));
+PREPARE stage_b_stmt FROM @ddl;
+EXECUTE stage_b_stmt;
+DEALLOCATE PREPARE stage_b_stmt;
+
+SET @object_count = (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@schema_name AND table_name='domain_event_outbox' AND column_name='dead_resolution');
+SET @object_valid = (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=@schema_name AND table_name='domain_event_outbox' AND column_name='dead_resolution' AND LOWER(column_type)='varchar(32)' AND is_nullable='YES' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND LOWER(character_set_name)='utf8mb4' AND LOWER(collation_name)='utf8mb4_unicode_ci');
+SET @ddl = IF(@object_count=0, 'ALTER TABLE domain_event_outbox ADD COLUMN dead_resolution VARCHAR(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL AFTER dead_resolved_by', IF(@object_count=1 AND @object_valid=1, 'SELECT 1', 'SELECT SCHEMA_DRIFT_domain_event_outbox_dead_resolution'));
+PREPARE stage_b_stmt FROM @ddl;
+EXECUTE stage_b_stmt;
+DEALLOCATE PREPARE stage_b_stmt;
+SET @ddl = IF((SELECT IF(COUNT(*)=23 AND SUM(column_name='id' AND LOWER(column_type)='bigint' AND is_nullable='NO' AND column_default IS NULL AND LOWER(extra)='auto_increment' AND character_set_name IS NULL AND collation_name IS NULL)=1 AND SUM(column_name='event_id' AND LOWER(column_type)='binary(16)' AND is_nullable='NO' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1 AND SUM(column_name='aggregate_type' AND LOWER(column_type)='varchar(64)' AND is_nullable='NO' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND LOWER(character_set_name)='utf8mb4' AND LOWER(collation_name)='utf8mb4_unicode_ci')=1 AND SUM(column_name='aggregate_id' AND LOWER(column_type)='bigint' AND is_nullable='NO' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1 AND SUM(column_name='aggregate_version' AND LOWER(column_type)='bigint' AND is_nullable='NO' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1 AND SUM(column_name='lifecycle_epoch' AND LOWER(column_type)='bigint' AND is_nullable='NO' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1 AND SUM(column_name='event_type' AND LOWER(column_type)='varchar(64)' AND is_nullable='NO' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND LOWER(character_set_name)='utf8mb4' AND LOWER(collation_name)='utf8mb4_unicode_ci')=1 AND SUM(column_name='payload_version' AND LOWER(column_type)='int' AND is_nullable='NO' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1 AND SUM(column_name='payload_json' AND LOWER(column_type)='json' AND is_nullable='NO' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1 AND SUM(column_name='dedupe_key' AND LOWER(column_type)='varchar(190)' AND is_nullable='NO' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND LOWER(character_set_name)='utf8mb4' AND LOWER(collation_name)='utf8mb4_unicode_ci')=1 AND SUM(column_name='occurred_at' AND LOWER(column_type)='datetime(6)' AND is_nullable='NO' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1 AND SUM(column_name='state' AND LOWER(column_type)='varchar(16)' AND is_nullable='NO' AND CAST(column_default AS CHAR)='PENDING' AND COALESCE(LOWER(extra),'')='' AND LOWER(character_set_name)='utf8mb4' AND LOWER(collation_name)='utf8mb4_unicode_ci')=1 AND SUM(column_name='retry_count' AND LOWER(column_type)='int' AND is_nullable='NO' AND CAST(column_default AS CHAR)='0' AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1 AND SUM(column_name='next_attempt_at' AND LOWER(column_type)='datetime(6)' AND is_nullable='NO' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1 AND SUM(column_name='lease_owner' AND LOWER(column_type)='varchar(96)' AND is_nullable='YES' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND LOWER(character_set_name)='utf8mb4' AND LOWER(collation_name)='utf8mb4_unicode_ci')=1 AND SUM(column_name='lease_until' AND LOWER(column_type)='datetime(6)' AND is_nullable='YES' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1 AND SUM(column_name='last_error' AND LOWER(column_type)='varchar(500)' AND is_nullable='YES' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND LOWER(character_set_name)='utf8mb4' AND LOWER(collation_name)='utf8mb4_unicode_ci')=1 AND SUM(column_name='created_at' AND LOWER(column_type)='datetime(6)' AND is_nullable='NO' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1 AND SUM(column_name='published_at' AND LOWER(column_type)='datetime(6)' AND is_nullable='YES' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1 AND SUM(column_name='failed_at' AND LOWER(column_type)='datetime(6)' AND is_nullable='YES' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1 AND SUM(column_name='dead_resolved_at' AND LOWER(column_type)='datetime(6)' AND is_nullable='YES' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1 AND SUM(column_name='dead_resolved_by' AND LOWER(column_type)='varchar(96)' AND is_nullable='YES' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND LOWER(character_set_name)='utf8mb4' AND LOWER(collation_name)='utf8mb4_unicode_ci')=1 AND SUM(column_name='dead_resolution' AND LOWER(column_type)='varchar(32)' AND is_nullable='YES' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND LOWER(character_set_name)='utf8mb4' AND LOWER(collation_name)='utf8mb4_unicode_ci')=1,1,0) FROM information_schema.columns WHERE table_schema=@schema_name AND table_name='domain_event_outbox')=1 AND (SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=@schema_name AND table_name='domain_event_outbox' AND LOWER(engine)='innodb' AND LOWER(table_collation)='utf8mb4_unicode_ci')=1, 'SELECT 1', 'SELECT SCHEMA_DRIFT_domain_event_outbox_columns' );
 PREPARE stage_b_stmt FROM @ddl;
 EXECUTE stage_b_stmt;
 DEALLOCATE PREPARE stage_b_stmt;
@@ -284,6 +347,88 @@ CREATE TABLE IF NOT EXISTS projection_watermark (
   PRIMARY KEY (consumer_name,aggregate_type,aggregate_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 SET @ddl = IF((SELECT IF(COUNT(*)=9 AND SUM(column_name='consumer_name' AND LOWER(column_type)='varchar(96)' AND is_nullable='NO' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND LOWER(character_set_name)='utf8mb4' AND LOWER(collation_name)='utf8mb4_unicode_ci')=1 AND SUM(column_name='aggregate_type' AND LOWER(column_type)='varchar(64)' AND is_nullable='NO' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND LOWER(character_set_name)='utf8mb4' AND LOWER(collation_name)='utf8mb4_unicode_ci')=1 AND SUM(column_name='aggregate_id' AND LOWER(column_type)='bigint' AND is_nullable='NO' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1 AND SUM(column_name='last_applied_version' AND LOWER(column_type)='bigint' AND is_nullable='NO' AND CAST(column_default AS CHAR)='0' AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1 AND SUM(column_name='lifecycle_epoch' AND LOWER(column_type)='bigint' AND is_nullable='NO' AND CAST(column_default AS CHAR)='0' AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1 AND SUM(column_name='tombstone' AND LOWER(column_type)='tinyint(1)' AND is_nullable='NO' AND CAST(column_default AS CHAR)='0' AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1 AND SUM(column_name='lease_owner' AND LOWER(column_type)='varchar(96)' AND is_nullable='YES' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND LOWER(character_set_name)='utf8mb4' AND LOWER(collation_name)='utf8mb4_unicode_ci')=1 AND SUM(column_name='lease_until' AND LOWER(column_type)='datetime(6)' AND is_nullable='YES' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1 AND SUM(column_name='updated_at' AND LOWER(column_type)='datetime(6)' AND is_nullable='NO' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1,1,0) FROM information_schema.columns WHERE table_schema=@schema_name AND table_name='projection_watermark')=1 AND (SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=@schema_name AND table_name='projection_watermark' AND LOWER(engine)='innodb' AND LOWER(table_collation)='utf8mb4_unicode_ci')=1, 'SELECT 1', 'SELECT SCHEMA_DRIFT_projection_watermark_columns' );
+PREPARE stage_b_stmt FROM @ddl;
+EXECUTE stage_b_stmt;
+DEALLOCATE PREPARE stage_b_stmt;
+
+-- Durable rollout promotion checkpoint. Creation never seeds or advances rollout state.
+CREATE TABLE IF NOT EXISTS article_revision_rollout_checkpoint (
+  checkpoint_id TINYINT NOT NULL,
+  mode VARCHAR(24) NOT NULL,
+  schema_generation BIGINT NOT NULL,
+  minimum_binary_generation BIGINT NOT NULL,
+  required_build_digest CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  backfill_started_at DATETIME(6) NULL,
+  verified_build_digest CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  verified_fingerprint CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  verify_report_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  verified_at DATETIME(6) NULL,
+  sentinel_build_digest CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  sentinel_report_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  sentinel_verified_at DATETIME(6) NULL,
+  cutover_epoch BIGINT NOT NULL DEFAULT 0,
+  updated_by VARCHAR(96) NOT NULL,
+  updated_at DATETIME(6) NOT NULL,
+  lock_version BIGINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (checkpoint_id),
+  CONSTRAINT chk_article_revision_rollout_singleton CHECK (checkpoint_id=1)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- TEST_CHECKPOINT_AFTER_ROLLOUT_CHECKPOINT_CREATE
+
+SET @ddl = IF(
+  (SELECT IF(COUNT(*)=17
+    AND SUM(column_name='checkpoint_id' AND LOWER(column_type)='tinyint' AND is_nullable='NO' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1
+    AND SUM(column_name='mode' AND LOWER(column_type)='varchar(24)' AND is_nullable='NO' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND LOWER(character_set_name)='utf8mb4' AND LOWER(collation_name)='utf8mb4_unicode_ci')=1
+    AND SUM(column_name='schema_generation' AND LOWER(column_type)='bigint' AND is_nullable='NO' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1
+    AND SUM(column_name='minimum_binary_generation' AND LOWER(column_type)='bigint' AND is_nullable='NO' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1
+    AND SUM(column_name='required_build_digest' AND LOWER(column_type)='char(64)' AND is_nullable='NO' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND LOWER(character_set_name)='ascii' AND LOWER(collation_name)='ascii_bin')=1
+    AND SUM(column_name='backfill_started_at' AND LOWER(column_type)='datetime(6)' AND is_nullable='YES' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1
+    AND SUM(column_name='verified_build_digest' AND LOWER(column_type)='char(64)' AND is_nullable='YES' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND LOWER(character_set_name)='ascii' AND LOWER(collation_name)='ascii_bin')=1
+    AND SUM(column_name='verified_fingerprint' AND LOWER(column_type)='char(64)' AND is_nullable='YES' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND LOWER(character_set_name)='ascii' AND LOWER(collation_name)='ascii_bin')=1
+    AND SUM(column_name='verify_report_hash' AND LOWER(column_type)='char(64)' AND is_nullable='YES' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND LOWER(character_set_name)='ascii' AND LOWER(collation_name)='ascii_bin')=1
+    AND SUM(column_name='verified_at' AND LOWER(column_type)='datetime(6)' AND is_nullable='YES' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1
+    AND SUM(column_name='sentinel_build_digest' AND LOWER(column_type)='char(64)' AND is_nullable='YES' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND LOWER(character_set_name)='ascii' AND LOWER(collation_name)='ascii_bin')=1
+    AND SUM(column_name='sentinel_report_hash' AND LOWER(column_type)='char(64)' AND is_nullable='YES' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND LOWER(character_set_name)='ascii' AND LOWER(collation_name)='ascii_bin')=1
+    AND SUM(column_name='sentinel_verified_at' AND LOWER(column_type)='datetime(6)' AND is_nullable='YES' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1
+    AND SUM(column_name='cutover_epoch' AND LOWER(column_type)='bigint' AND is_nullable='NO' AND CAST(column_default AS CHAR)='0' AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1
+    AND SUM(column_name='updated_by' AND LOWER(column_type)='varchar(96)' AND is_nullable='NO' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND LOWER(character_set_name)='utf8mb4' AND LOWER(collation_name)='utf8mb4_unicode_ci')=1
+    AND SUM(column_name='updated_at' AND LOWER(column_type)='datetime(6)' AND is_nullable='NO' AND column_default IS NULL AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1
+    AND SUM(column_name='lock_version' AND LOWER(column_type)='bigint' AND is_nullable='NO' AND CAST(column_default AS CHAR)='0' AND COALESCE(LOWER(extra),'')='' AND character_set_name IS NULL AND collation_name IS NULL)=1,
+    1,0)
+   FROM information_schema.columns
+   WHERE table_schema=@schema_name AND table_name='article_revision_rollout_checkpoint')=1
+  AND (SELECT COUNT(*) FROM information_schema.tables
+       WHERE table_schema=@schema_name AND table_name='article_revision_rollout_checkpoint'
+         AND table_type='BASE TABLE' AND LOWER(engine)='innodb'
+         AND LOWER(table_collation)='utf8mb4_unicode_ci')=1,
+  'SELECT 1', 'SELECT SCHEMA_DRIFT_article_revision_rollout_checkpoint_columns');
+PREPARE stage_b_stmt FROM @ddl;
+EXECUTE stage_b_stmt;
+DEALLOCATE PREPARE stage_b_stmt;
+
+SET @object_count = (SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=@schema_name AND table_name='article_revision_rollout_checkpoint' AND index_name='PRIMARY');
+SET @object_valid = (SELECT IF(COUNT(*)=1 AND COALESCE(GROUP_CONCAT(CONCAT(seq_in_index,':',column_name) ORDER BY seq_in_index SEPARATOR ','),'')='1:checkpoint_id' AND SUM(non_unique=0 AND sub_part IS NULL AND index_type='BTREE' AND is_visible='YES')=1,1,0) FROM information_schema.statistics WHERE table_schema=@schema_name AND table_name='article_revision_rollout_checkpoint' AND index_name='PRIMARY');
+SET @ddl = IF(@object_count=1 AND @object_valid=1, 'SELECT 1', 'SELECT SCHEMA_DRIFT_article_revision_rollout_checkpoint_PRIMARY');
+PREPARE stage_b_stmt FROM @ddl;
+EXECUTE stage_b_stmt;
+DEALLOCATE PREPARE stage_b_stmt;
+
+SET @object_valid = (
+  SELECT IF(COUNT(*)=1 AND SUM(
+    tc.constraint_name='chk_article_revision_rollout_singleton'
+    AND tc.enforced='YES'
+    AND REPLACE(REPLACE(REPLACE(REPLACE(LOWER(cc.check_clause),'`',''),' ',''),'(',''),')','')='checkpoint_id=1'
+  )=1,1,0)
+  FROM information_schema.table_constraints tc
+  JOIN information_schema.check_constraints cc
+    ON cc.constraint_schema=tc.constraint_schema
+   AND cc.constraint_name=tc.constraint_name
+  WHERE tc.constraint_schema=@schema_name
+    AND tc.table_name='article_revision_rollout_checkpoint'
+    AND tc.constraint_type='CHECK'
+);
+SET @ddl = IF(@object_valid=1, 'SELECT 1', 'SELECT SCHEMA_DRIFT_article_revision_rollout_checkpoint_singleton');
 PREPARE stage_b_stmt FROM @ddl;
 EXECUTE stage_b_stmt;
 DEALLOCATE PREPARE stage_b_stmt;
@@ -417,6 +562,14 @@ PREPARE stage_b_stmt FROM @ddl;
 EXECUTE stage_b_stmt;
 DEALLOCATE PREPARE stage_b_stmt;
 
+-- guarded index article_revision_migration_issue.idx_revision_migration_retention
+SET @object_count = (SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=@schema_name AND table_name='article_revision_migration_issue' AND index_name='idx_revision_migration_retention');
+SET @object_valid = (SELECT IF(COUNT(*)=2 AND COALESCE(GROUP_CONCAT(CONCAT(seq_in_index,':',column_name) ORDER BY seq_in_index SEPARATOR ','),'')='1:resolved_at,2:id' AND SUM(non_unique=1 AND sub_part IS NULL AND index_type='BTREE' AND is_visible='YES')=2,1,0) FROM information_schema.statistics WHERE table_schema=@schema_name AND table_name='article_revision_migration_issue' AND index_name='idx_revision_migration_retention');
+SET @ddl = IF(@object_count=0, 'CREATE INDEX idx_revision_migration_retention ON article_revision_migration_issue(resolved_at,id)', IF(@object_valid=1, 'SELECT 1', 'SELECT SCHEMA_DRIFT_article_revision_migration_issue_idx_revision_migration_retention'));
+PREPARE stage_b_stmt FROM @ddl;
+EXECUTE stage_b_stmt;
+DEALLOCATE PREPARE stage_b_stmt;
+
 -- guarded index domain_event_outbox.PRIMARY
 SET @object_count = (SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=@schema_name AND table_name='domain_event_outbox' AND index_name='PRIMARY');
 SET @object_valid = (SELECT IF(COUNT(*)=1 AND COALESCE(GROUP_CONCAT(CONCAT(seq_in_index,':',column_name) ORDER BY seq_in_index SEPARATOR ','),'')='1:id' AND SUM(non_unique=0 AND sub_part IS NULL AND index_type='BTREE' AND is_visible='YES')=1,1,0) FROM information_schema.statistics WHERE table_schema=@schema_name AND table_name='domain_event_outbox' AND index_name='PRIMARY');
@@ -457,10 +610,34 @@ PREPARE stage_b_stmt FROM @ddl;
 EXECUTE stage_b_stmt;
 DEALLOCATE PREPARE stage_b_stmt;
 
+-- guarded index domain_event_outbox.idx_domain_outbox_published_retention
+SET @object_count = (SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=@schema_name AND table_name='domain_event_outbox' AND index_name='idx_domain_outbox_published_retention');
+SET @object_valid = (SELECT IF(COUNT(*)=3 AND COALESCE(GROUP_CONCAT(CONCAT(seq_in_index,':',column_name) ORDER BY seq_in_index SEPARATOR ','),'')='1:state,2:published_at,3:id' AND SUM(non_unique=1 AND sub_part IS NULL AND index_type='BTREE' AND is_visible='YES')=3,1,0) FROM information_schema.statistics WHERE table_schema=@schema_name AND table_name='domain_event_outbox' AND index_name='idx_domain_outbox_published_retention');
+SET @ddl = IF(@object_count=0, 'CREATE INDEX idx_domain_outbox_published_retention ON domain_event_outbox(state,published_at,id)', IF(@object_valid=1, 'SELECT 1', 'SELECT SCHEMA_DRIFT_domain_event_outbox_idx_domain_outbox_published_retention'));
+PREPARE stage_b_stmt FROM @ddl;
+EXECUTE stage_b_stmt;
+DEALLOCATE PREPARE stage_b_stmt;
+
+-- guarded index domain_event_outbox.idx_domain_outbox_dead_retention
+SET @object_count = (SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=@schema_name AND table_name='domain_event_outbox' AND index_name='idx_domain_outbox_dead_retention');
+SET @object_valid = (SELECT IF(COUNT(*)=3 AND COALESCE(GROUP_CONCAT(CONCAT(seq_in_index,':',column_name) ORDER BY seq_in_index SEPARATOR ','),'')='1:state,2:dead_resolved_at,3:id' AND SUM(non_unique=1 AND sub_part IS NULL AND index_type='BTREE' AND is_visible='YES')=3,1,0) FROM information_schema.statistics WHERE table_schema=@schema_name AND table_name='domain_event_outbox' AND index_name='idx_domain_outbox_dead_retention');
+SET @ddl = IF(@object_count=0, 'CREATE INDEX idx_domain_outbox_dead_retention ON domain_event_outbox(state,dead_resolved_at,id)', IF(@object_valid=1, 'SELECT 1', 'SELECT SCHEMA_DRIFT_domain_event_outbox_idx_domain_outbox_dead_retention'));
+PREPARE stage_b_stmt FROM @ddl;
+EXECUTE stage_b_stmt;
+DEALLOCATE PREPARE stage_b_stmt;
+
 -- guarded index consumer_inbox.PRIMARY
 SET @object_count = (SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=@schema_name AND table_name='consumer_inbox' AND index_name='PRIMARY');
 SET @object_valid = (SELECT IF(COUNT(*)=2 AND COALESCE(GROUP_CONCAT(CONCAT(seq_in_index,':',column_name) ORDER BY seq_in_index SEPARATOR ','),'')='1:consumer_name,2:event_id' AND SUM(non_unique=0 AND sub_part IS NULL AND index_type='BTREE' AND is_visible='YES')=2,1,0) FROM information_schema.statistics WHERE table_schema=@schema_name AND table_name='consumer_inbox' AND index_name='PRIMARY');
 SET @ddl = IF(@object_count=0, 'ALTER TABLE consumer_inbox ADD PRIMARY KEY (consumer_name,event_id)', IF(@object_valid=1, 'SELECT 1', 'SELECT SCHEMA_DRIFT_consumer_inbox_PRIMARY'));
+PREPARE stage_b_stmt FROM @ddl;
+EXECUTE stage_b_stmt;
+DEALLOCATE PREPARE stage_b_stmt;
+
+-- guarded index consumer_inbox.idx_consumer_inbox_retention
+SET @object_count = (SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=@schema_name AND table_name='consumer_inbox' AND index_name='idx_consumer_inbox_retention');
+SET @object_valid = (SELECT IF(COUNT(*)=3 AND COALESCE(GROUP_CONCAT(CONCAT(seq_in_index,':',column_name) ORDER BY seq_in_index SEPARATOR ','),'')='1:processed_at,2:consumer_name,3:event_id' AND SUM(non_unique=1 AND sub_part IS NULL AND index_type='BTREE' AND is_visible='YES')=3,1,0) FROM information_schema.statistics WHERE table_schema=@schema_name AND table_name='consumer_inbox' AND index_name='idx_consumer_inbox_retention');
+SET @ddl = IF(@object_count=0, 'CREATE INDEX idx_consumer_inbox_retention ON consumer_inbox(processed_at,consumer_name,event_id)', IF(@object_valid=1, 'SELECT 1', 'SELECT SCHEMA_DRIFT_consumer_inbox_idx_consumer_inbox_retention'));
 PREPARE stage_b_stmt FROM @ddl;
 EXECUTE stage_b_stmt;
 DEALLOCATE PREPARE stage_b_stmt;

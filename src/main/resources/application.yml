@@ -93,6 +93,8 @@ metro:
   migration:
     stage-b:
       action: ${METRO_STAGE_B_MIGRATION_ACTION:NONE}
+      operator-identity: ${METRO_STAGE_B_OPERATOR_IDENTITY:}
+      verification-report-path: ${METRO_STAGE_B_VERIFICATION_REPORT_PATH:}
       batch-size: ${METRO_STAGE_B_MIGRATION_BATCH_SIZE:100}
       verification-page-size: ${METRO_STAGE_B_VERIFICATION_PAGE_SIZE:500}
       maximum-reported-mismatches: ${METRO_STAGE_B_MAX_MISMATCHES:100}
@@ -100,6 +102,18 @@ metro:
       elasticsearch-pit-keep-alive: ${METRO_STAGE_B_ES_PIT_KEEP_ALIVE:PT1M}
   article:
     revision-mode: ${METRO_ARTICLE_REVISION_MODE:LEGACY}
+    rollout-build:
+      binary-generation: ${METRO_ARTICLE_ROLLOUT_BINARY_GENERATION:-1}
+      schema-generation: ${METRO_ARTICLE_ROLLOUT_SCHEMA_GENERATION:-1}
+      digest: ${METRO_ARTICLE_ROLLOUT_BUILD_DIGEST:}
+    rollout-operator:
+      action: ${METRO_STAGE_B_ROLLOUT_ACTION:NONE}
+      target: ${METRO_STAGE_B_ROLLOUT_TARGET:}
+      sentinel-run-path: ${METRO_STAGE_B_ROLLOUT_SENTINEL_RUN_PATH:}
+      sentinel-report-path: ${METRO_STAGE_B_ROLLOUT_SENTINEL_REPORT_PATH:}
+      target-binary-generation: ${METRO_STAGE_B_ROLLOUT_TARGET_BINARY_GENERATION:-1}
+      target-schema-generation: ${METRO_STAGE_B_ROLLOUT_TARGET_SCHEMA_GENERATION:-1}
+      target-build-digest: ${METRO_STAGE_B_ROLLOUT_TARGET_BUILD_DIGEST:}
     projection:
       lease-duration: ${METRO_ARTICLE_PROJECTION_LEASE_DURATION:PT30S}
       index-name: ${METRO_ARTICLE_PROJECTION_INDEX:article}
@@ -119,6 +133,15 @@ metro:
       batch-size: 100
       lease-duration: PT30S
       max-attempts: 12
+    retention:
+      # Destructive retention is opt-in; read-only backlog metrics remain enabled by default.
+      scheduling-enabled: ${METRO_DOMAIN_EVENT_RETENTION_SCHEDULING_ENABLED:false}
+      cron: "${METRO_DOMAIN_EVENT_RETENTION_CRON:0 30 4 * * *}"
+      batch-size: ${METRO_DOMAIN_EVENT_RETENTION_BATCH_SIZE:200}
+      max-batches: ${METRO_DOMAIN_EVENT_RETENTION_MAX_BATCHES:20}
+      metrics-enabled: ${METRO_DOMAIN_EVENT_RETENTION_METRICS_ENABLED:true}
+      metrics-delay: ${METRO_DOMAIN_EVENT_RETENTION_METRICS_DELAY:PT5M}
+      metrics-initial-delay: ${METRO_DOMAIN_EVENT_RETENTION_METRICS_INITIAL_DELAY:PT30S}
   ai:
     enabled: ${METRO_AI_ENABLED:false}
     agent:

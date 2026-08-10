@@ -89,6 +89,53 @@ RabbitMQ 工作队列现在配置了 3 次有限重试与死信队列（队列�
 
 服务默认端口为 `8080`，可通过 `SERVER_PORT` 修改。
 
+## Stage B 文章修订与切换运维
+
+Stage B 已提供不可变文章修订、人工双对象 CAS、事务 Outbox、搜索/通知投影，以及持久化的
+rollout checkpoint。升级已有数据库时，先按
+[schema expand runbook](docs/database/operations/2026-08-10-stage-b-schema-expand-runbook.md)
+执行迁移；生产晋级只遵循
+[Stage B cutover runbook](docs/database/operations/2026-08-10-stage-b-cutover-runbook.md)。旧的进程内
+mode 文档已经废弃，不能用 ConfigMap 热改或混合版本副本代替 checkpoint/operator CAS。
+
+应用启动必须注入不可变构建身份；digest 是 OCI `sha256:` 后面的 64 位小写十六进制值，generation
+必须是非负整数。缺失、格式错误、低于 checkpoint 或与授权构建不一致都会 fail closed：
+
+```text
+METRO_ARTICLE_ROLLOUT_BUILD_DIGEST=<64 lowercase hex>
+METRO_ARTICLE_ROLLOUT_BINARY_GENERATION=<non-negative integer>
+METRO_ARTICLE_ROLLOUT_SCHEMA_GENERATION=<non-negative integer>
+METRO_ARTICLE_REVISION_MODE=LEGACY
+```
+
+`METRO_ARTICLE_REVISION_MODE` 是 pod 的目标模式，只允许按
+`LEGACY -> SHADOW -> VERIFY_FENCE -> POINTER_READ -> CUTOVER` 晋级。普通 pod 的
+`METRO_STAGE_B_MIGRATION_ACTION=NONE`；受审计的一次性 operator 才能设为 `BACKFILL` 或
+`VERIFY`，并必须提供 `METRO_STAGE_B_OPERATOR_IDENTITY`。VERIFY 还必须把
+`METRO_STAGE_B_VERIFICATION_REPORT_PATH` 设为受控归档目录下绝对且尚不存在的文件路径；命令以
+owner-only `CREATE_NEW` 创建完整报告。镜像 digest admission allowlist、旧 pod
+及旧 DB/RabbitMQ credential 的排空与撤销属于切换硬门槛，详见权威 runbook。
+
+持久化 checkpoint 的初始化、晋级、sentinel、forward-fix 和 emergency fence 只能由
+one-shot operator 执行。唯一环境变量入口是 `METRO_STAGE_B_ROLLOUT_ACTION`，取值为
+`BOOTSTRAP_LEGACY`、`ADVANCE`、`BEGIN_SENTINEL`、`RECORD_SENTINEL`、
+`AUTHORIZE_BUILD` 或 `EMERGENCY_FENCE`；普通 pod 必须保持 `NONE`。`ADVANCE`、sentinel
+文件路径和新构建身份的 action-specific 参数及可复制命令只以权威 cutover
+runbook 为准；任一必需参数缺失都会非零退出。
+
+破坏性事件留存调度默认关闭，只读 backlog metrics 默认开启。删除任务启用前必须检查搜索水位和
+DEAD operator-resolution 事实；其批次、每次最大批数和 UTC cron 均显式可配：
+
+```text
+METRO_DOMAIN_EVENT_RETENTION_SCHEDULING_ENABLED=false
+METRO_DOMAIN_EVENT_RETENTION_CRON="0 30 4 * * *"
+METRO_DOMAIN_EVENT_RETENTION_BATCH_SIZE=200
+METRO_DOMAIN_EVENT_RETENTION_MAX_BATCHES=20
+METRO_DOMAIN_EVENT_RETENTION_METRICS_ENABLED=true
+METRO_DOMAIN_EVENT_RETENTION_METRICS_DELAY=PT5M
+METRO_DOMAIN_EVENT_RETENTION_METRICS_INITIAL_DELAY=PT30S
+```
+
 ## AI 安全底座（Stage A）
 
 Stage A 只交付默认关闭的 AI 安全底座：Provider 中立的网关契约与类型化 DeepSeek/Ollama 适配器、按能力隔离的输入上限/配额/截止时间/有界线程池/重试/熔断/低基数指标，以及始终存在的人工审核降级路径。内容审核在该阶段不调用模型，文章保持人工待审，不会自动通过或拒绝。
@@ -108,7 +155,7 @@ METRO_AI_EMBEDDING_ENABLED=false
 
 因此未配置 Key 时应用仍可启动，不创建 DeepSeek/Ollama API 或 Model Bean，Provider 服务默认不会被访问。普通社区、私信、搜索、推荐和人工审核不依赖 AI Key。
 
-Stage A 还没有生产可用的 Agent API 或前端页面，也没有 Agent 对话、桌宠、RAG、HyDE、长期记忆或写作建议实现。不可变 revision 绑定与通用 Outbox 属于 Stage B；独立运行的 Ollama/Milvus、文章分块投影与 RAG 属于 Stage C；Agent API 与 SSE 属于 Stage D。
+当前还没有生产可用的 Agent API 或前端页面，也没有 Agent 对话、桌宠、RAG、HyDE、长期记忆或写作建议实现。不可变 revision 绑定、人工审核与通用 Outbox 已由 Stage B 提供；独立运行的 Ollama/Milvus、文章分块投影与 RAG 属于 Stage C；Agent API 与 SSE 属于 Stage D。
 
 Spring AI/Ollama 依赖只是客户端与运行时基础，不表示本机已运行 Ollama 或已下载 `bge-m3`。`deepseek-v4-flash` 也只是可配置默认值，在显式验收前不代表模型可用性或质量结论。Prometheus registry 的依赖存在也不代表已公开 scrape endpoint 或交付 Dashboard；当前 Actuator 只暴露 health。
 

@@ -5,6 +5,8 @@ import com.baomidou.mybatisplus.annotation.FieldStrategy;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import cumt.zongzuo.community.article.config.ArticleRevisionMode;
+import cumt.zongzuo.community.article.service.ArticleContentCanonicalizer;
 import org.apache.ibatis.annotations.Mapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.parallel.Execution;
@@ -46,10 +48,14 @@ class ArticleRevisionSchemaIntegrationTest {
             "docs/database/migrations/2026-08-10-article-revision-moderation-outbox.sql");
     private static final Path GRANTS = Path.of(
             "docs/database/operations/2026-08-10-stage-b-immutable-table-grants.sql");
+    private static final Path ROLLOUT_GRANTS = Path.of(
+            "docs/database/operations/2026-08-10-stage-b-rollout-checkpoint-grants.sql");
     private static final Path EXPAND_RUNBOOK = Path.of(
             "docs/database/operations/2026-08-10-stage-b-schema-expand-runbook.md");
     private static final String THIRD_ARTICLE_COLUMN_MARKER = "TEST_CHECKPOINT_AFTER_THIRD_ARTICLE_COLUMN";
     private static final String BEFORE_POINTERS_MARKER = "TEST_CHECKPOINT_BEFORE_ARTICLE_POINTERS";
+    private static final String AFTER_ROLLOUT_CHECKPOINT_MARKER =
+            "TEST_CHECKPOINT_AFTER_ROLLOUT_CHECKPOINT_CREATE";
 
     @Container
     private static final MySQLContainer<?> MYSQL = new MySQLContainer<>("mysql:8.0");
@@ -72,6 +78,67 @@ class ArticleRevisionSchemaIntegrationTest {
     }
 
     @Test
+    void migrationWidensTheLegacyMirrorAndMakesTagIdentityExactAndNoPad() {
+        TestDatabase database = newLegacyDatabase();
+        database.jdbc().update("INSERT INTO article(id,title,content,author_id) VALUES (7,'legacy','body',70)");
+        database.jdbc().update("INSERT INTO tag(id,name) VALUES (8,'AI')");
+
+        runMigration(database.dataSource());
+
+        assertThat(column(database.jdbc(), "article", "content"))
+                .isEqualTo(nullable("content", "mediumtext"));
+        assertThat(column(database.jdbc(), "tag", "name"))
+                .isEqualTo(exactRequired("name", "varchar(50)"));
+        assertThat(columnComment(database.jdbc(), "article", "content")).isEqualTo("内容");
+        assertThat(columnComment(database.jdbc(), "tag", "name")).isEqualTo("标签名");
+        assertThat(database.jdbc().queryForObject("""
+                SELECT pad_attribute
+                FROM information_schema.collations
+                WHERE collation_name='utf8mb4_0900_bin'
+                """, String.class)).isEqualTo("NO PAD");
+        assertThat(index(database.jdbc(), "tag", "uk_name"))
+                .isEqualTo(new IndexContract(false, List.of("name"),
+                        java.util.Collections.singletonList(null)));
+        assertThat(database.jdbc().queryForObject("SELECT content FROM article WHERE id=7", String.class))
+                .isEqualTo("body");
+        assertThat(database.jdbc().queryForObject("SELECT name FROM tag WHERE id=8", String.class))
+                .isEqualTo("AI");
+
+        runMigration(database.dataSource());
+
+        assertThat(column(database.jdbc(), "article", "content"))
+                .isEqualTo(nullable("content", "mediumtext"));
+        assertThat(column(database.jdbc(), "tag", "name"))
+                .isEqualTo(exactRequired("name", "varchar(50)"));
+    }
+
+    @Test
+    void migrationUpgradesAHistoricalTwentyColumnOutboxBeforeExactValidation() {
+        TestDatabase database = newLegacyDatabase();
+        createHistoricalOutbox20(database.jdbc());
+        database.jdbc().update("""
+                INSERT INTO domain_event_outbox
+                    (id,event_id,aggregate_type,aggregate_id,aggregate_version,lifecycle_epoch,
+                     event_type,payload_version,payload_json,dedupe_key,occurred_at,state,
+                     retry_count,next_attempt_at,created_at)
+                VALUES (901,UNHEX(REPEAT('1',32)),'ARTICLE',7,1,1,'TEST',1,
+                        JSON_OBJECT(),'legacy-retention-row',NOW(6),'PENDING',0,NOW(6),NOW(6))
+                """);
+
+        runMigration(database.dataSource());
+
+        assertCompleteManifest(database.jdbc());
+        assertThat(database.jdbc().queryForMap("""
+                SELECT dedupe_key,dead_resolved_at,dead_resolved_by,dead_resolution
+                FROM domain_event_outbox WHERE id=901
+                """))
+                .containsEntry("dedupe_key", "legacy-retention-row")
+                .containsEntry("dead_resolved_at", null)
+                .containsEntry("dead_resolved_by", null)
+                .containsEntry("dead_resolution", null);
+    }
+
+    @Test
     void migrationResumesAfterTheThirdArticleColumnAndReachesTheFreshTarget() {
         TestDatabase interrupted = newLegacyDatabase();
 
@@ -88,6 +155,42 @@ class ArticleRevisionSchemaIntegrationTest {
 
         assertCompleteManifest(fresh.jdbc());
         assertThat(interruptedFingerprint).isEqualTo(metadataFingerprint(fresh.jdbc()));
+    }
+
+    @Test
+    void migrationResumesAfterRolloutCheckpointCreationAndValidatesTheSingleton() {
+        TestDatabase interrupted = newLegacyDatabase();
+
+        runMigrationPrefix(interrupted.dataSource(), AFTER_ROLLOUT_CHECKPOINT_MARKER);
+        assertThat(interrupted.jdbc().queryForObject("""
+                SELECT COUNT(*) FROM information_schema.tables
+                WHERE table_schema=DATABASE()
+                  AND table_name='article_revision_rollout_checkpoint'
+                """, Integer.class)).isOne();
+
+        runMigration(interrupted.dataSource());
+        assertCompleteManifest(interrupted.jdbc());
+        assertThatThrownBy(() -> interrupted.jdbc().update("""
+                INSERT INTO article_revision_rollout_checkpoint
+                    (checkpoint_id,mode,schema_generation,minimum_binary_generation,
+                     required_build_digest,cutover_epoch,updated_by,updated_at,lock_version)
+                VALUES (2,'LEGACY',1,1,REPEAT('a',64),0,'test',NOW(6),0)
+                """))
+                .hasRootCauseInstanceOf(SQLException.class);
+    }
+
+    @Test
+    void migrationRejectsAnyAdditionalRolloutCheckpointCheckConstraint() {
+        TestDatabase database = newLegacyDatabase();
+        runMigrationPrefix(database.dataSource(), AFTER_ROLLOUT_CHECKPOINT_MARKER);
+        database.jdbc().execute("""
+                ALTER TABLE article_revision_rollout_checkpoint
+                ADD CONSTRAINT chk_article_revision_rollout_mode_legacy CHECK (mode='LEGACY')
+                """);
+
+        assertThatThrownBy(() -> runMigration(database.dataSource()))
+                .hasStackTraceContaining("SCHEMA_DRIFT")
+                .hasStackTraceContaining("article_revision_rollout_checkpoint_singleton");
     }
 
     @Test
@@ -339,6 +442,375 @@ class ArticleRevisionSchemaIntegrationTest {
     }
 
     @Test
+    void rolloutCheckpointRolesSeparateRuntimeReadFromOperatorMutation() throws IOException {
+        TestDatabase database = newLegacyDatabase();
+        runMigration(database.dataSource());
+        DataSource rootDataSource = rootDataSource();
+        JdbcTemplate root = new JdbcTemplate(rootDataSource);
+        String runtimeUser = "stage_b_rollout_runtime";
+        String runtimeRole = "stage_b_rollout_reader";
+        String operatorUser = "stage_b_rollout_operator";
+        String operatorRole = "stage_b_rollout_writer";
+        String runtimePassword = "test-" + UUID.randomUUID();
+        String operatorPassword = "test-" + UUID.randomUUID();
+        dropAccount(root, runtimeUser, runtimeRole);
+        dropAccount(root, operatorUser, operatorRole);
+        try {
+            root.execute("CREATE USER '" + runtimeUser + "'@'%' IDENTIFIED BY '"
+                    + runtimePassword + "'");
+            root.execute("CREATE USER '" + operatorUser + "'@'%' IDENTIFIED BY '"
+                    + operatorPassword + "'");
+            root.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON `" + MYSQL.getDatabaseName()
+                    + "`.`article` TO '" + runtimeUser + "'@'%'");
+            executeScript(rootDataSource, renderRolloutGrantTemplate(
+                    MYSQL.getDatabaseName(), runtimeUser, "%", runtimeRole, "%",
+                    operatorUser, "%", operatorRole, "%"));
+
+            JdbcTemplate runtime = new JdbcTemplate(new DriverManagerDataSource(
+                    MYSQL.getJdbcUrl(), runtimeUser, runtimePassword));
+            JdbcTemplate operator = new JdbcTemplate(new DriverManagerDataSource(
+                    MYSQL.getJdbcUrl(), operatorUser, operatorPassword));
+            assertThat(runtime.queryForObject(
+                    "SELECT COUNT(*) FROM article_revision_rollout_checkpoint", Long.class))
+                    .isZero();
+            assertMutationDenied(() -> runtime.update("""
+                    INSERT INTO article_revision_rollout_checkpoint
+                        (checkpoint_id,mode,schema_generation,minimum_binary_generation,
+                         required_build_digest,cutover_epoch,updated_by,updated_at,lock_version)
+                    VALUES (1,'LEGACY',1,1,REPEAT('a',64),0,'runtime',NOW(6),0)
+                    """));
+
+            assertThat(operator.update("""
+                    INSERT INTO article_revision_rollout_checkpoint
+                        (checkpoint_id,mode,schema_generation,minimum_binary_generation,
+                         required_build_digest,cutover_epoch,updated_by,updated_at,lock_version)
+                    VALUES (1,'LEGACY',1,1,REPEAT('a',64),0,'operator',NOW(6),0)
+                    """)).isOne();
+            assertThat(operator.update("""
+                    UPDATE article_revision_rollout_checkpoint
+                    SET mode='SHADOW',lock_version=lock_version+1
+                    WHERE checkpoint_id=1 AND mode='LEGACY' AND lock_version=0
+                    """)).isOne();
+            assertThat(runtime.queryForObject(
+                    "SELECT mode FROM article_revision_rollout_checkpoint WHERE checkpoint_id=1",
+                    String.class)).isEqualTo("SHADOW");
+            assertMutationDenied(() -> runtime.update("""
+                    UPDATE article_revision_rollout_checkpoint SET mode='CUTOVER'
+                    WHERE checkpoint_id=1
+                    """));
+            assertMutationDenied(() -> operator.update(
+                    "DELETE FROM article_revision_rollout_checkpoint WHERE checkpoint_id=1"));
+            assertMutationDenied(() -> runtime.execute(
+                    "ALTER TABLE article_revision_rollout_checkpoint ADD COLUMN runtime_escape INT NULL"));
+            assertMutationDenied(() -> operator.execute(
+                    "ALTER TABLE article_revision_rollout_checkpoint ADD COLUMN operator_escape INT NULL"));
+            assertMutationDenied(() -> runtime.execute(
+                    "TRUNCATE TABLE article_revision_rollout_checkpoint"));
+            assertMutationDenied(() -> operator.execute(
+                    "TRUNCATE TABLE article_revision_rollout_checkpoint"));
+            assertThat(runtime.update(
+                    "INSERT INTO article(id,title,author_id) VALUES (9791,'runtime-app-right',9790)"))
+                    .isOne();
+            assertThat(runtime.update(
+                    "UPDATE article SET title='runtime-app-right-updated' WHERE id=9791"))
+                    .isOne();
+            assertThat(runtime.update("DELETE FROM article WHERE id=9791")).isOne();
+
+            root.update("""
+                    INSERT INTO article(id,title,summary,content,author_id,status,is_deleted)
+                    VALUES (9792,'operator-backfill','summary','body',9790,1,0)
+                    """);
+            ObjectMapper objectMapper = new ObjectMapper();
+            JdbcStageBArticleMigrationService migrationService = new JdbcStageBArticleMigrationService(
+                    operator.getDataSource(), new ArticleContentCanonicalizer(objectMapper), objectMapper,
+                    () -> ArticleRevisionMode.SHADOW);
+            assertThat(migrationService.backfillAll(10))
+                    .extracting(MigrationRunResult::migrated, MigrationRunResult::issues)
+                    .containsExactly(1L, 0L);
+            Long migratedRevisionId = root.queryForObject("""
+                    SELECT id FROM article_revision WHERE article_id=9792 AND revision_no=1
+                    """, Long.class);
+            root.update("""
+                    INSERT INTO article_moderation_job(
+                        article_id,revision_id,content_hash,state,attempt_count,
+                        created_at,updated_at,lock_version)
+                    SELECT article_id,id,content_hash,'HUMAN_PENDING',1,NOW(6),NOW(6),1
+                    FROM article_revision WHERE id=?
+                    """, migratedRevisionId);
+            Long migratedJobId = root.queryForObject(
+                    "SELECT id FROM article_moderation_job WHERE revision_id=?",
+                    Long.class, migratedRevisionId);
+            root.update("""
+                    INSERT INTO article_moderation_attempt(
+                        job_id,attempt_no,provider,model,prompt_version,input_hash,
+                        structured_output_json,latency_ms,error_code,created_at)
+                    VALUES (?,1,'deepseek','schema-test','v1',REPEAT('b',64),
+                            JSON_OBJECT('chunk',JSON_OBJECT('index',0)),1,'PROVIDER_TIMEOUT',NOW(6))
+                    """, migratedJobId);
+            assertThat(operator.queryForObject(
+                    "SELECT COUNT(*) FROM article_moderation_attempt", Long.class)).isOne();
+            assertMutationDenied(() -> operator.update("""
+                    INSERT INTO article_moderation_attempt(
+                        job_id,attempt_no,prompt_version,input_hash,latency_ms,created_at)
+                    VALUES (?,2,'v1',REPEAT('c',64),1,NOW(6))
+                    """, migratedJobId));
+            assertMutationDenied(() -> operator.update(
+                    "UPDATE article_moderation_attempt SET latency_ms=2 WHERE job_id=?",
+                    migratedJobId));
+            assertMutationDenied(() -> operator.update(
+                    "DELETE FROM article_moderation_attempt WHERE job_id=?", migratedJobId));
+            StageBMigrationProperties migrationProperties = new StageBMigrationProperties();
+            migrationProperties.setVerificationPageSize(10);
+            assertThat(new JdbcStageBArticleFingerprintService(operator, migrationProperties).fingerprint())
+                    .matches("[0-9a-f]{64}");
+        } finally {
+            dropAccount(root, runtimeUser, runtimeRole);
+            dropAccount(root, operatorUser, operatorRole);
+        }
+    }
+
+    @Test
+    void rolloutCheckpointGrantTemplateRejectsDdlAuthorityAndAliasedIdentities() throws IOException {
+        TestDatabase database = newLegacyDatabase();
+        runMigration(database.dataSource());
+        DataSource rootDataSource = rootDataSource();
+        JdbcTemplate root = new JdbcTemplate(rootDataSource);
+
+        List<String> unsafeGrants = List.of(
+                "GRANT ALTER ON `%s`.* TO '%s'@'%%'",
+                "GRANT DROP ON `%s`.* TO '%s'@'%%'",
+                "GRANT CREATE ON *.* TO '%s'@'%%'");
+        for (int index = 0; index < unsafeGrants.size(); index++) {
+            String runtimeUser = "rollout_ddl_runtime_" + index;
+            String runtimeRole = "rollout_ddl_reader_" + index;
+            String operatorUser = "rollout_ddl_operator_" + index;
+            String operatorRole = "rollout_ddl_writer_" + index;
+            dropAccount(root, runtimeUser, runtimeRole);
+            dropAccount(root, operatorUser, operatorRole);
+            try {
+                root.execute("CREATE USER '" + runtimeUser + "'@'%'");
+                root.execute("CREATE USER '" + operatorUser + "'@'%'");
+                String grant = unsafeGrants.get(index);
+                root.execute(grant.contains("`%s`")
+                        ? grant.formatted(MYSQL.getDatabaseName(), runtimeUser)
+                        : grant.formatted(runtimeUser));
+
+                assertThatThrownBy(() -> executeScript(rootDataSource,
+                        renderRolloutGrantTemplate(MYSQL.getDatabaseName(), runtimeUser, "%", runtimeRole, "%",
+                                operatorUser, "%", operatorRole, "%")))
+                        .hasStackTraceContaining("ROLLOUT_GRANT_DRIFT_RUNTIME_EFFECTIVE_PRIVILEGE");
+            } finally {
+                dropAccount(root, runtimeUser, runtimeRole);
+                dropAccount(root, operatorUser, operatorRole);
+            }
+        }
+
+        String runtimeUserWithSafeIdentity = "rollout_opddl_runtime";
+        String runtimeRoleWithSafeIdentity = "rollout_opddl_reader";
+        String unsafeOperatorUser = "rollout_opddl_login";
+        String unsafeOperatorRole = "rollout_opddl_role";
+        dropAccount(root, runtimeUserWithSafeIdentity, runtimeRoleWithSafeIdentity);
+        dropAccount(root, unsafeOperatorUser, unsafeOperatorRole);
+        try {
+            root.execute("CREATE USER '" + runtimeUserWithSafeIdentity + "'@'%'");
+            root.execute("CREATE USER '" + unsafeOperatorUser + "'@'%'");
+            root.execute("GRANT DROP ON `" + MYSQL.getDatabaseName() + "`.* TO '"
+                    + unsafeOperatorUser + "'@'%'");
+            assertThatThrownBy(() -> executeScript(rootDataSource,
+                    renderRolloutGrantTemplate(MYSQL.getDatabaseName(),
+                            runtimeUserWithSafeIdentity, "%", runtimeRoleWithSafeIdentity, "%",
+                            unsafeOperatorUser, "%", unsafeOperatorRole, "%")))
+                    .hasStackTraceContaining("ROLLOUT_GRANT_DRIFT_OPERATOR_EFFECTIVE_PRIVILEGE");
+        } finally {
+            dropAccount(root, runtimeUserWithSafeIdentity, runtimeRoleWithSafeIdentity);
+            dropAccount(root, unsafeOperatorUser, unsafeOperatorRole);
+        }
+
+        String sharedUser = "rollout_shared_login";
+        String runtimeRole = "rollout_alias_reader";
+        String operatorRole = "rollout_alias_writer";
+        dropAccount(root, sharedUser, runtimeRole);
+        root.execute("DROP ROLE IF EXISTS '" + operatorRole + "'@'%'");
+        try {
+            root.execute("CREATE USER '" + sharedUser + "'@'%'");
+            assertThatThrownBy(() -> executeScript(rootDataSource,
+                    renderRolloutGrantTemplate(MYSQL.getDatabaseName(), sharedUser, "%", runtimeRole, "%",
+                            sharedUser, "%", operatorRole, "%")))
+                    .hasStackTraceContaining("ROLLOUT_GRANT_DRIFT_IDENTITY_ALIAS");
+        } finally {
+            dropAccount(root, sharedUser, runtimeRole);
+            root.execute("DROP ROLE IF EXISTS '" + operatorRole + "'@'%'");
+        }
+
+        String runtimeUser = "rollout_alias_runtime";
+        String operatorUser = "rollout_alias_operator";
+        String sharedRole = "rollout_shared_role";
+        dropAccount(root, runtimeUser, sharedRole);
+        root.execute("DROP USER IF EXISTS '" + operatorUser + "'@'%'");
+        try {
+            root.execute("CREATE USER '" + runtimeUser + "'@'%'");
+            root.execute("CREATE USER '" + operatorUser + "'@'%'");
+            assertThatThrownBy(() -> executeScript(rootDataSource,
+                    renderRolloutGrantTemplate(MYSQL.getDatabaseName(), runtimeUser, "%", sharedRole, "%",
+                            operatorUser, "%", sharedRole, "%")))
+                    .hasStackTraceContaining("ROLLOUT_GRANT_DRIFT_IDENTITY_ALIAS");
+        } finally {
+            dropAccount(root, runtimeUser, sharedRole);
+            root.execute("DROP USER IF EXISTS '" + operatorUser + "'@'%'");
+        }
+    }
+
+    @Test
+    void rolloutCheckpointGrantTemplateRejectsMandatoryRolesOutsideRoleEdges() throws IOException {
+        TestDatabase database = newLegacyDatabase();
+        runMigration(database.dataSource());
+        DataSource rootDataSource = rootDataSource();
+        JdbcTemplate root = new JdbcTemplate(rootDataSource);
+        String runtimeUser = "rollout_mand_runtime";
+        String runtimeRole = "rollout_mand_reader";
+        String operatorUser = "rollout_mand_operator";
+        String operatorRole = "rollout_mand_writer";
+        String mandatoryRole = "rollout_mandatory";
+        dropAccount(root, runtimeUser, runtimeRole);
+        dropAccount(root, operatorUser, operatorRole);
+        root.execute("DROP ROLE IF EXISTS '" + mandatoryRole + "'@'%'");
+        try {
+            root.execute("CREATE USER '" + runtimeUser + "'@'%'");
+            root.execute("CREATE USER '" + operatorUser + "'@'%'");
+            root.execute("CREATE ROLE '" + mandatoryRole + "'@'%'");
+            root.execute("GRANT DROP ON `" + MYSQL.getDatabaseName() + "`.* TO '"
+                    + mandatoryRole + "'@'%'");
+            root.execute("SET GLOBAL mandatory_roles='" + mandatoryRole + "@%' ");
+
+            assertThatThrownBy(() -> executeScript(rootDataSource,
+                    renderRolloutGrantTemplate(MYSQL.getDatabaseName(), runtimeUser, "%", runtimeRole, "%",
+                            operatorUser, "%", operatorRole, "%")))
+                    .hasStackTraceContaining("ROLLOUT_GRANT_DRIFT_MANDATORY_ROLES");
+        } finally {
+            root.execute("SET GLOBAL mandatory_roles=''");
+            dropAccount(root, runtimeUser, runtimeRole);
+            dropAccount(root, operatorUser, operatorRole);
+            root.execute("DROP ROLE IF EXISTS '" + mandatoryRole + "'@'%'");
+        }
+    }
+
+    @Test
+    void rolloutCheckpointGrantTemplateRejectsDynamicRoleAdministrationPrivilege() throws IOException {
+        TestDatabase database = newLegacyDatabase();
+        runMigration(database.dataSource());
+        DataSource rootDataSource = rootDataSource();
+        JdbcTemplate root = new JdbcTemplate(rootDataSource);
+        String runtimeUser = "rollout_dyn_runtime";
+        String runtimeRole = "rollout_dyn_reader";
+        String operatorUser = "rollout_dyn_operator";
+        String operatorRole = "rollout_dyn_writer";
+        dropAccount(root, runtimeUser, runtimeRole);
+        dropAccount(root, operatorUser, operatorRole);
+        try {
+            root.execute("CREATE USER '" + runtimeUser + "'@'%'");
+            root.execute("CREATE USER '" + operatorUser + "'@'%'");
+            root.execute("GRANT ROLE_ADMIN ON *.* TO '" + runtimeUser + "'@'%'");
+
+            assertThatThrownBy(() -> executeScript(rootDataSource,
+                    renderRolloutGrantTemplate(MYSQL.getDatabaseName(), runtimeUser, "%", runtimeRole, "%",
+                            operatorUser, "%", operatorRole, "%")))
+                    .hasStackTraceContaining("ROLLOUT_GRANT_DRIFT_DYNAMIC_PRIVILEGE");
+        } finally {
+            dropAccount(root, runtimeUser, runtimeRole);
+            dropAccount(root, operatorUser, operatorRole);
+        }
+    }
+
+    @Test
+    void rolloutCheckpointGrantTemplateRejectsControlledRoleGrantedToThirdParty() throws IOException {
+        TestDatabase database = newLegacyDatabase();
+        runMigration(database.dataSource());
+        DataSource rootDataSource = rootDataSource();
+        JdbcTemplate root = new JdbcTemplate(rootDataSource);
+        String runtimeUser = "rollout_edge_runtime";
+        String runtimeRole = "rollout_edge_reader";
+        String operatorUser = "rollout_edge_operator";
+        String operatorRole = "rollout_edge_writer";
+        String thirdParty = "rollout_edge_third";
+        dropAccount(root, runtimeUser, runtimeRole);
+        dropAccount(root, operatorUser, operatorRole);
+        root.execute("DROP USER IF EXISTS '" + thirdParty + "'@'%'");
+        try {
+            root.execute("CREATE USER '" + runtimeUser + "'@'%'");
+            root.execute("CREATE USER '" + operatorUser + "'@'%'");
+            root.execute("CREATE USER '" + thirdParty + "'@'%'");
+            root.execute("CREATE ROLE '" + operatorRole + "'@'%'");
+            root.execute("GRANT '" + operatorRole + "'@'%' TO '" + thirdParty + "'@'%'");
+
+            assertThatThrownBy(() -> executeScript(rootDataSource,
+                    renderRolloutGrantTemplate(MYSQL.getDatabaseName(), runtimeUser, "%", runtimeRole, "%",
+                            operatorUser, "%", operatorRole, "%")))
+                    .hasStackTraceContaining("ROLLOUT_GRANT_DRIFT_CONTROLLED_ROLE_MEMBERSHIP");
+        } finally {
+            dropAccount(root, runtimeUser, runtimeRole);
+            dropAccount(root, operatorUser, operatorRole);
+            root.execute("DROP USER IF EXISTS '" + thirdParty + "'@'%'");
+        }
+    }
+
+    @Test
+    void rolloutCheckpointGrantTemplateRejectsAdminOptionOnIntendedOperatorEdge() throws IOException {
+        TestDatabase database = newLegacyDatabase();
+        runMigration(database.dataSource());
+        DataSource rootDataSource = rootDataSource();
+        JdbcTemplate root = new JdbcTemplate(rootDataSource);
+        String runtimeUser = "rollout_admin_runtime";
+        String runtimeRole = "rollout_admin_reader";
+        String operatorUser = "rollout_admin_operator";
+        String operatorRole = "rollout_admin_writer";
+        dropAccount(root, runtimeUser, runtimeRole);
+        dropAccount(root, operatorUser, operatorRole);
+        try {
+            root.execute("CREATE USER '" + runtimeUser + "'@'%'");
+            root.execute("CREATE USER '" + operatorUser + "'@'%'");
+            root.execute("CREATE ROLE '" + operatorRole + "'@'%'");
+            root.execute("GRANT '" + operatorRole + "'@'%' TO '" + operatorUser
+                    + "'@'%' WITH ADMIN OPTION");
+
+            assertThatThrownBy(() -> executeScript(rootDataSource,
+                    renderRolloutGrantTemplate(MYSQL.getDatabaseName(), runtimeUser, "%", runtimeRole, "%",
+                            operatorUser, "%", operatorRole, "%")))
+                    .hasStackTraceContaining("ROLLOUT_GRANT_DRIFT_CONTROLLED_ROLE_MEMBERSHIP");
+        } finally {
+            dropAccount(root, runtimeUser, runtimeRole);
+            dropAccount(root, operatorUser, operatorRole);
+        }
+    }
+
+    @Test
+    void rolloutCheckpointGrantTemplateRejectsUnlockedRolePrincipal() throws IOException {
+        TestDatabase database = newLegacyDatabase();
+        runMigration(database.dataSource());
+        DataSource rootDataSource = rootDataSource();
+        JdbcTemplate root = new JdbcTemplate(rootDataSource);
+        String runtimeUser = "rollout_lock_runtime";
+        String runtimeRole = "rollout_lock_reader";
+        String operatorUser = "rollout_lock_operator";
+        String operatorRole = "rollout_lock_writer";
+        dropAccount(root, runtimeUser, runtimeRole);
+        dropAccount(root, operatorUser, operatorRole);
+        try {
+            root.execute("CREATE USER '" + runtimeUser + "'@'%'");
+            root.execute("CREATE USER '" + operatorUser + "'@'%'");
+            root.execute("CREATE ROLE '" + operatorRole + "'@'%'");
+            root.execute("ALTER USER '" + operatorRole + "'@'%' ACCOUNT UNLOCK");
+
+            assertThatThrownBy(() -> executeScript(rootDataSource,
+                    renderRolloutGrantTemplate(MYSQL.getDatabaseName(), runtimeUser, "%", runtimeRole, "%",
+                            operatorUser, "%", operatorRole, "%")))
+                    .hasStackTraceContaining("ROLLOUT_GRANT_DRIFT_ROLE_LOGIN_ENABLED");
+        } finally {
+            dropAccount(root, runtimeUser, runtimeRole);
+            dropAccount(root, operatorUser, operatorRole);
+        }
+    }
+
+    @Test
     void immutableGrantTemplateAndExpandRunbookContainFailClosedOperationalControls() throws IOException {
         String grants = Files.readString(GRANTS);
         String runbook = Files.readString(EXPAND_RUNBOOK);
@@ -358,7 +830,9 @@ class ArticleRevisionSchemaIntegrationTest {
         assertThat(runbook).contains("information_schema.innodb_trx",
                 "performance_schema.metadata_locks", "information_schema.tables",
                 "lock_wait_timeout", "ALGORITHM=INSTANT", "ALGORITHM=INPLACE",
-                "LOCK=NONE", "backup", "maintenance window");
+                "LOCK=NONE", "backup", "maintenance window", "'article', 'message', 'tag'",
+                "does not limit how long the DDL holds the lock");
+        assertThat(runbook).contains("other application tables", "direct table-level grants");
     }
 
     private static void assertCompleteManifest(JdbcTemplate jdbc) {
@@ -410,7 +884,10 @@ class ArticleRevisionSchemaIntegrationTest {
                 requiredDefault("retry_count", "int", "0"), required("next_attempt_at", "datetime(6)"),
                 nullable("lease_owner", "varchar(96)"), nullable("lease_until", "datetime(6)"),
                 nullable("last_error", "varchar(500)"), required("created_at", "datetime(6)"),
-                nullable("published_at", "datetime(6)"), nullable("failed_at", "datetime(6)")));
+                nullable("published_at", "datetime(6)"), nullable("failed_at", "datetime(6)"),
+                nullable("dead_resolved_at", "datetime(6)"),
+                nullable("dead_resolved_by", "varchar(96)"),
+                nullable("dead_resolution", "varchar(32)")));
         newTables.put("consumer_inbox", List.of(
                 required("consumer_name", "varchar(96)"), required("event_id", "binary(16)"),
                 required("processed_at", "datetime(6)"), asciiRequired("result_hash", "char(64)")));
@@ -420,6 +897,22 @@ class ArticleRevisionSchemaIntegrationTest {
                 requiredDefault("lifecycle_epoch", "bigint", "0"),
                 requiredDefault("tombstone", "tinyint(1)", "0"), nullable("lease_owner", "varchar(96)"),
                 nullable("lease_until", "datetime(6)"), required("updated_at", "datetime(6)")));
+        newTables.put("article_revision_rollout_checkpoint", List.of(
+                required("checkpoint_id", "tinyint"), required("mode", "varchar(24)"),
+                required("schema_generation", "bigint"),
+                required("minimum_binary_generation", "bigint"),
+                asciiRequired("required_build_digest", "char(64)"),
+                nullable("backfill_started_at", "datetime(6)"),
+                asciiNullable("verified_build_digest", "char(64)"),
+                asciiNullable("verified_fingerprint", "char(64)"),
+                asciiNullable("verify_report_hash", "char(64)"),
+                nullable("verified_at", "datetime(6)"),
+                asciiNullable("sentinel_build_digest", "char(64)"),
+                asciiNullable("sentinel_report_hash", "char(64)"),
+                nullable("sentinel_verified_at", "datetime(6)"),
+                requiredDefault("cutover_epoch", "bigint", "0"),
+                required("updated_by", "varchar(96)"), required("updated_at", "datetime(6)"),
+                requiredDefault("lock_version", "bigint", "0")));
 
         newTables.forEach((table, expected) -> assertThat(columns(jdbc, table))
                 .as("columns of %s", table).containsExactlyElementsOf(expected));
@@ -431,6 +924,8 @@ class ArticleRevisionSchemaIntegrationTest {
         assertThat(column(jdbc, "article", "review_state")).isEqualTo(nullable("review_state", "varchar(24)"));
         assertThat(column(jdbc, "article", "lifecycle_epoch")).isEqualTo(requiredDefault("lifecycle_epoch", "bigint", "1"));
         assertThat(column(jdbc, "article", "lock_version")).isEqualTo(requiredDefault("lock_version", "bigint", "0"));
+        assertThat(column(jdbc, "article", "content")).isEqualTo(nullable("content", "mediumtext"));
+        assertThat(column(jdbc, "tag", "name")).isEqualTo(exactRequired("name", "varchar(50)"));
         assertThat(column(jdbc, "message", "source_event_id")).isEqualTo(nullable("source_event_id", "binary(16)"));
 
         Map<String, IndexContract> indexes = Map.ofEntries(
@@ -438,6 +933,7 @@ class ArticleRevisionSchemaIntegrationTest {
                 indexEntry("article", "idx_article_latest_pointer", true, "latest_revision_id", "id"),
                 indexEntry("article", "idx_article_pending_pointer", true, "pending_revision_id", "id"),
                 indexEntry("article", "idx_article_published_pointer", true, "published_revision_id", "id"),
+                indexEntry("tag", "uk_name", false, "name"),
                 indexEntry("message", "uk_message_source_event", false, "source_event_id"),
                 indexEntry("article_draft", "PRIMARY", false, "article_id"),
                 indexEntry("article_draft", "uk_article_draft_owner", false, "article_id", "user_id"),
@@ -455,14 +951,20 @@ class ArticleRevisionSchemaIntegrationTest {
                 indexEntry("article_revision_migration_issue", "PRIMARY", false, "id"),
                 indexEntry("article_revision_migration_issue", "uk_revision_migration_issue", false, "article_id", "issue_code"),
                 indexEntry("article_revision_migration_issue", "idx_revision_migration_unresolved", true, "resolved_at", "article_id"),
+                indexEntry("article_revision_migration_issue", "idx_revision_migration_retention", true, "resolved_at", "id"),
                 indexEntry("domain_event_outbox", "PRIMARY", false, "id"),
                 indexEntry("domain_event_outbox", "uk_domain_event_id", false, "event_id"),
                 indexEntry("domain_event_outbox", "uk_domain_event_dedupe", false, "dedupe_key"),
                 indexEntry("domain_event_outbox", "idx_domain_outbox_dispatch", true, "state", "next_attempt_at", "id"),
                 indexEntry("domain_event_outbox", "idx_domain_outbox_recovery", true, "state", "lease_until", "id"),
+                indexEntry("domain_event_outbox", "idx_domain_outbox_published_retention", true, "state", "published_at", "id"),
+                indexEntry("domain_event_outbox", "idx_domain_outbox_dead_retention", true, "state", "dead_resolved_at", "id"),
                 indexEntry("consumer_inbox", "PRIMARY", false, "consumer_name", "event_id"),
+                indexEntry("consumer_inbox", "idx_consumer_inbox_retention", true,
+                        "processed_at", "consumer_name", "event_id"),
                 indexEntry("projection_watermark", "PRIMARY", false, "consumer_name", "aggregate_type", "aggregate_id"),
-                indexEntry("projection_watermark", "idx_projection_lease", true, "lease_until"));
+                indexEntry("projection_watermark", "idx_projection_lease", true, "lease_until"),
+                indexEntry("article_revision_rollout_checkpoint", "PRIMARY", false, "checkpoint_id"));
         indexes.forEach((qualifiedName, expected) -> {
             String[] parts = qualifiedName.split("\\.", 2);
             assertThat(index(jdbc, parts[0], parts[1])).as(qualifiedName).isEqualTo(expected);
@@ -510,6 +1012,10 @@ class ArticleRevisionSchemaIntegrationTest {
                         """, table))
                 .containsEntry("engine", "InnoDB")
                 .containsEntry("table_collation", "utf8mb4_unicode_ci"));
+
+        assertThat(checkConstraints(jdbc, "article_revision_rollout_checkpoint"))
+                .containsExactly(new CheckConstraintContract(
+                        "chk_article_revision_rollout_singleton", "checkpoint_id=1", true));
     }
 
     private static void assertCrossArticlePointerIsRejected(JdbcTemplate jdbc) {
@@ -549,7 +1055,7 @@ class ArticleRevisionSchemaIntegrationTest {
                     id BIGINT AUTO_INCREMENT PRIMARY KEY,
                     title VARCHAR(100) NOT NULL,
                     summary VARCHAR(255) NULL,
-                    content TEXT NULL,
+                    content TEXT NULL COMMENT '内容',
                     author_id BIGINT NOT NULL,
                     view_count INT DEFAULT 0 NULL,
                     like_count INT DEFAULT 0 NULL,
@@ -573,9 +1079,49 @@ class ArticleRevisionSchemaIntegrationTest {
                     create_time DATETIME NULL,
                     INDEX idx_to_id_status(to_id,status)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+                CREATE TABLE tag (
+                    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                    name VARCHAR(50) NOT NULL COMMENT '标签名',
+                    article_count INT DEFAULT 0 NULL,
+                    create_time DATETIME DEFAULT CURRENT_TIMESTAMP NULL,
+                    UNIQUE KEY uk_name(name)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+                CREATE TABLE article_tag (
+                    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                    article_id BIGINT NOT NULL,
+                    tag_id BIGINT NOT NULL,
+                    UNIQUE KEY uk_article_tag(article_id,tag_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
                 """.getBytes(StandardCharsets.UTF_8)));
         legacy.execute(dataSource);
         return database;
+    }
+
+    private static void createHistoricalOutbox20(JdbcTemplate jdbc) {
+        jdbc.execute("""
+                CREATE TABLE domain_event_outbox (
+                    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                    event_id BINARY(16) NOT NULL,
+                    aggregate_type VARCHAR(64) NOT NULL,
+                    aggregate_id BIGINT NOT NULL,
+                    aggregate_version BIGINT NOT NULL,
+                    lifecycle_epoch BIGINT NOT NULL,
+                    event_type VARCHAR(64) NOT NULL,
+                    payload_version INT NOT NULL,
+                    payload_json JSON NOT NULL,
+                    dedupe_key VARCHAR(190) NOT NULL,
+                    occurred_at DATETIME(6) NOT NULL,
+                    state VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+                    retry_count INT NOT NULL DEFAULT 0,
+                    next_attempt_at DATETIME(6) NOT NULL,
+                    lease_owner VARCHAR(96) NULL,
+                    lease_until DATETIME(6) NULL,
+                    last_error VARCHAR(500) NULL,
+                    created_at DATETIME(6) NOT NULL,
+                    published_at DATETIME(6) NULL,
+                    failed_at DATETIME(6) NULL
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """);
     }
 
     private static TestDatabase newEmptyDatabase() {
@@ -583,7 +1129,8 @@ class ArticleRevisionSchemaIntegrationTest {
                 MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword());
         ResourceDatabasePopulator reset = new ResourceDatabasePopulator(new ByteArrayResource("""
                 SET FOREIGN_KEY_CHECKS=0;
-                DROP TABLE IF EXISTS projection_watermark,consumer_inbox,domain_event_outbox,
+                DROP TABLE IF EXISTS article_revision_rollout_checkpoint,
+                    projection_watermark,consumer_inbox,domain_event_outbox,
                     article_revision_migration_issue,article_moderation_attempt,article_moderation_job,
                     article_draft,article_revision,recommendation_exposure,recommendation_event_outbox,
                     recommendation_profile_checkpoint,user_article_event,tag,sys_user,report,message,
@@ -625,6 +1172,28 @@ class ArticleRevisionSchemaIntegrationTest {
                 .replace("${IMMUTABLE_ROLE_HOST}", roleHost);
     }
 
+    private static String renderRolloutGrantTemplate(
+            String database,
+            String runtimeUser,
+            String runtimeHost,
+            String runtimeRole,
+            String runtimeRoleHost,
+            String operatorUser,
+            String operatorHost,
+            String operatorRole,
+            String operatorRoleHost) throws IOException {
+        return Files.readString(ROLLOUT_GRANTS)
+                .replace("${APP_DB_NAME}", database)
+                .replace("${ROLLOUT_RUNTIME_USER}", runtimeUser)
+                .replace("${ROLLOUT_RUNTIME_HOST}", runtimeHost)
+                .replace("${ROLLOUT_RUNTIME_ROLE}", runtimeRole)
+                .replace("${ROLLOUT_RUNTIME_ROLE_HOST}", runtimeRoleHost)
+                .replace("${ROLLOUT_OPERATOR_USER}", operatorUser)
+                .replace("${ROLLOUT_OPERATOR_HOST}", operatorHost)
+                .replace("${ROLLOUT_OPERATOR_ROLE}", operatorRole)
+                .replace("${ROLLOUT_OPERATOR_ROLE_HOST}", operatorRoleHost);
+    }
+
     private static void executeScript(DataSource dataSource, String sql) {
         new ResourceDatabasePopulator(new ByteArrayResource(sql.getBytes(StandardCharsets.UTF_8)))
                 .execute(dataSource);
@@ -654,6 +1223,13 @@ class ArticleRevisionSchemaIntegrationTest {
 
     private static ColumnContract column(JdbcTemplate jdbc, String table, String name) {
         return columns(jdbc, table).stream().filter(column -> column.name().equals(name)).findFirst().orElse(null);
+    }
+
+    private static String columnComment(JdbcTemplate jdbc, String table, String name) {
+        return jdbc.queryForObject("""
+                SELECT column_comment FROM information_schema.columns
+                WHERE table_schema=DATABASE() AND table_name=? AND column_name=?
+                """, String.class, table, name);
     }
 
     private static IndexContract index(JdbcTemplate jdbc, String table, String name) {
@@ -703,7 +1279,8 @@ class ArticleRevisionSchemaIntegrationTest {
     private static String metadataFingerprint(JdbcTemplate jdbc) {
         List<String> columns = jdbc.queryForList("""
                 SELECT CONCAT_WS('|','C',table_name,column_name,column_type,is_nullable,
-                    COALESCE(column_default,'<NULL>'),extra,COALESCE(character_set_name,''),COALESCE(collation_name,''))
+                    COALESCE(column_default,'<NULL>'),extra,COALESCE(character_set_name,''),
+                    COALESCE(collation_name,''),column_comment)
                 FROM information_schema.columns
                 WHERE table_schema=DATABASE()
                 ORDER BY table_name,ordinal_position
@@ -724,21 +1301,27 @@ class ArticleRevisionSchemaIntegrationTest {
                 WHERE k.constraint_schema=DATABASE() AND k.referenced_table_name IS NOT NULL
                 ORDER BY k.table_name,k.constraint_name,k.ordinal_position
                 """, String.class);
-        return String.join("\n", columns) + "\n" + String.join("\n", indexes) + "\n" + String.join("\n", fks);
+        List<String> checks = checkFingerprint(jdbc, null);
+        return String.join("\n", columns) + "\n" + String.join("\n", indexes) + "\n"
+                + String.join("\n", fks) + "\n" + String.join("\n", checks);
     }
 
     private static String stageBMetadataFingerprint(JdbcTemplate jdbc) {
         String tables = "'article_draft','article_revision','article_moderation_job'," +
                 "'article_moderation_attempt','article_revision_migration_issue'," +
-                "'domain_event_outbox','consumer_inbox','projection_watermark'";
+                "'domain_event_outbox','consumer_inbox','projection_watermark'," +
+                "'article_revision_rollout_checkpoint'";
         List<String> columns = jdbc.queryForList("""
                 SELECT CONCAT_WS('|','C',table_name,column_name,column_type,is_nullable,
-                    COALESCE(column_default,'<NULL>'),extra,COALESCE(character_set_name,''),COALESCE(collation_name,''))
+                    COALESCE(column_default,'<NULL>'),extra,COALESCE(character_set_name,''),
+                    COALESCE(collation_name,''),column_comment)
                 FROM information_schema.columns
                 WHERE table_schema=DATABASE() AND (
                     table_name IN (%s) OR
                     (table_name='article' AND column_name IN ('latest_revision_id','pending_revision_id',
-                        'published_revision_id','visibility_state','review_state','lifecycle_epoch','lock_version')) OR
+                        'published_revision_id','visibility_state','review_state','lifecycle_epoch','lock_version',
+                        'content')) OR
+                    (table_name='tag' AND column_name='name') OR
                     (table_name='message' AND column_name='source_event_id'))
                 ORDER BY table_name,ordinal_position
                 """.formatted(tables), String.class);
@@ -747,7 +1330,8 @@ class ArticleRevisionSchemaIntegrationTest {
                 FROM information_schema.statistics
                 WHERE table_schema=DATABASE() AND (
                     table_name IN (%s) OR index_name IN ('uk_article_id_author','idx_article_latest_pointer',
-                        'idx_article_pending_pointer','idx_article_published_pointer','uk_message_source_event'))
+                        'idx_article_pending_pointer','idx_article_published_pointer','uk_message_source_event') OR
+                    (table_name='tag' AND index_name='uk_name'))
                 ORDER BY table_name,index_name,seq_in_index
                 """.formatted(tables), String.class);
         List<String> fks = jdbc.queryForList("""
@@ -760,7 +1344,41 @@ class ArticleRevisionSchemaIntegrationTest {
                 WHERE k.constraint_schema=DATABASE() AND (k.table_name IN (%s) OR k.table_name='article')
                 ORDER BY k.table_name,k.constraint_name,k.ordinal_position
                 """.formatted(tables), String.class);
-        return String.join("\n", columns) + "\n" + String.join("\n", indexes) + "\n" + String.join("\n", fks);
+        List<String> checks = checkFingerprint(jdbc, "article_revision_rollout_checkpoint");
+        return String.join("\n", columns) + "\n" + String.join("\n", indexes) + "\n"
+                + String.join("\n", fks) + "\n" + String.join("\n", checks);
+    }
+
+    private static List<CheckConstraintContract> checkConstraints(JdbcTemplate jdbc, String table) {
+        return jdbc.query("""
+                SELECT tc.constraint_name,cc.check_clause,tc.enforced
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.check_constraints cc
+                  ON cc.constraint_schema=tc.constraint_schema
+                 AND cc.constraint_name=tc.constraint_name
+                WHERE tc.constraint_schema=DATABASE() AND tc.table_name=?
+                  AND tc.constraint_type='CHECK'
+                ORDER BY tc.constraint_name
+                """, (rs, row) -> new CheckConstraintContract(
+                        rs.getString(1), normalizeCheckClause(rs.getString(2)), "YES".equals(rs.getString(3))), table);
+    }
+
+    private static List<String> checkFingerprint(JdbcTemplate jdbc, String onlyTable) {
+        String tablePredicate = onlyTable == null ? "" : " AND tc.table_name='" + onlyTable + "'";
+        return jdbc.queryForList("""
+                SELECT CONCAT_WS('|','Ck',tc.table_name,tc.constraint_name,cc.check_clause,tc.enforced)
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.check_constraints cc
+                  ON cc.constraint_schema=tc.constraint_schema
+                 AND cc.constraint_name=tc.constraint_name
+                WHERE tc.constraint_schema=DATABASE() AND tc.constraint_type='CHECK'%s
+                ORDER BY tc.table_name,tc.constraint_name
+                """.formatted(tablePredicate), String.class);
+    }
+
+    private static String normalizeCheckClause(String clause) {
+        return clause.toLowerCase().replace("`", "").replace(" ", "")
+                .replace("(", "").replace(")", "");
     }
 
     private static Map<String, Long> tableCounts(JdbcTemplate jdbc) {
@@ -799,6 +1417,10 @@ class ArticleRevisionSchemaIntegrationTest {
         return new ColumnContract(name, type, true, null, "", "ascii", "ascii_bin");
     }
 
+    private static ColumnContract exactRequired(String name, String type) {
+        return new ColumnContract(name, type, false, null, "", "utf8mb4", "utf8mb4_0900_bin");
+    }
+
     private static String charset(String type) {
         return type.startsWith("varchar") || type.endsWith("text") || type.startsWith("char") ? "utf8mb4" : null;
     }
@@ -835,6 +1457,9 @@ class ArticleRevisionSchemaIntegrationTest {
     }
 
     private record IndexContract(boolean nonUnique, List<String> columns, List<Integer> prefixes) {
+    }
+
+    private record CheckConstraintContract(String name, String clause, boolean enforced) {
     }
 
     private record ForeignKeyColumn(String childColumn, String referencedTable, String referencedColumn) {

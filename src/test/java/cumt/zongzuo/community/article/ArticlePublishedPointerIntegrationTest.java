@@ -75,8 +75,18 @@ class ArticlePublishedPointerIntegrationTest extends IntegrationTestSupport {
         jdbcTemplate.update("DELETE FROM favorite WHERE folder_id=?", FOLDER_ID);
         jdbcTemplate.update("DELETE FROM favorite_folder WHERE id=?", FOLDER_ID);
         jdbcTemplate.update("UPDATE article SET latest_revision_id=NULL,pending_revision_id=NULL,published_revision_id=NULL WHERE id BETWEEN 95101 AND 95109");
+        jdbcTemplate.update("""
+                DELETE FROM article_moderation_attempt
+                WHERE job_id IN (
+                    SELECT id FROM article_moderation_job
+                    WHERE article_id BETWEEN 95101 AND 95109
+                )
+                """);
+        jdbcTemplate.update("DELETE FROM article_moderation_job WHERE article_id BETWEEN 95101 AND 95109");
         jdbcTemplate.update("DELETE FROM article_revision WHERE article_id BETWEEN 95101 AND 95109");
         jdbcTemplate.update("DELETE FROM article_draft WHERE article_id BETWEEN 95101 AND 95109");
+        jdbcTemplate.update("DELETE FROM article_tag WHERE article_id BETWEEN 95101 AND 95109");
+        jdbcTemplate.update("DELETE FROM article_revision_migration_issue WHERE article_id BETWEEN 95101 AND 95109");
         jdbcTemplate.update("DELETE FROM article WHERE id BETWEEN 95101 AND 95109");
         jdbcTemplate.update("""
                 INSERT INTO sys_user (id,username,password,email,role,status)

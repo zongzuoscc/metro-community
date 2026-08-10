@@ -15,6 +15,7 @@ import cumt.zongzuo.community.event.outbox.DomainEventPublisher;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.amqp.core.AmqpAdmin;
+import org.springframework.amqp.rabbit.listener.RabbitListenerEndpointRegistry;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -62,9 +63,15 @@ class DomainEventOutboxIntegrationTest extends IntegrationTestSupport {
     private RabbitTemplate rabbitTemplate;
     @Autowired
     private AmqpAdmin amqpAdmin;
+    @Autowired
+    private RabbitListenerEndpointRegistry listenerRegistry;
 
     @BeforeEach
     void cleanState() {
+        var moderation = listenerRegistry.getListenerContainer("articleModerationEventConsumer");
+        if (moderation != null && moderation.isRunning()) {
+            moderation.stop();
+        }
         jdbcTemplate.update("DELETE FROM domain_event_outbox");
         EVENT_QUEUES.forEach(this::purge);
         EVENT_QUEUES.stream().map(name -> name + ".dlq").forEach(this::purge);

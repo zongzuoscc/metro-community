@@ -8,9 +8,8 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import cumt.zongzuo.community.ai.config.MetroAiProperties;
 import cumt.zongzuo.community.ai.provider.AiChatResult;
 import cumt.zongzuo.community.article.model.ArticleRevision;
-import cumt.zongzuo.community.article.model.ArticleContentSnapshot;
 import cumt.zongzuo.community.article.persistence.ArticleRevisionMapper;
-import cumt.zongzuo.community.article.service.ArticleContentCanonicalizer;
+import cumt.zongzuo.community.article.service.ArticleRevisionIntegrityVerifier;
 import cumt.zongzuo.community.entity.Article;
 import cumt.zongzuo.community.event.domain.DomainEvent;
 import cumt.zongzuo.community.event.domain.DomainEventType;
@@ -21,7 +20,6 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
-import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
@@ -36,7 +34,7 @@ public class ArticleModerationStateMachine {
     private final ArticleModerationAttemptMapper attemptMapper;
     private final ArticleRevisionMapper revisionMapper;
     private final ArticleMapper articleMapper;
-    private final ArticleContentCanonicalizer canonicalizer;
+    private final ArticleRevisionIntegrityVerifier integrityVerifier;
     private final ObjectMapper objectMapper;
     private final MetroAiProperties properties;
     private final Clock clock;
@@ -45,7 +43,7 @@ public class ArticleModerationStateMachine {
                                          ArticleModerationAttemptMapper attemptMapper,
                                          ArticleRevisionMapper revisionMapper,
                                          ArticleMapper articleMapper,
-                                         ArticleContentCanonicalizer canonicalizer,
+                                         ArticleRevisionIntegrityVerifier integrityVerifier,
                                          ObjectMapper objectMapper,
                                          MetroAiProperties properties,
                                          Clock clock) {
@@ -53,7 +51,7 @@ public class ArticleModerationStateMachine {
         this.attemptMapper = attemptMapper;
         this.revisionMapper = revisionMapper;
         this.articleMapper = articleMapper;
-        this.canonicalizer = canonicalizer;
+        this.integrityVerifier = integrityVerifier;
         this.objectMapper = objectMapper;
         this.properties = properties;
         this.clock = clock;
@@ -343,25 +341,7 @@ public class ArticleModerationStateMachine {
     }
 
     private String freshHash(ArticleRevision revision) {
-        try {
-            JsonNode tags = objectMapper.readTree(revision.getTagsJson());
-            if (!tags.isArray()) {
-                return "";
-            }
-            List<String> values = new ArrayList<>();
-            for (JsonNode tag : tags) {
-                if (!tag.isTextual()) {
-                    return "";
-                }
-                values.add(tag.textValue());
-            }
-            ArticleContentSnapshot snapshot = canonicalizer.canonicalize(revision.getTitle(),
-                    revision.getSummary(), revision.getBodyMarkdown(), revision.getCover(), values);
-            return snapshot.contentHash();
-        }
-        catch (JsonProcessingException | IllegalArgumentException error) {
-            return "";
-        }
+        return integrityVerifier.freshHashOrEmpty(revision);
     }
 
     private void insertAttempt(ModerationJobLease lease, int attemptNo,

@@ -10,6 +10,7 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 
@@ -91,6 +92,9 @@ public interface DomainEventOutboxMapper {
     @Select("SELECT CURRENT_TIMESTAMP(6)")
     Instant selectDatabaseNow();
 
+    @Select("SELECT CURRENT_TIMESTAMP(6)")
+    LocalDateTime selectDatabaseLocalNow();
+
     @Update("""
             UPDATE domain_event_outbox
             SET state = 'PUBLISHED', published_at = CURRENT_TIMESTAMP(6), failed_at = NULL,
@@ -116,7 +120,8 @@ public interface DomainEventOutboxMapper {
     @Update("""
             UPDATE domain_event_outbox
             SET state = 'DEAD', retry_count = #{retryCount}, failed_at = CURRENT_TIMESTAMP(6),
-                lease_owner = NULL, lease_until = NULL, last_error = #{error}
+                lease_owner = NULL, lease_until = NULL, last_error = #{error},
+                dead_resolved_at = NULL, dead_resolved_by = NULL, dead_resolution = NULL
             WHERE id = #{id} AND state = 'IN_FLIGHT' AND lease_owner = #{leaseOwner}
             """)
     int markDead(@Param("id") long id,
@@ -124,4 +129,26 @@ public interface DomainEventOutboxMapper {
                  @Param("retryCount") int retryCount,
                  @Param("error") String error,
                  @Param("failedAt") Instant failedAt);
+
+    @Update("""
+            UPDATE domain_event_outbox
+            SET dead_resolved_at=CURRENT_TIMESTAMP(6), dead_resolved_by=#{operator},
+                dead_resolution='ACKNOWLEDGED'
+            WHERE id=#{id} AND state='DEAD'
+              AND lease_owner IS NULL AND lease_until IS NULL
+              AND dead_resolved_at IS NULL AND dead_resolved_by IS NULL AND dead_resolution IS NULL
+            """)
+    int acknowledgeDeadExact(@Param("id") long id, @Param("operator") String operator);
+
+    @Update("""
+            UPDATE domain_event_outbox
+            SET state='PENDING', retry_count=0, next_attempt_at=CURRENT_TIMESTAMP(6),
+                lease_owner=NULL, lease_until=NULL, last_error=NULL, failed_at=NULL,
+                dead_resolved_at=CURRENT_TIMESTAMP(6), dead_resolved_by=#{operator},
+                dead_resolution='REQUEUED'
+            WHERE id=#{id} AND state='DEAD'
+              AND lease_owner IS NULL AND lease_until IS NULL
+              AND dead_resolved_at IS NULL AND dead_resolved_by IS NULL AND dead_resolution IS NULL
+            """)
+    int requeueDeadExact(@Param("id") long id, @Param("operator") String operator);
 }

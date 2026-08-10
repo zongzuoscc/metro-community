@@ -4,6 +4,10 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import cumt.zongzuo.community.entity.Tag;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Insert;
+import org.apache.ibatis.annotations.Select;
+
+import java.time.LocalDateTime;
 
 import java.util.Collection;
 import java.util.List;
@@ -18,4 +22,21 @@ public interface TagMapper extends BaseMapper<Tag> {
     List<Tag> selectTagsByArticleId(@Param("articleId") Long articleId);
 
     List<Long> selectIdsByNames(@Param("names") Collection<String> names);
+
+    @Insert("""
+            INSERT IGNORE INTO tag(name,article_count,create_time)
+            VALUES (#{name},1,#{createdAt})
+            """)
+    int insertNameIfAbsent(@Param("name") String name,
+                           @Param("createdAt") LocalDateTime createdAt);
+
+    @Select("SELECT LAST_INSERT_ID()")
+    Long selectConnectionLastInsertId();
+
+    @Select("""
+            SELECT id FROM tag
+            WHERE name=#{name} COLLATE utf8mb4_0900_bin
+            LIMIT 1 FOR SHARE
+            """)
+    Long selectIdByExactNameForShare(@Param("name") String name);
 }

@@ -1,5 +1,7 @@
 package cumt.zongzuo.community.article.config;
 
+import cumt.zongzuo.community.article.rollout.ArticleRevisionBuildIdentity;
+import cumt.zongzuo.community.article.rollout.StageBRolloutStartupGate;
 import org.springframework.stereotype.Component;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -13,8 +15,11 @@ public final class ConfiguredArticleRevisionModeResolver implements ArticleRevis
 
     private final ArticleRevisionMode startupMode;
 
-    public ConfiguredArticleRevisionModeResolver(ArticleRevisionProperties properties) {
+    public ConfiguredArticleRevisionModeResolver(ArticleRevisionProperties properties,
+                                                 StageBRolloutStartupGate startupGate,
+                                                 ArticleRevisionBuildIdentity buildIdentity) {
         this.startupMode = Objects.requireNonNull(properties.getRevisionMode(), "revisionMode");
+        startupGate.verify(startupMode, buildIdentity);
         LOGGER.info("Article revision mode frozen at startup: {}", startupMode);
     }
 

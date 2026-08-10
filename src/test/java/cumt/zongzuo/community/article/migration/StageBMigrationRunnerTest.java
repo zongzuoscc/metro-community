@@ -1,7 +1,13 @@
 package cumt.zongzuo.community.article.migration;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import cumt.zongzuo.community.article.config.ArticleRevisionMode;
 import cumt.zongzuo.community.article.config.ArticleRevisionModeResolver;
+import cumt.zongzuo.community.article.rollout.ArticleRevisionBuildIdentity;
+import cumt.zongzuo.community.article.rollout.StageBRolloutCheckpoint;
+import cumt.zongzuo.community.article.rollout.StageBRolloutOperator;
+import cumt.zongzuo.community.article.rollout.StageBVerificationRun;
+import cumt.zongzuo.community.article.service.ArticleContentCanonicalizer;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
@@ -10,6 +16,14 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 
 class StageBMigrationRunnerTest {
 
@@ -43,8 +57,10 @@ class StageBMigrationRunnerTest {
 
     @Test
     void migrationServiceAlsoRejectsDirectCallsOutsideAllowedModes() {
+        ObjectMapper objectMapper = new ObjectMapper();
         JdbcStageBArticleMigrationService service = new JdbcStageBArticleMigrationService(
-                null, null, null, () -> ArticleRevisionMode.CUTOVER);
+                null, new ArticleContentCanonicalizer(objectMapper), objectMapper,
+                () -> ArticleRevisionMode.CUTOVER);
 
         assertThatThrownBy(() -> service.backfillAll(10))
                 .isInstanceOf(IllegalStateException.class)
@@ -88,17 +104,109 @@ class StageBMigrationRunnerTest {
         assertThat(verificationOrder).hasValue(1);
     }
 
+    @Test
+    void verifyDurablyInvalidatesOldProofBeforeTheFinalBackfillCanCrash() {
+        StageBMigrationProperties properties = properties(StageBMigrationAction.VERIFY);
+        StageBRolloutOperator operator = mock(StageBRolloutOperator.class);
+        StageBArticleMigrationService migration = mock(StageBArticleMigrationService.class);
+        StageBArticleMigrationVerifier verifier = mock(StageBArticleMigrationVerifier.class);
+        ArticleRevisionBuildIdentity identity = new ArticleRevisionBuildIdentity(
+                1, 1, "a".repeat(64));
+        StageBVerificationRun run = new StageBVerificationRun(7, identity.buildDigest());
+        when(operator.beginVerification(identity, "test-operator")).thenReturn(run);
+        when(migration.backfillAll(properties.getBatchSize()))
+                .thenThrow(new IllegalStateException("simulated crash"));
+        StageBMigrationRunner runner = new StageBMigrationRunner(properties,
+                () -> ArticleRevisionMode.VERIFY_FENCE, migration, verifier, operator, identity,
+                artifactWriter());
+
+        assertThatThrownBy(runner::runOperatorAction)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("simulated crash");
+
+        var ordered = inOrder(operator, migration);
+        ordered.verify(operator).beginVerification(identity, "test-operator");
+        ordered.verify(operator).markBackfillStarted(identity, "test-operator");
+        ordered.verify(migration).backfillAll(properties.getBatchSize());
+        verifyNoInteractions(verifier);
+    }
+
+    @Test
+    void verifierPassThatFailsTheLiveFingerprintCheckStillExitsWithFailure() {
+        StageBMigrationProperties properties = properties(StageBMigrationAction.VERIFY);
+        StageBRolloutOperator operator = mock(StageBRolloutOperator.class);
+        ArticleRevisionBuildIdentity identity = new ArticleRevisionBuildIdentity(
+                1, 1, "a".repeat(64));
+        StageBVerificationRun run = new StageBVerificationRun(7, identity.buildDigest());
+        when(operator.beginVerification(identity, "test-operator")).thenReturn(run);
+        when(operator.recordVerificationResult(any(StageBMigrationReport.class),
+                eq(run), eq(identity), eq("test-operator")))
+                .thenReturn(mock(StageBRolloutCheckpoint.class));
+        StageBMigrationRunner runner = new StageBMigrationRunner(properties,
+                () -> ArticleRevisionMode.VERIFY_FENCE, new RecordingMigrationService(),
+                passingVerifier(), operator, identity, artifactWriter());
+
+        assertThatThrownBy(runner::runOperatorAction)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("durable verification proof");
+    }
+
+    @Test
+    void verifyArtifactFailureLeavesTheBegunRunWithoutAnyDurablePass() {
+        StageBMigrationProperties properties = properties(StageBMigrationAction.VERIFY);
+        StageBRolloutOperator operator = mock(StageBRolloutOperator.class);
+        StageBVerificationArtifactWriter artifactWriter =
+                mock(StageBVerificationArtifactWriter.class);
+        ArticleRevisionBuildIdentity identity = new ArticleRevisionBuildIdentity(
+                1, 1, "a".repeat(64));
+        StageBVerificationRun run = new StageBVerificationRun(7, identity.buildDigest());
+        StageBMigrationReport report = report(true, 0, List.of());
+        when(operator.beginVerification(identity, "test-operator")).thenReturn(run);
+        when(artifactWriter.write(report, run, identity, "test-operator"))
+                .thenThrow(new IllegalStateException("artifact disk full"));
+        StageBMigrationRunner runner = new StageBMigrationRunner(properties,
+                () -> ArticleRevisionMode.VERIFY_FENCE, new RecordingMigrationService(),
+                () -> report, operator, identity, artifactWriter);
+
+        assertThatThrownBy(runner::runOperatorAction)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("artifact disk full");
+
+        verify(operator).beginVerification(identity, "test-operator");
+        verify(operator, never()).recordVerificationResult(
+                any(), any(), any(), any());
+    }
+
     private static StageBMigrationRunner runner(StageBMigrationProperties properties,
                                                 ArticleRevisionMode mode,
                                                 StageBArticleMigrationService migration,
                                                 StageBArticleMigrationVerifier verifier) {
         ArticleRevisionModeResolver resolver = () -> mode;
-        return new StageBMigrationRunner(properties, resolver, migration, verifier);
+        return new StageBMigrationRunner(properties, resolver, migration, verifier,
+                mock(StageBRolloutOperator.class),
+                new ArticleRevisionBuildIdentity(1, 1, "a".repeat(64)), artifactWriter());
+    }
+
+    private static StageBVerificationArtifactWriter artifactWriter() {
+        StageBVerificationArtifactWriter writer = mock(StageBVerificationArtifactWriter.class);
+        when(writer.write(any(StageBMigrationReport.class), any(StageBVerificationRun.class),
+                any(ArticleRevisionBuildIdentity.class), any(String.class)))
+                .thenAnswer(invocation -> {
+                    StageBMigrationReport report = invocation.getArgument(0);
+                    StageBVerificationRun run = invocation.getArgument(1);
+                    ArticleRevisionBuildIdentity identity = invocation.getArgument(2);
+                    String operator = invocation.getArgument(3);
+                    return new StageBVerificationArtifact(1, report, identity, run, operator,
+                            run.checkpointVersion() + 1,
+                            StageBMigrationReportHasher.hash(report));
+                });
+        return writer;
     }
 
     private static StageBMigrationProperties properties(StageBMigrationAction action) {
         StageBMigrationProperties properties = new StageBMigrationProperties();
         properties.setAction(action);
+        properties.setOperatorIdentity("test-operator");
         return properties;
     }
 

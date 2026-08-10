@@ -12,6 +12,8 @@ import cumt.zongzuo.community.ai.runtime.AiCapabilityExecutor;
 import cumt.zongzuo.community.ai.runtime.AiExecutionException;
 import cumt.zongzuo.community.ai.runtime.AiInvocationContext;
 import cumt.zongzuo.community.article.model.ArticleRevision;
+import cumt.zongzuo.community.article.config.ArticleRevisionMode;
+import cumt.zongzuo.community.article.config.ArticleRevisionModeResolver;
 import cumt.zongzuo.community.event.domain.DomainEvent;
 import cumt.zongzuo.community.utils.SensitiveUtils;
 import org.springframework.ai.tokenizer.JTokkitTokenCountEstimator;
@@ -39,6 +41,7 @@ public class ArticleModerationWorker {
     private final ModerationOutputParser outputParser;
     private final ModerationChunker chunker;
     private final Clock clock;
+    private final ArticleRevisionModeResolver modeResolver;
 
     public ArticleModerationWorker(ArticleModerationStateMachine stateMachine,
                                    AiCapabilityExecutor executor,
@@ -46,13 +49,15 @@ public class ArticleModerationWorker {
                                    MetroAiProperties properties,
                                    SensitiveUtils sensitiveUtils,
                                    ObjectMapper objectMapper,
-                                   Clock clock) {
+                                   Clock clock,
+                                   ArticleRevisionModeResolver modeResolver) {
         this.stateMachine = stateMachine;
         this.executor = executor;
         this.gateway = gateway;
         this.properties = properties;
         this.sensitiveUtils = sensitiveUtils;
         this.clock = clock;
+        this.modeResolver = modeResolver;
         this.promptFactory = new ModerationPromptFactory(objectMapper);
         this.outputParser = new ModerationOutputParser(objectMapper);
         MetroAiProperties.ModerationProperties moderation = properties.getModeration();
@@ -68,6 +73,11 @@ public class ArticleModerationWorker {
     }
 
     public ProcessOutcome process(DomainEvent event) {
+        ArticleRevisionMode mode = modeResolver.current();
+        if (mode == ArticleRevisionMode.VERIFY_FENCE
+                || mode == ArticleRevisionMode.POINTER_READ) {
+            return ProcessOutcome.DEFERRED;
+        }
         if (!moderationAvailable()) {
             stateMachine.routeUnavailable(event, "AI_UNAVAILABLE");
             return ProcessOutcome.COMPLETE;
@@ -313,7 +323,8 @@ public class ArticleModerationWorker {
     public enum ProcessOutcome {
         COMPLETE,
         NOOP,
-        BUSY
+        BUSY,
+        DEFERRED
     }
 
     private record ObservedAttempt(ModerationInvocation invocation, long startedNanos) {

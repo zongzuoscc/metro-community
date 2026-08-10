@@ -3,6 +3,7 @@ package cumt.zongzuo.community.article.migration;
 import cumt.zongzuo.community.IntegrationTestSupport;
 import cumt.zongzuo.community.article.model.ArticleContentSnapshot;
 import cumt.zongzuo.community.article.service.ArticleContentCanonicalizer;
+import cumt.zongzuo.community.article.rollout.StageBRolloutOperatorApplication;
 import cumt.zongzuo.community.document.ArticleDoc;
 import cumt.zongzuo.community.repository.ArticleRepository;
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
@@ -10,7 +11,12 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.test.context.TestPropertySource;
+import org.springframework.core.env.Environment;
+import org.junit.jupiter.api.io.TempDir;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -42,6 +48,12 @@ class ArticleRevisionMigrationIntegrationTest extends IntegrationTestSupport {
 
     @Autowired
     private ElasticsearchClient elasticsearchClient;
+
+    @Autowired
+    private Environment environment;
+
+    @TempDir
+    Path temporaryDirectory;
 
     @BeforeEach
     void resetFixture() {
@@ -332,6 +344,78 @@ class ArticleRevisionMigrationIntegrationTest extends IntegrationTestSupport {
         } finally {
             deleteIndexIfPresent(secondIndex);
         }
+    }
+
+    @Test
+    void productionVerifyCommandPersistsProofMatchingItsCompleteOwnerOnlyArtifact()
+            throws Exception {
+        String buildDigest = "a".repeat(64);
+        jdbcTemplate.update("DELETE FROM article_revision_rollout_checkpoint");
+        jdbcTemplate.update("""
+                INSERT INTO article_revision_rollout_checkpoint(
+                    checkpoint_id,mode,schema_generation,minimum_binary_generation,
+                    required_build_digest,backfill_started_at,cutover_epoch,
+                    updated_by,updated_at,lock_version)
+                VALUES(1,'VERIFY_FENCE',1,1,?,NOW(6),0,'test-setup',NOW(6),0)
+                """, buildDigest);
+        Path reportPath = temporaryDirectory.resolve("verify-report.json").toAbsolutePath();
+
+        StageBRolloutOperatorApplication.run(standaloneVerifyArguments(reportPath));
+
+        StageBVerificationArtifact artifact = new ObjectMapper().findAndRegisterModules()
+                .readValue(reportPath.toFile(), StageBVerificationArtifact.class);
+        Map<String, Object> proof = jdbcTemplate.queryForMap("""
+                SELECT verified_build_digest,verified_fingerprint,verify_report_hash,
+                       verified_at,lock_version
+                FROM article_revision_rollout_checkpoint WHERE checkpoint_id=1
+                """);
+        assertThat(artifact.report().passed()).isTrue();
+        assertThat(artifact.report().mismatches()).isEmpty();
+        assertThat(artifact.report().startFingerprint())
+                .isEqualTo(artifact.report().endFingerprint());
+        assertThat(artifact.reportHash())
+                .isEqualTo(proof.get("verify_report_hash"));
+        assertThat(artifact.buildIdentity().buildDigest())
+                .isEqualTo(proof.get("verified_build_digest"));
+        assertThat(artifact.report().endFingerprint())
+                .isEqualTo(proof.get("verified_fingerprint"));
+        assertThat(artifact.expectedRecordedCheckpointVersion())
+                .isEqualTo(((Number) proof.get("lock_version")).longValue());
+        assertThat(proof.get("verified_at")).isNotNull();
+
+        // CREATE_NEW failure happens before recordVerificationResult, so beginVerification's
+        // durable invalidation remains in force and the old PASS can never be reused.
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                StageBRolloutOperatorApplication.run(standaloneVerifyArguments(reportPath)))
+                .hasStackTraceContaining("verification report path already exists");
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT verify_report_hash IS NULL AND verified_at IS NULL
+                FROM article_revision_rollout_checkpoint WHERE checkpoint_id=1
+                """, Boolean.class)).isTrue();
+    }
+
+    private String[] standaloneVerifyArguments(Path reportPath) {
+        return new String[]{
+                "--spring.main.banner-mode=off",
+                "--logging.level.root=ERROR",
+                "--spring.datasource.url=" + environment.getRequiredProperty(
+                        "spring.datasource.url"),
+                "--spring.datasource.username=" + environment.getRequiredProperty(
+                        "spring.datasource.username"),
+                "--spring.datasource.password=" + environment.getRequiredProperty(
+                        "spring.datasource.password"),
+                "--spring.elasticsearch.uris=" + environment.getRequiredProperty(
+                        "spring.elasticsearch.uris"),
+                "--metro.article.rollout-build.binary-generation=1",
+                "--metro.article.rollout-build.schema-generation=1",
+                "--metro.article.rollout-build.digest=" + "a".repeat(64),
+                "--metro.migration.stage-b.operator-identity=integration-operator",
+                "--metro.migration.stage-b.action=VERIFY",
+                "--metro.article.revision-mode=VERIFY_FENCE",
+                "--metro.migration.stage-b.verification-page-size=2",
+                "--metro.migration.stage-b.elasticsearch-read-alias=article-read",
+                "--metro.migration.stage-b.verification-report-path=" + reportPath
+        };
     }
 
     private void seedArticle(long id, int status, int deleted, String body) {

@@ -8,6 +8,8 @@ import cumt.zongzuo.community.ai.provider.AiCapability;
 import cumt.zongzuo.community.event.domain.DomainEvent;
 import cumt.zongzuo.community.event.domain.DomainEventType;
 import cumt.zongzuo.community.config.RabbitConfig;
+import cumt.zongzuo.community.article.config.ArticleRevisionMode;
+import cumt.zongzuo.community.article.config.ArticleRevisionModeResolver;
 import cumt.zongzuo.community.mapper.ArticleMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -37,6 +39,7 @@ public class ArticleModerationRecovery {
     private final Clock clock;
     private final boolean enabled;
     private final MetroAiProperties properties;
+    private final ArticleRevisionModeResolver modeResolver;
 
     public ArticleModerationRecovery(ArticleModerationJobMapper jobMapper,
                                      ArticleMapper articleMapper,
@@ -45,7 +48,8 @@ public class ArticleModerationRecovery {
                                      Clock clock,
                                      MetroAiProperties properties,
                                      @Value("${metro.ai.moderation.recovery-enabled:true}")
-                                     boolean enabled) {
+                                     boolean enabled,
+                                     ArticleRevisionModeResolver modeResolver) {
         this.jobMapper = jobMapper;
         this.articleMapper = articleMapper;
         this.rabbitTemplate = rabbitTemplate;
@@ -53,11 +57,17 @@ public class ArticleModerationRecovery {
         this.clock = clock;
         this.properties = properties;
         this.enabled = enabled;
+        this.modeResolver = modeResolver;
     }
 
     @Scheduled(fixedDelayString = "${metro.ai.moderation.recovery-delay-ms:30000}",
             initialDelayString = "${metro.ai.moderation.recovery-initial-delay-ms:30000}")
     public void recoverDueJobs() {
+        ArticleRevisionMode mode = modeResolver.current();
+        if (mode == ArticleRevisionMode.VERIFY_FENCE
+                || mode == ArticleRevisionMode.POINTER_READ) {
+            return;
+        }
         if (!enabled || !properties.isCapabilityEnabled(AiCapability.MODERATION)) {
             return;
         }

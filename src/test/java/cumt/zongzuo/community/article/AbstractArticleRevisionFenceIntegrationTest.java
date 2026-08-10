@@ -13,6 +13,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -33,6 +38,8 @@ abstract class AbstractArticleRevisionFenceIntegrationTest extends IntegrationTe
     private ArticleService articleService;
     @Autowired
     private ReportService reportService;
+    @Autowired
+    private ObjectMapper objectMapper;
 
     protected abstract ArticleRevisionMode expectedMode();
 
@@ -109,6 +116,24 @@ abstract class AbstractArticleRevisionFenceIntegrationTest extends IntegrationTe
                 Integer.class)).isZero();
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT status FROM report WHERE id=92104", Integer.class)).isZero();
+    }
+
+    @Test
+    void revisionAdminDecisionReturnsTypedCutoverProblemBeforeAnyLookup() throws Exception {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(jwtService.generate(ADMIN_ID));
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        ResponseEntity<String> response = restTemplate.postForEntity(
+                url("/api/admin/moderation/jobs/999999/reject"),
+                new HttpEntity<>("""
+                        {"revisionId":1,"expectedJobVersion":0,"expectedArticleVersion":0,"reason":"fence"}
+                        """, headers), String.class);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(503);
+        assertThat(response.getHeaders().getContentType()).isEqualTo(MediaType.APPLICATION_PROBLEM_JSON);
+        assertThat(response.getHeaders().getFirst("Retry-After")).isEqualTo("1");
+        assertThat(objectMapper.readTree(response.getBody()).path("code").asText())
+                .isEqualTo("ARTICLE_CUTOVER_IN_PROGRESS");
     }
 
     private void assertFenced(Runnable write) {

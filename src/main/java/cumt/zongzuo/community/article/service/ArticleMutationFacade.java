@@ -40,6 +40,7 @@ import java.util.List;
 public class ArticleMutationFacade implements ArticleDraftService {
 
     private final ArticleRevisionModeResolver modeResolver;
+    private final ArticleMutationGate mutationGate;
     private final ArticleMapper articleMapper;
     private final ArticleDraftMapper draftMapper;
     private final ArticleTagMapper articleTagMapper;
@@ -55,6 +56,7 @@ public class ArticleMutationFacade implements ArticleDraftService {
     private final ArticleLegacyTagWriter legacyTagWriter;
 
     public ArticleMutationFacade(ArticleRevisionModeResolver modeResolver,
+                                 ArticleMutationGate mutationGate,
                                  ArticleMapper articleMapper,
                                  ArticleDraftMapper draftMapper,
                                  ArticleTagMapper articleTagMapper,
@@ -69,6 +71,7 @@ public class ArticleMutationFacade implements ArticleDraftService {
                                  DomainEventOutboxService outboxService,
                                  ArticleLegacyTagWriter legacyTagWriter) {
         this.modeResolver = modeResolver;
+        this.mutationGate = mutationGate;
         this.articleMapper = articleMapper;
         this.draftMapper = draftMapper;
         this.articleTagMapper = articleTagMapper;
@@ -105,7 +108,9 @@ public class ArticleMutationFacade implements ArticleDraftService {
             if (Integer.valueOf(3).equals(article.getStatus())) {
                 return;
             }
-            if (articleMapper.rejectReportedLegacy(articleId, article.getLockVersion(), now) != 1) {
+            int lifecycleIncrement = Integer.valueOf(1).equals(article.getStatus()) ? 1 : 0;
+            if (articleMapper.rejectReportedLegacy(articleId, lifecycleIncrement,
+                    article.getLockVersion(), now) != 1) {
                 throw optimisticConflict();
             }
             return;
@@ -131,9 +136,12 @@ public class ArticleMutationFacade implements ArticleDraftService {
         int eventCount = supersededJobs.isEmpty() ? 1 : 2;
         long baseVersion = article.getLockVersion();
         Long oldPublishedRevisionId = article.getPublishedRevisionId();
+        int lifecycleIncrement = oldPublishedRevisionId == null ? 0 : 1;
+        long decisionEpoch = article.getLifecycleEpoch() + lifecycleIncrement;
         Long rejectedRevisionId = article.getPendingRevisionId() != null
                 ? article.getPendingRevisionId() : article.getLatestRevisionId();
-        if (articleMapper.rejectReportedShadow(articleId, eventCount, baseVersion, now) != 1) {
+        if (articleMapper.rejectReportedShadow(articleId, lifecycleIncrement,
+                eventCount, baseVersion, now) != 1) {
             throw optimisticConflict();
         }
 
@@ -164,8 +172,9 @@ public class ArticleMutationFacade implements ArticleDraftService {
             payload.put("oldPublishedRevisionId", oldPublishedRevisionId);
         }
         payload.putNull("newPublishedRevisionId");
-        outboxService.append("ARTICLE", articleId, decisionVersion, article.getLifecycleEpoch(),
-                decisionType, 1, payload, eventDedupe(article, decisionVersion, decisionType));
+        outboxService.append("ARTICLE", articleId, decisionVersion, decisionEpoch,
+                decisionType, 1, payload,
+                eventDedupe(articleId, decisionEpoch, decisionVersion, decisionType));
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -200,11 +209,7 @@ public class ArticleMutationFacade implements ArticleDraftService {
 
     @Transactional(rollbackFor = Exception.class)
     public void auditLegacyArticle(long articleId, boolean pass, String reason, long administratorId) {
-        requireAnyArticleWriteAllowed();
-        ArticleRevisionMode mode = modeResolver.current();
-        if (mode == ArticleRevisionMode.CUTOVER) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "LEGACY_MODERATION_DISABLED");
-        }
+        ArticleRevisionMode mode = mutationGate.requireLegacyModerationDecisionAllowed();
         Article article = articleMapper.selectByIdForUpdate(articleId);
         int targetStatus = pass ? 1 : 3;
         if (article != null && Integer.valueOf(0).equals(article.getIsDeleted())
@@ -286,15 +291,32 @@ public class ArticleMutationFacade implements ArticleDraftService {
             article = ensureCanonicalShadow(article).article();
         }
         LocalDateTime now = LocalDateTime.now();
-        String visibility = mode == ArticleRevisionMode.LEGACY ? article.getVisibilityState() : "RECYCLED";
-        if (articleMapper.recycleLocked(articleId, userId, visibility, article.getLockVersion(), now) != 1) {
-            throw optimisticConflict();
-        }
         if (mode == ArticleRevisionMode.LEGACY) {
+            if (articleMapper.recycleLocked(articleId, userId, article.getVisibilityState(),
+                    article.getLockVersion(), now) != 1) {
+                throw optimisticConflict();
+            }
             rabbitTemplate.convertAndSend("es.sync.queue", articleId);
         } else {
-            appendLifecycleEvent(article, article.getLockVersion() + 1, DomainEventType.ARTICLE_DELETED,
-                    "RECYCLED");
+            List<ArticleModerationJob> supersededJobs = supersedeNonTerminalJobs(articleId, now);
+            int eventCount = supersededJobs.isEmpty() ? 1 : 2;
+            long baseVersion = article.getLockVersion();
+            if (articleMapper.recycleRevisionModeLocked(articleId, userId, eventCount,
+                    baseVersion, now) != 1) {
+                throw optimisticConflict();
+            }
+            int eventOffset = 0;
+            if (!supersededJobs.isEmpty()) {
+                long supersededVersion = baseVersion + 1;
+                outboxService.append("ARTICLE", articleId, supersededVersion,
+                        article.getLifecycleEpoch(), DomainEventType.ARTICLE_REVISION_SUPERSEDED, 1,
+                        supersededPayload(articleId, article.getPublishedRevisionId(), supersededJobs),
+                        eventDedupe(article, supersededVersion,
+                                DomainEventType.ARTICLE_REVISION_SUPERSEDED));
+                eventOffset = 1;
+            }
+            appendLifecycleEvent(article, baseVersion + eventOffset + 1,
+                    article.getLifecycleEpoch() + 1, DomainEventType.ARTICLE_DELETED, "RECYCLED");
         }
     }
 
@@ -325,7 +347,8 @@ public class ArticleMutationFacade implements ArticleDraftService {
         } else {
             DomainEventType type = article.getPublishedRevisionId() == null
                     ? DomainEventType.ARTICLE_UNPUBLISHED : DomainEventType.ARTICLE_REVISION_PUBLISHED;
-            appendLifecycleEvent(article, article.getLockVersion() + 1, type, "RESTORED");
+            appendLifecycleEvent(article, article.getLockVersion() + 1,
+                    article.getLifecycleEpoch(), type, "RESTORED");
         }
     }
 
@@ -343,14 +366,24 @@ public class ArticleMutationFacade implements ArticleDraftService {
         if (mode != ArticleRevisionMode.LEGACY) {
             article = ensureCanonicalShadow(article).article();
         }
-        if (articleMapper.purgeLocked(articleId, userId, article.getLockVersion(), LocalDateTime.now()) != 1) {
-            throw optimisticConflict();
-        }
+        LocalDateTime now = LocalDateTime.now();
         if (mode == ArticleRevisionMode.LEGACY) {
+            if (articleMapper.purgeLocked(articleId, userId, article.getLockVersion(), now) != 1) {
+                throw optimisticConflict();
+            }
             rabbitTemplate.convertAndSend("es.sync.queue", articleId);
         } else {
-            appendLifecycleEvent(article, article.getLockVersion() + 1, DomainEventType.ARTICLE_DELETED,
-                    "PURGED");
+            List<ArticleModerationJob> supersededJobs = supersedeNonTerminalJobs(articleId, now);
+            int eventCount = supersededJobs.isEmpty() ? 1 : 2;
+            long baseVersion = article.getLockVersion();
+            if (articleMapper.purgeRevisionModeLocked(articleId, userId, eventCount,
+                    baseVersion, now) != 1) {
+                throw optimisticConflict();
+            }
+            int eventOffset = appendLifecycleSupersededBatch(
+                    article, supersededJobs, baseVersion);
+            appendLifecycleEvent(article, baseVersion + eventOffset + 1,
+                    article.getLifecycleEpoch() + 1, DomainEventType.ARTICLE_DELETED, "PURGED");
         }
     }
 
@@ -360,20 +393,36 @@ public class ArticleMutationFacade implements ArticleDraftService {
         for (Long articleId : articleMapper.selectExpiredArticleIds(expiredBefore, limit)) {
             Article article = articleMapper.selectByIdForUpdate(articleId);
             if (article == null || !Integer.valueOf(1).equals(article.getIsDeleted())
-                    || "PURGED".equals(article.getVisibilityState())) {
+                    || "PURGED".equals(article.getVisibilityState())
+                    || article.getDeleteTime() == null
+                    || article.getDeleteTime().isAfter(expiredBefore)) {
                 continue;
             }
-            if (modeResolver.current() != ArticleRevisionMode.LEGACY) {
+            ArticleRevisionMode mode = modeResolver.current();
+            if (mode != ArticleRevisionMode.LEGACY) {
                 article = ensureCanonicalShadow(article).article();
             }
-            if (articleMapper.purgeLocked(article.getId(), article.getAuthorId(), article.getLockVersion(),
-                    LocalDateTime.now()) != 1) {
-                throw optimisticConflict();
-            }
-            if (modeResolver.current() == ArticleRevisionMode.LEGACY) {
+            LocalDateTime now = LocalDateTime.now();
+            if (mode == ArticleRevisionMode.LEGACY) {
+                if (articleMapper.purgeExpiredLocked(article.getId(), article.getAuthorId(),
+                        article.getLockVersion(), expiredBefore, now) != 1) {
+                    throw optimisticConflict();
+                }
                 rabbitTemplate.convertAndSend("es.sync.queue", articleId);
             } else {
-                appendLifecycleEvent(article, article.getLockVersion() + 1,
+                List<ArticleModerationJob> supersededJobs =
+                        supersedeNonTerminalJobs(articleId, now);
+                int eventCount = supersededJobs.isEmpty() ? 1 : 2;
+                long baseVersion = article.getLockVersion();
+                if (articleMapper.purgeExpiredRevisionModeLocked(
+                        article.getId(), article.getAuthorId(), eventCount,
+                        baseVersion, expiredBefore, now) != 1) {
+                    throw optimisticConflict();
+                }
+                int eventOffset = appendLifecycleSupersededBatch(
+                        article, supersededJobs, baseVersion);
+                appendLifecycleEvent(article, baseVersion + eventOffset + 1,
+                        article.getLifecycleEpoch() + 1,
                         DomainEventType.ARTICLE_DELETED, "EXPIRED_PURGE");
             }
         }
@@ -389,9 +438,8 @@ public class ArticleMutationFacade implements ArticleDraftService {
 
         boolean newShell = dto.getId() == null;
         Article article = newShell ? createShell(userId) : lockOwnedArticle(dto.getId(), userId);
-        if (mode != ArticleRevisionMode.CUTOVER && Integer.valueOf(1).equals(article.getStatus())) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT,
-                    "PUBLISHED_ARTICLE_EDIT_REQUIRES_CUTOVER");
+        if (Integer.valueOf(1).equals(article.getStatus())) {
+            mutationGate.requirePublishedRevisionEditAllowed();
         }
         if (publish) {
             checkSensitive(dto.getTitle(), dto.getContent());
@@ -430,8 +478,8 @@ public class ArticleMutationFacade implements ArticleDraftService {
         boolean newShell = command.articleId() == null;
         Article article = newShell ? createShell(userId) : lockOwnedArticle(command.articleId(), userId);
         ArticleRevisionMode mode = modeResolver.current();
-        if (mode != ArticleRevisionMode.CUTOVER && Integer.valueOf(1).equals(article.getStatus())) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "PUBLISHED_ARTICLE_EDIT_REQUIRES_CUTOVER");
+        if (Integer.valueOf(1).equals(article.getStatus())) {
+            mutationGate.requirePublishedRevisionEditAllowed();
         }
         ArticleDraft saved;
         if (newShell) {
@@ -472,8 +520,18 @@ public class ArticleMutationFacade implements ArticleDraftService {
         }
         LocalDateTime now = LocalDateTime.now();
         if (mode == ArticleRevisionMode.SHADOW) {
-            int legacyUpdated = articleMapper.updateLegacyDraftContent(article.getId(), userId,
-                    snapshot.title(), snapshot.summary(), snapshot.bodyMarkdown(), snapshot.cover(), now);
+            int legacyUpdated;
+            if (article.getPendingRevisionId() == null) {
+                legacyUpdated = articleMapper.updateLegacyDraftContent(
+                        article.getId(), userId, snapshot.title(), snapshot.summary(),
+                        snapshot.bodyMarkdown(), snapshot.cover(), article.getLockVersion(), now);
+            }
+            else {
+                legacyUpdated = articleMapper.updateLegacyPendingDraftMirror(
+                        article.getId(), userId, article.getPendingRevisionId(),
+                        snapshot.title(), snapshot.summary(), snapshot.bodyMarkdown(),
+                        snapshot.cover(), article.getLockVersion(), now);
+            }
             if (legacyUpdated != 1) {
                 throw optimisticConflict();
             }
@@ -491,25 +549,17 @@ public class ArticleMutationFacade implements ArticleDraftService {
     }
 
     private void requireAnyArticleWriteAllowed() {
-        ArticleRevisionMode mode = modeResolver.current();
-        if (mode == ArticleRevisionMode.VERIFY_FENCE || mode == ArticleRevisionMode.POINTER_READ) {
-            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
-                    "ARTICLE_CUTOVER_IN_PROGRESS");
-        }
+        mutationGate.requireArticleWriteAllowed();
     }
 
     private void requireRevisionWriteMode() {
-        requireAnyArticleWriteAllowed();
-        if (modeResolver.current() == ArticleRevisionMode.LEGACY) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "REVISION_WRITE_NOT_ENABLED");
-        }
+        mutationGate.requireRevisionWriteMode();
     }
 
     private long legacyPublishOrSave(ArticleDTO dto, boolean publish, long userId) {
         Article article = dto.getId() == null ? createShell(userId) : lockOwnedArticle(dto.getId(), userId);
         if (Integer.valueOf(1).equals(article.getStatus())) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT,
-                    "PUBLISHED_ARTICLE_EDIT_REQUIRES_CUTOVER");
+            mutationGate.requirePublishedRevisionEditAllowed();
         }
         if (publish) {
             checkSensitive(dto.getTitle(), dto.getContent());
@@ -615,7 +665,7 @@ public class ArticleMutationFacade implements ArticleDraftService {
         rabbitTemplate.convertAndSend("message.notify.queue", notification);
     }
 
-    private void appendLifecycleEvent(Article article, long version,
+    private void appendLifecycleEvent(Article article, long version, long lifecycleEpoch,
                                       DomainEventType type, String transition) {
         com.fasterxml.jackson.databind.node.ObjectNode payload = objectMapper.createObjectNode();
         payload.put("articleId", article.getId());
@@ -625,8 +675,8 @@ public class ArticleMutationFacade implements ArticleDraftService {
         } else {
             payload.put("publishedRevisionId", article.getPublishedRevisionId());
         }
-        outboxService.append("ARTICLE", article.getId(), version, article.getLifecycleEpoch(), type, 1,
-                payload, eventDedupe(article, version, type));
+        outboxService.append("ARTICLE", article.getId(), version, lifecycleEpoch, type, 1,
+                payload, eventDedupe(article.getId(), lifecycleEpoch, version, type));
     }
 
     private com.fasterxml.jackson.databind.JsonNode supersededPayload(
@@ -649,8 +699,40 @@ public class ArticleMutationFacade implements ArticleDraftService {
         return payload;
     }
 
+    private List<ArticleModerationJob> supersedeNonTerminalJobs(
+            long articleId, LocalDateTime updatedAt) {
+        List<ArticleModerationJob> jobs = jobMapper.selectNonTerminalForUpdate(articleId).stream()
+                .sorted(Comparator.comparingLong(ArticleModerationJob::getId))
+                .toList();
+        for (ArticleModerationJob job : jobs) {
+            if (jobMapper.supersede(job.getId(), job.getLockVersion(), updatedAt) != 1) {
+                throw optimisticConflict();
+            }
+        }
+        return jobs;
+    }
+
+    private int appendLifecycleSupersededBatch(
+            Article article, List<ArticleModerationJob> jobs, long baseVersion) {
+        if (jobs.isEmpty()) {
+            return 0;
+        }
+        long supersededVersion = baseVersion + 1;
+        outboxService.append("ARTICLE", article.getId(), supersededVersion,
+                article.getLifecycleEpoch(), DomainEventType.ARTICLE_REVISION_SUPERSEDED, 1,
+                supersededPayload(article.getId(), article.getPublishedRevisionId(), jobs),
+                eventDedupe(article, supersededVersion,
+                        DomainEventType.ARTICLE_REVISION_SUPERSEDED));
+        return 1;
+    }
+
     private static String eventDedupe(Article article, long version, DomainEventType type) {
-        return "ARTICLE:" + article.getId() + ":" + article.getLifecycleEpoch()
+        return eventDedupe(article.getId(), article.getLifecycleEpoch(), version, type);
+    }
+
+    private static String eventDedupe(long articleId, long lifecycleEpoch,
+                                      long version, DomainEventType type) {
+        return "ARTICLE:" + articleId + ":" + lifecycleEpoch
                 + ":" + version + ":" + type.name();
     }
 

@@ -123,6 +123,22 @@ class ModerationFallbackIntegrationTest extends IntegrationTestSupport {
     }
 
     @Test
+    void revisionAdminDecisionIsTypedModeDisabledProblemInLegacy() throws Exception {
+        HttpHeaders headers = bearerHeaders(ADMIN_ID);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        ResponseEntity<String> response = restTemplate.postForEntity(
+                url("/api/admin/moderation/jobs/999999/approve"),
+                new HttpEntity<>("""
+                        {"revisionId":1,"expectedJobVersion":0,"expectedArticleVersion":0,"reason":"mode"}
+                        """, headers), String.class);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(409);
+        assertThat(response.getHeaders().getContentType()).isEqualTo(MediaType.APPLICATION_PROBLEM_JSON);
+        assertThat(objectMapper.readTree(response.getBody()).path("code").asText())
+                .isEqualTo("REVISION_MODERATION_DISABLED");
+    }
+
+    @Test
     void duplicateDeletedAndNonPendingDeliveriesAreAcknowledgedAsIdempotentNoOps() {
         double fallbackCountBefore = fallbackCount();
         insertArticle(ARTICLE_ID + 1, 2, 0, "2026-08-10 01:00:00");

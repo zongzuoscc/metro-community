@@ -17,6 +17,17 @@ public interface ArticleModerationJobMapper extends BaseMapper<ArticleModeration
 
     @Select("""
             SELECT * FROM article_moderation_job
+            WHERE (#{state} IS NULL OR state=#{state})
+              AND (#{before} IS NULL OR id<#{before})
+            ORDER BY id DESC
+            LIMIT #{limit}
+            """)
+    List<ArticleModerationJob> selectAdminPage(@Param("state") String state,
+                                               @Param("before") Long before,
+                                               @Param("limit") int limit);
+
+    @Select("""
+            SELECT * FROM article_moderation_job
             WHERE state='PENDING'
                OR (state='RETRY_WAIT' AND (next_attempt_at IS NULL
                                             OR next_attempt_at<=CURRENT_TIMESTAMP(6)))
@@ -71,6 +82,26 @@ public interface ArticleModerationJobMapper extends BaseMapper<ArticleModeration
                               @Param("reviewerId") long reviewerId,
                               @Param("reason") String reason,
                               @Param("reviewedAt") LocalDateTime reviewedAt);
+
+    @Update("""
+            UPDATE article_moderation_job
+            SET state=#{state}, reviewer_id=#{reviewerId}, review_reason=#{reason},
+                reviewed_at=#{reviewedAt}, updated_at=#{reviewedAt},
+                lease_owner=NULL, lease_until=NULL, lock_version=lock_version+1
+            WHERE id=#{jobId} AND article_id=#{articleId} AND revision_id=#{revisionId}
+              AND content_hash=#{contentHash} AND state='HUMAN_PENDING'
+              AND lease_owner IS NULL AND lease_until IS NULL
+              AND lock_version=#{expectedLockVersion}
+            """)
+    int decideHumanPendingExact(@Param("jobId") long jobId,
+                                @Param("articleId") long articleId,
+                                @Param("revisionId") long revisionId,
+                                @Param("contentHash") String contentHash,
+                                @Param("expectedLockVersion") long expectedLockVersion,
+                                @Param("state") String state,
+                                @Param("reviewerId") long reviewerId,
+                                @Param("reason") String reason,
+                                @Param("reviewedAt") LocalDateTime reviewedAt);
 
     @Update("""
             UPDATE article_moderation_job

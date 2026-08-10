@@ -152,6 +152,7 @@ public final class AiProblemDetails {
             case "IDEMPOTENCY_CONFLICT" -> "The idempotency key conflicts with an earlier request.";
             case "ACTIVE_TURN_EXISTS" -> "Another Agent turn is already active.";
             case "OPTIMISTIC_LOCK_CONFLICT" -> "The resource changed before this request completed.";
+            case "REVISION_MODERATION_DISABLED" -> "Revision-bound moderation is not enabled.";
             case "SUGGESTION_STATE_CONFLICT" -> "The writing suggestion is no longer applicable.";
             case "TEMPORARY_SESSION_EXPIRED" -> "The temporary session has expired.";
             case "EVENT_STREAM_EXPIRED" -> "The requested event stream prefix has expired.";
@@ -161,6 +162,7 @@ public final class AiProblemDetails {
             case "AI_DISABLED" -> "This AI capability is disabled.";
             case "AI_UNAVAILABLE" -> "The AI capability is temporarily unavailable.";
             case "AGENT_RUNTIME_UNAVAILABLE" -> "The Agent runtime is temporarily unavailable.";
+            case "ARTICLE_CUTOVER_IN_PROGRESS" -> "Article mutations are paused for cutover verification.";
             case "METHOD_NOT_ALLOWED" -> "The HTTP method is not supported for this resource.";
             case "UNSUPPORTED_MEDIA_TYPE" -> "The request media type is not supported.";
             case "INTERNAL_ERROR" -> "An internal error prevented the request from completing.";

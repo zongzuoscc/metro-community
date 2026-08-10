@@ -202,8 +202,15 @@ public interface ArticleMapper extends BaseMapper<Article> {
     @Update("""
             UPDATE article
             SET title=#{title}, summary=#{summary}, content=#{content}, cover=#{cover},
-                status=0, update_time=#{updatedAt}, lock_version=lock_version+1
+                latest_revision_id=published_revision_id, pending_revision_id=NULL,
+                visibility_state=CASE WHEN published_revision_id IS NULL
+                                      THEN 'PRIVATE' ELSE 'PUBLIC' END,
+                status=CASE WHEN published_revision_id IS NULL THEN 0 ELSE 1 END,
+                review_state=CASE WHEN published_revision_id IS NULL
+                                  THEN 'NOT_SUBMITTED' ELSE 'APPROVED' END,
+                update_time=#{updatedAt}, lock_version=lock_version+1
             WHERE id=#{articleId} AND author_id=#{authorId} AND is_deleted=0
+              AND pending_revision_id IS NULL AND lock_version=#{expectedLockVersion}
             """)
     int updateLegacyDraftContent(@Param("articleId") long articleId,
                                  @Param("authorId") long authorId,
@@ -211,7 +218,27 @@ public interface ArticleMapper extends BaseMapper<Article> {
                                  @Param("summary") String summary,
                                  @Param("content") String content,
                                  @Param("cover") String cover,
+                                 @Param("expectedLockVersion") long expectedLockVersion,
                                  @Param("updatedAt") LocalDateTime updatedAt);
+
+    @Update("""
+            UPDATE article
+            SET title=#{title}, summary=#{summary}, content=#{content}, cover=#{cover},
+                update_time=#{updatedAt}
+            WHERE id=#{articleId} AND author_id=#{authorId} AND is_deleted=0
+              AND pending_revision_id=#{expectedPendingRevisionId}
+              AND lock_version=#{expectedLockVersion}
+            """)
+    int updateLegacyPendingDraftMirror(
+            @Param("articleId") long articleId,
+            @Param("authorId") long authorId,
+            @Param("expectedPendingRevisionId") long expectedPendingRevisionId,
+            @Param("title") String title,
+            @Param("summary") String summary,
+            @Param("content") String content,
+            @Param("cover") String cover,
+            @Param("expectedLockVersion") long expectedLockVersion,
+            @Param("updatedAt") LocalDateTime updatedAt);
 
     @Update("""
             UPDATE article
@@ -295,11 +322,53 @@ public interface ArticleMapper extends BaseMapper<Article> {
 
     @Update("""
             UPDATE article
-            SET status=3, lock_version=lock_version+1, update_time=#{updatedAt}
+            SET published_revision_id=#{revisionId}, pending_revision_id=NULL,
+                title=#{title}, summary=#{summary}, content=#{content}, cover=#{cover},
+                visibility_state='PUBLIC', review_state='APPROVED', status=1,
+                lock_version=lock_version+1, update_time=#{updatedAt}
+            WHERE id=#{articleId} AND pending_revision_id=#{revisionId} AND is_deleted=0
+              AND lock_version=#{expectedLockVersion}
+              AND EXISTS (
+                  SELECT 1 FROM article_revision r
+                  WHERE r.id=#{revisionId} AND r.article_id=#{articleId}
+                    AND r.content_hash=#{contentHash}
+              )
+            """)
+    int approveRevisionCas(@Param("articleId") long articleId,
+                           @Param("revisionId") long revisionId,
+                           @Param("contentHash") String contentHash,
+                           @Param("title") String title,
+                           @Param("summary") String summary,
+                           @Param("content") String content,
+                           @Param("cover") String cover,
+                           @Param("expectedLockVersion") long expectedLockVersion,
+                           @Param("updatedAt") LocalDateTime updatedAt);
+
+    @Update("""
+            UPDATE article
+            SET pending_revision_id=NULL,
+                visibility_state=#{visibilityState}, review_state=#{reviewState}, status=#{status},
+                lock_version=lock_version+1, update_time=#{updatedAt}
+            WHERE id=#{articleId} AND pending_revision_id=#{revisionId} AND is_deleted=0
+              AND lock_version=#{expectedLockVersion}
+            """)
+    int rejectRevisionCas(@Param("articleId") long articleId,
+                          @Param("revisionId") long revisionId,
+                          @Param("visibilityState") String visibilityState,
+                          @Param("reviewState") String reviewState,
+                          @Param("status") int status,
+                          @Param("expectedLockVersion") long expectedLockVersion,
+                          @Param("updatedAt") LocalDateTime updatedAt);
+
+    @Update("""
+            UPDATE article
+            SET status=3, lifecycle_epoch=lifecycle_epoch+#{lifecycleIncrement},
+                lock_version=lock_version+1, update_time=#{updatedAt}
             WHERE id=#{articleId} AND is_deleted=0
               AND lock_version=#{expectedLockVersion}
             """)
     int rejectReportedLegacy(@Param("articleId") long articleId,
+                             @Param("lifecycleIncrement") int lifecycleIncrement,
                              @Param("expectedLockVersion") long expectedLockVersion,
                              @Param("updatedAt") LocalDateTime updatedAt);
 
@@ -307,11 +376,13 @@ public interface ArticleMapper extends BaseMapper<Article> {
             UPDATE article
             SET published_revision_id=NULL, pending_revision_id=NULL,
                 visibility_state='PRIVATE', review_state='REJECTED', status=3,
+                lifecycle_epoch=lifecycle_epoch+#{lifecycleIncrement},
                 lock_version=lock_version+#{versionIncrement}, update_time=#{updatedAt}
             WHERE id=#{articleId} AND is_deleted=0
               AND lock_version=#{expectedLockVersion}
             """)
     int rejectReportedShadow(@Param("articleId") long articleId,
+                             @Param("lifecycleIncrement") int lifecycleIncrement,
                              @Param("versionIncrement") int versionIncrement,
                              @Param("expectedLockVersion") long expectedLockVersion,
                              @Param("updatedAt") LocalDateTime updatedAt);
@@ -319,6 +390,7 @@ public interface ArticleMapper extends BaseMapper<Article> {
     @Update("""
             UPDATE article
             SET is_deleted=1, delete_time=#{deletedAt}, visibility_state=#{visibilityState},
+                lifecycle_epoch=lifecycle_epoch+1,
                 lock_version=lock_version+1, update_time=#{deletedAt}
             WHERE id=#{articleId} AND author_id=#{authorId} AND is_deleted=0
               AND lock_version=#{expectedLockVersion}
@@ -328,6 +400,25 @@ public interface ArticleMapper extends BaseMapper<Article> {
                       @Param("visibilityState") String visibilityState,
                       @Param("expectedLockVersion") long expectedLockVersion,
                       @Param("deletedAt") LocalDateTime deletedAt);
+
+    @Update("""
+            UPDATE article
+            SET is_deleted=1, delete_time=#{deletedAt},
+                latest_revision_id=published_revision_id, pending_revision_id=NULL,
+                status=CASE WHEN published_revision_id IS NULL THEN 0 ELSE 1 END,
+                visibility_state='RECYCLED',
+                review_state=CASE WHEN published_revision_id IS NULL
+                                  THEN 'NOT_SUBMITTED' ELSE 'APPROVED' END,
+                lifecycle_epoch=lifecycle_epoch+1,
+                lock_version=lock_version+#{versionIncrement}, update_time=#{deletedAt}
+            WHERE id=#{articleId} AND author_id=#{authorId} AND is_deleted=0
+              AND lock_version=#{expectedLockVersion}
+            """)
+    int recycleRevisionModeLocked(@Param("articleId") long articleId,
+                                  @Param("authorId") long authorId,
+                                  @Param("versionIncrement") int versionIncrement,
+                                  @Param("expectedLockVersion") long expectedLockVersion,
+                                  @Param("deletedAt") LocalDateTime deletedAt);
 
     @Update("""
             UPDATE article
@@ -346,6 +437,7 @@ public interface ArticleMapper extends BaseMapper<Article> {
     @Update("""
             UPDATE article
             SET is_deleted=1, visibility_state='PURGED',
+                lifecycle_epoch=lifecycle_epoch+1,
                 lock_version=lock_version+1, update_time=#{updatedAt}
             WHERE id=#{articleId} AND author_id=#{authorId} AND is_deleted=1
               AND (visibility_state IS NULL OR visibility_state<>'PURGED')
@@ -356,6 +448,64 @@ public interface ArticleMapper extends BaseMapper<Article> {
                     @Param("expectedLockVersion") long expectedLockVersion,
                     @Param("updatedAt") LocalDateTime updatedAt);
 
+    @Update("""
+            UPDATE article
+            SET is_deleted=1, latest_revision_id=published_revision_id,
+                pending_revision_id=NULL,
+                status=CASE WHEN published_revision_id IS NULL THEN 0 ELSE 1 END,
+                visibility_state='PURGED',
+                review_state=CASE WHEN published_revision_id IS NULL
+                                  THEN 'NOT_SUBMITTED' ELSE 'APPROVED' END,
+                lifecycle_epoch=lifecycle_epoch+1,
+                lock_version=lock_version+#{versionIncrement}, update_time=#{updatedAt}
+            WHERE id=#{articleId} AND author_id=#{authorId} AND is_deleted=1
+              AND (visibility_state IS NULL OR visibility_state<>'PURGED')
+              AND lock_version=#{expectedLockVersion}
+            """)
+    int purgeRevisionModeLocked(@Param("articleId") long articleId,
+                                @Param("authorId") long authorId,
+                                @Param("versionIncrement") int versionIncrement,
+                                @Param("expectedLockVersion") long expectedLockVersion,
+                                @Param("updatedAt") LocalDateTime updatedAt);
+
+    @Update("""
+            UPDATE article
+            SET is_deleted=1, visibility_state='PURGED',
+                lifecycle_epoch=lifecycle_epoch+1,
+                lock_version=lock_version+1, update_time=#{updatedAt}
+            WHERE id=#{articleId} AND author_id=#{authorId} AND is_deleted=1
+              AND delete_time<=#{expiredBefore}
+              AND (visibility_state IS NULL OR visibility_state<>'PURGED')
+              AND lock_version=#{expectedLockVersion}
+            """)
+    int purgeExpiredLocked(@Param("articleId") long articleId,
+                           @Param("authorId") long authorId,
+                           @Param("expectedLockVersion") long expectedLockVersion,
+                           @Param("expiredBefore") LocalDateTime expiredBefore,
+                           @Param("updatedAt") LocalDateTime updatedAt);
+
+    @Update("""
+            UPDATE article
+            SET is_deleted=1, latest_revision_id=published_revision_id,
+                pending_revision_id=NULL,
+                status=CASE WHEN published_revision_id IS NULL THEN 0 ELSE 1 END,
+                visibility_state='PURGED',
+                review_state=CASE WHEN published_revision_id IS NULL
+                                  THEN 'NOT_SUBMITTED' ELSE 'APPROVED' END,
+                lifecycle_epoch=lifecycle_epoch+1,
+                lock_version=lock_version+#{versionIncrement}, update_time=#{updatedAt}
+            WHERE id=#{articleId} AND author_id=#{authorId} AND is_deleted=1
+              AND delete_time<=#{expiredBefore}
+              AND (visibility_state IS NULL OR visibility_state<>'PURGED')
+              AND lock_version=#{expectedLockVersion}
+            """)
+    int purgeExpiredRevisionModeLocked(@Param("articleId") long articleId,
+                                       @Param("authorId") long authorId,
+                                       @Param("versionIncrement") int versionIncrement,
+                                       @Param("expectedLockVersion") long expectedLockVersion,
+                                       @Param("expiredBefore") LocalDateTime expiredBefore,
+                                       @Param("updatedAt") LocalDateTime updatedAt);
+
     @Select("""
             SELECT id FROM article
             WHERE is_deleted=1 AND delete_time<=#{expiredBefore}
@@ -365,8 +515,4 @@ public interface ArticleMapper extends BaseMapper<Article> {
     List<Long> selectExpiredArticleIds(@Param("expiredBefore") LocalDateTime expiredBefore,
                                        @Param("limit") int limit);
 
-    @Update("UPDATE article SET status = #{targetStatus} " +
-            "WHERE id = #{articleId} AND status = 2 AND is_deleted = 0")
-    int updateModerationStatusIfPending(@Param("articleId") Long articleId,
-                                        @Param("targetStatus") int targetStatus);
 }

@@ -41,6 +41,19 @@ public final class AiApiException extends RuntimeException {
         return fixed(HttpStatus.CONFLICT, "OPTIMISTIC_LOCK_CONFLICT");
     }
 
+    public static AiApiException revisionModerationDisabled() {
+        return fixed(HttpStatus.CONFLICT, "REVISION_MODERATION_DISABLED");
+    }
+
+    public static AiApiException validationFailed() {
+        return fixed(HttpStatus.BAD_REQUEST, "VALIDATION_FAILED");
+    }
+
+    public static AiApiException articleCutoverInProgress() {
+        return retryable(HttpStatus.SERVICE_UNAVAILABLE, "ARTICLE_CUTOVER_IN_PROGRESS",
+                Duration.ofSeconds(1));
+    }
+
     public static AiApiException suggestionStateConflict() {
         return fixed(HttpStatus.CONFLICT, "SUGGESTION_STATE_CONFLICT");
     }

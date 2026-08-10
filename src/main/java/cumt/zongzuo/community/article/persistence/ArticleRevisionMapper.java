@@ -27,6 +27,9 @@ public interface ArticleRevisionMapper {
     @Select("SELECT * FROM article_revision WHERE id = #{id}")
     ArticleRevision selectById(@Param("id") long id);
 
+    @Select("SELECT * FROM article_revision WHERE id = #{id} FOR UPDATE")
+    ArticleRevision selectByIdForUpdate(@Param("id") long id);
+
     @Select("SELECT COALESCE(MAX(revision_no),0)+1 FROM article_revision WHERE article_id=#{articleId}")
     long selectNextRevisionNo(@Param("articleId") long articleId);
 

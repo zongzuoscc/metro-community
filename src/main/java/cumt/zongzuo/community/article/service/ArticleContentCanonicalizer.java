@@ -4,6 +4,8 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import cumt.zongzuo.community.article.model.ArticleContentSnapshot;
 import org.springframework.stereotype.Component;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -55,6 +57,10 @@ public class ArticleContentCanonicalizer {
             }
             String trimmed = tag.trim();
             if (!trimmed.isEmpty()) {
+                if (trimmed.codePointCount(0, trimmed.length()) > 50) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                            "ARTICLE_TAG_NAME_TOO_LONG");
+                }
                 distinct.add(trimmed);
             }
         }

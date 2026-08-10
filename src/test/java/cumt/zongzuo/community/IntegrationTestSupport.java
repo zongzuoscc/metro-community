@@ -19,6 +19,12 @@ import org.testcontainers.images.builder.ImageFromDockerfile;
 import org.testcontainers.utility.DockerImageName;
 import org.testcontainers.lifecycle.Startables;
 import cumt.zongzuo.community.security.JwtService;
+import cumt.zongzuo.community.article.rollout.ArticleRevisionBuildIdentity;
+import cumt.zongzuo.community.article.rollout.StageBRolloutStartupGate;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.Primary;
 
 import javax.sql.DataSource;
 import java.nio.file.Path;
@@ -37,6 +43,7 @@ import java.util.stream.Stream;
                 "metro.ai.embedding.enabled=false",
                 "DEEPSEEK_API_KEY="
         })
+@Import(IntegrationTestSupport.RolloutTestConfiguration.class)
 public abstract class IntegrationTestSupport {
 
     private static final AtomicBoolean SCHEMA_INITIALIZED = new AtomicBoolean();
@@ -119,5 +126,22 @@ public abstract class IntegrationTestSupport {
 
     protected String url(String path) {
         return "http://127.0.0.1:" + port + path;
+    }
+
+    @TestConfiguration(proxyBeanMethods = false)
+    static class RolloutTestConfiguration {
+
+        @Bean
+        @Primary
+        StageBRolloutStartupGate permissiveStageBRolloutStartupGate() {
+            return (mode, buildIdentity) -> {
+            };
+        }
+
+        @Bean
+        @Primary
+        ArticleRevisionBuildIdentity testArticleRevisionBuildIdentity() {
+            return new ArticleRevisionBuildIdentity(1, 1, "a".repeat(64));
+        }
     }
 }
