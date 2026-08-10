@@ -1,6 +1,12 @@
 package cumt.zongzuo.community.service.impl;
 
 import cn.hutool.core.util.StrUtil;
+import co.elastic.clients.elasticsearch.ElasticsearchClient;
+import co.elastic.clients.elasticsearch._types.FieldValue;
+import co.elastic.clients.elasticsearch._types.SortOrder;
+import co.elastic.clients.elasticsearch.core.SearchRequest;
+import co.elastic.clients.elasticsearch.core.SearchResponse;
+import co.elastic.clients.elasticsearch.core.search.Hit;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
@@ -23,28 +29,24 @@ import org.springframework.web.context.request.ServletRequestAttributes;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.elasticsearch.core.SearchHit;
 import org.springframework.data.elasticsearch.core.SearchHits;
-import org.springframework.data.elasticsearch.core.query.Criteria;
-import org.springframework.data.elasticsearch.core.query.CriteriaQuery;
-import org.springframework.data.elasticsearch.core.query.HighlightQuery;
-import org.springframework.data.elasticsearch.core.query.highlight.Highlight;
-import org.springframework.data.elasticsearch.core.query.highlight.HighlightField;
-import org.springframework.data.elasticsearch.core.query.highlight.HighlightParameters;
 import cumt.zongzuo.community.document.ArticleDoc;
 import cumt.zongzuo.community.article.service.ArticleMutationFacade;
-import java.util.Arrays;
+import cumt.zongzuo.community.article.service.AuthorArticleReadService;
+import cumt.zongzuo.community.article.service.PublishedArticleReadService;
 import jakarta.servlet.http.HttpServletRequest;
+import org.apache.http.util.EntityUtils;
+import org.elasticsearch.client.Request;
+import org.elasticsearch.client.Response;
+import org.elasticsearch.client.RestClient;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
-import org.springframework.data.domain.PageRequest;
 import org.springframework.data.elasticsearch.core.query.StringQuery;
-import org.springframework.data.elasticsearch.core.SearchHit;
-import org.springframework.data.elasticsearch.core.SearchHits;
-import cumt.zongzuo.community.document.ArticleDoc;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -75,13 +77,29 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
     private ElasticsearchOperations elasticsearchOperations;
 
     @Autowired
+    private ElasticsearchClient elasticsearchClient;
+
+    @Autowired
+    private RestClient elasticsearchRestClient;
+
+    @Autowired
     private ArticleMutationFacade articleMutationFacade;
+
+    @Autowired
+    private PublishedArticleReadService publishedArticleReadService;
+
+    @Autowired
+    private AuthorArticleReadService authorArticleReadService;
 
     // Redis Key 定义
     private static final String ARTICLE_DETAIL_CACHE_PREFIX = "article:detail:";
     private static final String ARTICLE_VIEW_COUNT_KEY = "article:view:count:";
     public static final String ARTICLE_VIEW_DIRTY_SET = "article:view:dirty:set";
     private static final String HOT_RANK_CACHE_KEY = "hot:article:rank:7days";
+    private static final String ARTICLE_SEARCH_INDEX = "article";
+    private static final String SEARCH_PIT_KEEP_ALIVE = "1m";
+    private static final int SEARCH_CANDIDATE_BATCH_SIZE = 100;
+    private static final int SEARCH_CANDIDATE_HARD_LIMIT = 1_000;
 
     // --------------------------------------------------------------------------------
     // 1. 发布/保存文章 (含机器审核逻辑)
@@ -106,8 +124,13 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
     // --------------------------------------------------------------------------------
     @Override
     public Article getDetail(Long id) {
-        // 1. 先查 Redis 缓存
-        String cacheKey = ARTICLE_DETAIL_CACHE_PREFIX + id;
+        // MySQL current visibility and pointer identity are authoritative. Resolve them
+        // before touching Redis so an old cache entry can never bypass unpublish/delete.
+        Article current = publishedArticleReadService.findById(id);
+        if (current == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "文章不存在或未发布");
+        }
+        String cacheKey = articleDetailCacheKey(current);
         String json = stringRedisTemplate.opsForValue().get(cacheKey);
 
         Article article = null;
@@ -119,20 +142,15 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
             }
         }
 
-        // 2. 缓存未命中，查数据库 (回源)
+        // Cache misses use the already-authorized current snapshot.
         if (article == null) {
-            article = getById(id);
-            if (article == null) {
-                throw new RuntimeException("文章不存在");
-            }
-            if (article.getIsDeleted() == 1) {
-                throw new RuntimeException("文章已被删除");
-            }
+            article = current;
 
             // 填充作者信息
             fillArticleAuthorInfo(article);
-            // 填充标签
-            fillArticleTags(article);
+            if (article.getTagList() == null) {
+                fillArticleTags(article);
+            }
 
             // 3. 写入 Redis (过期时间 1 小时)
             try {
@@ -143,28 +161,7 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
             }
         }
 
-        // 4. 【核心】可见性权限校验
-        // 如果文章不是 "已发布(1)" 状态，只有作者本人或管理员可见
-        if (article.getStatus() != 1) {
-            Long currentUserId = tryGetCurrentUserId();
-            boolean isAuthor = article.getAuthorId().equals(currentUserId);
-
-            // 简单判断管理员权限 (假设 Role=1 是管理员)
-            boolean isAdmin = false;
-            if (currentUserId != null) {
-                User currentUser = userService.getById(currentUserId);
-                // 这里需要 User.java 中有 role 字段
-                if (currentUser != null && Integer.valueOf(1).equals(currentUser.getRole())) {
-                    isAdmin = true;
-                }
-            }
-
-            if (!isAuthor && !isAdmin) {
-                throw new RuntimeException("文章正在审核中，仅作者可见");
-            }
-        }
-
-        // 5. 浏览量处理 (Redis 实时计数)
+        // 浏览量处理 (Redis 实时计数)
         String viewCountKey = ARTICLE_VIEW_COUNT_KEY + id;
         if (Boolean.FALSE.equals(stringRedisTemplate.hasKey(viewCountKey))) {
             stringRedisTemplate.opsForValue().set(viewCountKey, String.valueOf(article.getViewCount()));
@@ -184,60 +181,36 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
 
     @Override
     public List<Article> getHotArticles() {
-        QueryWrapper<Article> query = new QueryWrapper<>();
-        query.eq("status", 1).eq("is_deleted", 0);
-        query.orderByDesc("create_time").last("limit 10");
-        List<Article> list = list(query);
+        List<Article> list = publishedArticleReadService.findHot(10);
         fillArticleAuthors(list);
         return list;
     }
 
     @Override
     public List<Article> getFeedArticles(String lastCreateTime) {
-        QueryWrapper<Article> query = new QueryWrapper<>();
-        query.eq("status", 1).eq("is_deleted", 0);
-        if (StrUtil.isNotBlank(lastCreateTime)) {
-            query.lt("create_time", lastCreateTime);
-        }
-        query.orderByDesc("create_time").last("limit 10");
-        List<Article> list = list(query);
+        FeedPosition position = parseFeedPosition(lastCreateTime);
+        List<Article> list = publishedArticleReadService.findChronological(
+                position == null ? null : position.createTime(),
+                position == null ? null : position.articleId(), 10);
         fillArticleAuthors(list);
         return list;
     }
 
     @Override
     public List<Article> getHotRank() {
-        QueryWrapper<Article> query = new QueryWrapper<>();
-        query.eq("status", 1).eq("is_deleted", 0);
-        query.select("id", "title");
-        query.orderByDesc("view_count");
-        query.last("limit 10");
-        return list(query);
+        return publishedArticleReadService.findHotRank(10);
     }
 
     @Override
     public Page<Article> getUserArticles(Long userId, int pageNo, int pageSize) {
-        Page<Article> page = new Page<>(pageNo, pageSize);
-        QueryWrapper<Article> wrapper = new QueryWrapper<>();
-        wrapper.eq("author_id", userId);
-        wrapper.eq("status", 1).eq("is_deleted", 0);
-        wrapper.orderByDesc("create_time");
-        return page(page, wrapper);
+        Page<Article> page = publishedArticleReadService.findByAuthor(userId, pageNo, pageSize);
+        fillArticleAuthors(page.getRecords());
+        return page;
     }
 
     @Override
     public Page<Article> getFollowArticles(Long userId, int pageNo, int pageSize) {
-        Page<Article> page = new Page<>(pageNo, pageSize);
-        List<Follow> follows = followMapper.selectList(new QueryWrapper<Follow>().eq("follower_id", userId));
-        if (follows.isEmpty()) {
-            return page;
-        }
-        Set<Long> followedIds = follows.stream().map(Follow::getFollowedId).collect(Collectors.toSet());
-        QueryWrapper<Article> query = new QueryWrapper<>();
-        query.in("author_id", followedIds);
-        query.eq("status", 1).eq("is_deleted", 0);
-        query.orderByDesc("create_time");
-        page(page, query);
+        Page<Article> page = publishedArticleReadService.findByFollowing(userId, pageNo, pageSize);
         fillArticleAuthors(page.getRecords());
         return page;
     }
@@ -246,84 +219,153 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
     public Page<Article> searchArticles(String keyword, int page, int size) {
         // 1. 如果搜索关键字为空，降级走普通的 MySQL 查询最新文章
         if (StrUtil.isBlank(keyword)) {
-            Page<Article> pageInfo = new Page<>(page, size);
-            QueryWrapper<Article> query = new QueryWrapper<>();
-            query.eq("status", 1).eq("is_deleted", 0);
-            query.orderByDesc("create_time");
-            Page<Article> result = page(pageInfo, query);
+            Page<Article> result = publishedArticleReadService.findPage(page, size);
             fillArticleAuthors(result.getRecords());
-            result.getRecords().forEach(this::fillArticleTags);
+            result.getRecords().stream()
+                    .filter(article -> article.getTagList() == null)
+                    .forEach(this::fillArticleTags);
             return result;
         }
 
-        // ================= 【核心：Elasticsearch 高亮搜索】 =================
-
-        // 2. 构建查询条件：匹配标题、摘要或正文 (只要有一个字段包含关键字即可)
-        Criteria criteria = new Criteria("title").matches(keyword)
-                .or(new Criteria("summary").matches(keyword))
-                .or(new Criteria("content").matches(keyword));
-
-        // 3. 构建高亮配置：给匹配到的关键字加上前端红色的标签
-        HighlightParameters parameters = HighlightParameters.builder()
-                .withPreTags("<span style='color:red; font-weight:bold;'>")
-                .withPostTags("</span>")
-                .build();
-
-        Highlight highlight = new Highlight(parameters, Arrays.asList(
-                new HighlightField("title"),
-                new HighlightField("summary"),
-                new HighlightField("content")
-        ));
-        HighlightQuery highlightQuery = new HighlightQuery(highlight, ArticleDoc.class);
-
-        // 4. 组装完整查询请求
-        CriteriaQuery query = new CriteriaQuery(criteria);
-        // 注意：ES 的分页是从 0 开始的，而前端传过来是从 1 开始的，所以要 -1
-        query.setPageable(PageRequest.of(page - 1, size));
-        query.setHighlightQuery(highlightQuery);
-
-        // 5. 执行搜索
-        SearchHits<ArticleDoc> searchHits = elasticsearchOperations.search(query, ArticleDoc.class);
-
-        // 6. 将 ES 返回的文档，转换为前端需要的 Article 对象
-        List<Article> articleList = new ArrayList<>();
-        for (SearchHit<ArticleDoc> hit : searchHits) {
-            ArticleDoc doc = hit.getContent();
-            Article article = new Article();
-
-            // 拷贝基础属性
-            article.setId(doc.getId());
-            article.setAuthorId(doc.getAuthorId());
-            article.setViewCount(doc.getViewCount());
-            article.setLikeCount(doc.getLikeCount());
-            article.setCommentCount(doc.getCommentCount());
-            article.setCollectCount(doc.getCollectCount());
-            article.setCreateTime(doc.getCreateTime());
-            article.setCover(doc.getCover());
-
-            // 【关键】替换高亮文本：如果高亮结果中有值，就用带红色标签的文本，否则用原文本
-            List<String> titleHighlights = hit.getHighlightField("title");
-            article.setTitle(titleHighlights.isEmpty() ? doc.getTitle() : titleHighlights.get(0));
-
-            List<String> summaryHighlights = hit.getHighlightField("summary");
-            article.setSummary(summaryHighlights.isEmpty() ? doc.getSummary() : summaryHighlights.get(0));
-
-            List<String> contentHighlights = hit.getHighlightField("content");
-            article.setContent(contentHighlights.isEmpty() ? doc.getContent() : contentHighlights.get(0));
-
-            articleList.add(article);
+        if (page < 1 || size < 1) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "分页参数不合法");
         }
 
-        // 7. 填充作者信息和标签 (复用你原本写好的现成方法！)
+        // Elasticsearch only ranks candidate ids. Authorization and pagination
+        // happen after current MySQL rehydration, so stale/private hits cannot
+        // consume a visible slot or make later public results unreachable.
+        AuthorizedSearchRecall recall = recallAuthorizedSearch(keyword, page, size);
+        List<Article> articleList = recall.records();
+
+        // Fill only presentation metadata after authorization.
         fillArticleAuthors(articleList);
-        articleList.forEach(this::fillArticleTags);
+        articleList.stream().filter(article -> article.getTagList() == null).forEach(this::fillArticleTags);
 
         // 8. 重新包装成 MyBatis-Plus 的 Page 对象返回给 Controller
         Page<Article> resultPage = new Page<>(page, size);
         resultPage.setRecords(articleList);
-        resultPage.setTotal(searchHits.getTotalHits()); // 填入 ES 查出的总记录数
+        resultPage.setTotal(recall.authorizedTotal());
 
         return resultPage;
+    }
+
+    private AuthorizedSearchRecall recallAuthorizedSearch(String keyword, int page, int size) {
+        long authorizedOffset = (long) (page - 1) * size;
+        long desiredCount = authorizedOffset + size;
+        List<Article> authorized = new ArrayList<>();
+        Set<Long> seenCandidateIds = new HashSet<>();
+        List<FieldValue> searchAfter = List.of();
+        String pitId = null;
+        try {
+            pitId = openSearchPointInTime();
+            long rawTotal = -1L;
+            while (true) {
+                String activePitId = pitId;
+                SearchRequest.Builder request = new SearchRequest.Builder()
+                        .pit(pit -> pit.id(activePitId)
+                                .keepAlive(keepAlive -> keepAlive.time(SEARCH_PIT_KEEP_ALIVE)))
+                        .size(SEARCH_CANDIDATE_BATCH_SIZE)
+                        .source(source -> source.fetch(false))
+                        .trackTotalHits(track -> track.enabled(true))
+                        .query(query -> query.multiMatch(multiMatch -> multiMatch
+                                .query(keyword)
+                                .fields("title", "summary", "content")))
+                        .sort(sort -> sort.score(score -> score.order(SortOrder.Desc)))
+                        .sort(sort -> sort.field(field -> field.field("_shard_doc").order(SortOrder.Asc)));
+                if (!searchAfter.isEmpty()) {
+                    request.searchAfter(searchAfter);
+                }
+
+                SearchResponse<Void> response = elasticsearchClient.search(request.build());
+                if (StrUtil.isNotBlank(response.pitId())) {
+                    pitId = response.pitId();
+                }
+                if (response.timedOut() || response.shards().failed().longValue() != 0L) {
+                    throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+                            "ARTICLE_SEARCH_INCOMPLETE");
+                }
+                if (rawTotal < 0L) {
+                    rawTotal = response.hits().total() == null ? 0L : response.hits().total().value();
+                    if (rawTotal > SEARCH_CANDIDATE_HARD_LIMIT) {
+                        throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+                                "SEARCH_CANDIDATE_WINDOW_INCOMPLETE");
+                    }
+                }
+
+                List<Hit<Void>> hits = response.hits().hits();
+                if (hits.isEmpty()) {
+                    break;
+                }
+                List<Long> candidateIds = hits.stream()
+                        .map(Hit::id)
+                        .map(this::parseSearchCandidateId)
+                        .filter(java.util.Objects::nonNull)
+                        .filter(seenCandidateIds::add)
+                        .toList();
+                Map<Long, Article> authorizedBatch = publishedArticleReadService.findByIds(candidateIds).stream()
+                        .collect(Collectors.toMap(Article::getId, value -> value, (first, ignored) -> first));
+                for (Long candidateId : candidateIds) {
+                    Article article = authorizedBatch.get(candidateId);
+                    if (article != null) {
+                        authorized.add(article);
+                    }
+                }
+
+                searchAfter = hits.getLast().sort();
+                if (hits.size() < SEARCH_CANDIDATE_BATCH_SIZE) {
+                    break;
+                }
+            }
+        } catch (ResponseStatusException exception) {
+            throw exception;
+        } catch (Exception exception) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+                    "ARTICLE_SEARCH_UNAVAILABLE", exception);
+        } finally {
+            closeSearchPointInTime(pitId);
+        }
+
+        int fromIndex = (int) Math.min(authorizedOffset, authorized.size());
+        int toIndex = (int) Math.min(desiredCount, authorized.size());
+        List<Article> records = List.copyOf(authorized.subList(fromIndex, toIndex));
+        return new AuthorizedSearchRecall(records, authorized.size());
+    }
+
+    private Long parseSearchCandidateId(String candidateId) {
+        try {
+            return Long.valueOf(candidateId);
+        } catch (RuntimeException invalidId) {
+            return null;
+        }
+    }
+
+    private void closeSearchPointInTime(String pitId) {
+        if (StrUtil.isBlank(pitId)) {
+            return;
+        }
+        try {
+            Request request = new Request("DELETE", "/_pit");
+            request.setJsonEntity(objectMapper.createObjectNode().put("id", pitId).toString());
+            Response response = elasticsearchRestClient.performRequest(request);
+            if (!objectMapper.readTree(EntityUtils.toString(response.getEntity()))
+                    .path("succeeded").asBoolean(false)) {
+                log.warn("Elasticsearch search PIT close returned succeeded=false");
+            }
+        } catch (Exception exception) {
+            log.warn("Elasticsearch search PIT close failed", exception);
+        }
+    }
+
+    private String openSearchPointInTime() throws Exception {
+        Request request = new Request("POST", "/" + ARTICLE_SEARCH_INDEX + "/_pit");
+        request.addParameter("keep_alive", SEARCH_PIT_KEEP_ALIVE);
+        Response response = elasticsearchRestClient.performRequest(request);
+        String pitId = objectMapper.readTree(EntityUtils.toString(response.getEntity()))
+                .path("id").asText();
+        if (StrUtil.isBlank(pitId)) {
+            throw new IllegalStateException("Elasticsearch PIT open returned no id");
+        }
+        return pitId;
     }
 
     // --------------------------------------------------------------------------------
@@ -332,13 +374,7 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
 
     @Override
     public Page<Article> getPendingArticles(int page, int size) {
-        Page<Article> pageInfo = new Page<>(page, size);
-        QueryWrapper<Article> query = new QueryWrapper<>();
-        query.eq("status", 2)
-                .eq("is_deleted", 0)
-                .orderByAsc("create_time")
-                .orderByAsc("id");
-        Page<Article> result = page(pageInfo, query);
+        Page<Article> result = authorArticleReadService.findPending(page, size);
         if (result.getRecords() != null) {
             for (Article a : result.getRecords()) {
                 fillArticleAuthorInfo(a);
@@ -379,12 +415,7 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
 
     @Override
     public List<Article> getRecycleBin(Long userId) {
-        QueryWrapper<Article> wrapper = new QueryWrapper<>();
-        wrapper.eq("author_id", userId);
-        wrapper.eq("is_deleted", 1);
-        wrapper.and(nested -> nested.isNull("visibility_state").or().ne("visibility_state", "PURGED"));
-        wrapper.orderByDesc("delete_time");
-        return list(wrapper);
+        return authorArticleReadService.findRecycleBin(userId);
     }
 
     @Override
@@ -394,29 +425,17 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
 
     @Override
     public List<Article> getMyDrafts(Long userId) {
-        QueryWrapper<Article> wrapper = new QueryWrapper<>();
-        wrapper.eq("author_id", userId);
-        wrapper.eq("status", 0);
-        wrapper.eq("is_deleted", 0);
-        wrapper.orderByDesc("create_time");
-        return list(wrapper);
+        return authorArticleReadService.findDrafts(userId);
     }
 
     @Override
     public Article getArticleForEdit(Long articleId, Long userId) {
-        Article article = getById(articleId);
-        if (article == null) throw new RuntimeException("文章不存在");
-        if (!article.getAuthorId().equals(userId)) throw new RuntimeException("无权编辑");
-        fillArticleTags(article);
-        return article;
+        return authorArticleReadService.findForEdit(articleId, userId);
     }
 
     @Override
     public Long getDraftCount(Long userId) {
-        return count(new QueryWrapper<Article>()
-                .eq("author_id", userId)
-                .eq("status", 0)
-                .eq("is_deleted", 0));
+        return authorArticleReadService.countDrafts(userId);
     }
 
     @Override
@@ -424,7 +443,8 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         String json = stringRedisTemplate.opsForValue().get(HOT_RANK_CACHE_KEY);
         if (StrUtil.isNotBlank(json)) {
             try {
-                return objectMapper.readValue(json, new TypeReference<List<Article>>() {});
+                List<Long> cachedIds = objectMapper.readValue(json, new TypeReference<List<Long>>() { });
+                return hydrateHotRankIds(cachedIds);
             } catch (Exception e) {
                 log.error("热榜缓存解析失败", e);
             }
@@ -436,7 +456,8 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
     public void updateHotRankCache() {
         List<Article> hotArticles = queryHotArticlesFromDB();
         try {
-            String json = objectMapper.writeValueAsString(hotArticles);
+            String json = objectMapper.writeValueAsString(
+                    hotArticles.stream().map(Article::getId).toList());
             stringRedisTemplate.opsForValue().set(HOT_RANK_CACHE_KEY, json);
         } catch (Exception e) {
             log.error("热榜缓存写入失败", e);
@@ -449,15 +470,25 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
 
     private List<Article> queryHotArticlesFromDB() {
         LocalDateTime sevenDaysAgo = LocalDateTime.now().minusDays(7);
-        QueryWrapper<Article> query = new QueryWrapper<>();
-        query.eq("status", 1).eq("is_deleted", 0);
-        query.ge("create_time", sevenDaysAgo);
-        query.orderByDesc("view_count");
-        query.last("limit 10");
-        List<Article> list = list(query);
+        List<Article> list = publishedArticleReadService.findHotSince(sevenDaysAgo, 10);
         fillArticleAuthors(list);
-        list.forEach(this::fillArticleTags);
+        list.stream().filter(article -> article.getTagList() == null).forEach(this::fillArticleTags);
         return list;
+    }
+
+    private List<Article> hydrateHotRankIds(List<Long> cachedIds) {
+        if (cachedIds == null || cachedIds.isEmpty()) {
+            return List.of();
+        }
+        Map<Long, Article> publishedById = publishedArticleReadService.findByIds(cachedIds).stream()
+                .collect(Collectors.toMap(Article::getId, article -> article, (first, ignored) -> first));
+        List<Article> articles = cachedIds.stream()
+                .map(publishedById::get)
+                .filter(java.util.Objects::nonNull)
+                .toList();
+        fillArticleAuthors(articles);
+        articles.stream().filter(article -> article.getTagList() == null).forEach(this::fillArticleTags);
+        return articles;
     }
 
     private void handleTags(Long articleId, List<String> tagNames) {
@@ -546,24 +577,46 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         return CurrentUser.idOrNull();
     }
 
+    private String articleDetailCacheKey(Article article) {
+        if (publishedArticleReadService.pointerReadsEnabled()) {
+            return ARTICLE_DETAIL_CACHE_PREFIX + "v2:" + article.getId() + ":"
+                    + article.getPublishedRevisionId() + ":" + article.getContentHash();
+        }
+        return ARTICLE_DETAIL_CACHE_PREFIX + "legacy:" + article.getId() + ":"
+                + String.valueOf(article.getUpdateTime());
+    }
+
+    private FeedPosition parseFeedPosition(String cursor) {
+        if (StrUtil.isBlank(cursor)) {
+            return null;
+        }
+        try {
+            int separator = cursor.lastIndexOf('|');
+            if (separator > 0) {
+                return new FeedPosition(LocalDateTime.parse(cursor.substring(0, separator)),
+                        Long.parseLong(cursor.substring(separator + 1)));
+            }
+            // Legacy clients only sent the timestamp and expected strict `<` semantics.
+            return new FeedPosition(LocalDateTime.parse(cursor), Long.MIN_VALUE);
+        } catch (RuntimeException invalidCursor) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "INVALID_ARTICLE_CURSOR");
+        }
+    }
+
+    private record FeedPosition(LocalDateTime createTime, Long articleId) { }
+
+    private record AuthorizedSearchRecall(List<Article> records, long authorizedTotal) { }
+
     @Override
     public Page<Article> getMyAllArticles(Long userId, int page, int size) {
-        Page<Article> pageInfo = new Page<>(page, size);
-        QueryWrapper<Article> wrapper = new QueryWrapper<>();
-
-        wrapper.eq("author_id", userId);
-        wrapper.eq("is_deleted", 0);
-        // 【关键】这里不写 .eq("status", 1)，这样就能查出状态 0(草稿), 1(发布), 2(审核中), 3(拒绝)
-
-        wrapper.orderByDesc("create_time");
-        return page(pageInfo, wrapper);
+        return authorArticleReadService.findAll(userId, page, size);
     }
 
     @Override
     public List<Article> getSimilarArticles(Long articleId, int size) {
-        // 1. 确认原文章是否存在
-        Article targetArticle = getById(articleId);
-        if (targetArticle == null || targetArticle.getIsDeleted() == 1) {
+        // The MLT seed itself must still be public in current MySQL truth.
+        Article targetArticle = publishedArticleReadService.findById(articleId);
+        if (targetArticle == null) {
             return new ArrayList<>();
         }
 
@@ -587,32 +640,22 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         // 4. 执行智能相似度搜索
         SearchHits<ArticleDoc> searchHits = elasticsearchOperations.search(stringQuery, ArticleDoc.class);
 
-        // 5. 将结果转换为前端需要的 Article 实体
-        List<Article> resultList = new ArrayList<>();
-        for (SearchHit<ArticleDoc> hit : searchHits) {
-            ArticleDoc doc = hit.getContent();
-
-            // 排除当前正在看的这篇文章自己
-            if (doc.getId().equals(articleId)) {
-                continue;
-            }
-
-            Article article = new Article();
-            article.setId(doc.getId());
-            article.setTitle(doc.getTitle());
-            article.setSummary(doc.getSummary());
-            article.setCover(doc.getCover());
-            article.setViewCount(doc.getViewCount());
-            article.setAuthorId(doc.getAuthorId());
-            article.setCreateTime(doc.getCreateTime());
-
-            resultList.add(article);
-
-            // 达到需要的推荐数量就停止
-            if (resultList.size() >= size) {
-                break;
-            }
-        }
+        // Elasticsearch contributes ordered ids only. Current content and ACL are
+        // rehydrated in one MySQL query and stale/missing ids are discarded.
+        List<Long> candidateIds = searchHits.stream()
+                .map(SearchHit::getContent)
+                .filter(java.util.Objects::nonNull)
+                .map(ArticleDoc::getId)
+                .filter(id -> id != null && !id.equals(articleId))
+                .distinct()
+                .toList();
+        Map<Long, Article> authorizedById = publishedArticleReadService.findByIds(candidateIds).stream()
+                .collect(Collectors.toMap(Article::getId, value -> value, (first, ignored) -> first));
+        List<Article> resultList = candidateIds.stream()
+                .map(authorizedById::get)
+                .filter(java.util.Objects::nonNull)
+                .limit(size)
+                .toList();
 
         // 6. 填充作者信息，方便前端展示头像和名字
         fillArticleAuthors(resultList);

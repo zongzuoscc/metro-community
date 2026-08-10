@@ -37,5 +37,5 @@ public interface FavoriteService extends IService<FavoriteFolder> {
     Boolean isCollected(Long userId, Long articleId);
 
     // 【新增】获取收藏夹详情 (业务逻辑：查信息 + 查文章 + 组装)
-    Map<String, Object> getFolderDetail(Long folderId);
+    Map<String, Object> getFolderDetail(Long folderId, Long currentUserId);
 }

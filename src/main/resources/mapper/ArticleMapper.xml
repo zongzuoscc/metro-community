@@ -2,12 +2,97 @@
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="cumt.zongzuo.community.mapper.ArticleMapper">
 
+    <sql id="publishedArticleProjection">
+        a.id,
+        r.title AS title,
+        r.summary AS summary,
+        r.body_markdown AS content,
+        r.cover AS cover,
+        a.author_id,
+        a.view_count,
+        a.like_count,
+        a.comment_count,
+        a.collect_count,
+        a.create_time,
+        a.update_time,
+        a.status,
+        a.latest_revision_id,
+        a.pending_revision_id,
+        r.id AS published_revision_id,
+        a.visibility_state,
+        a.review_state,
+        a.lifecycle_epoch,
+        a.lock_version,
+        a.is_deleted,
+        a.delete_time,
+        r.content_hash AS content_hash,
+        CAST(r.tags_json AS CHAR) AS revision_tags_json
+    </sql>
+
+    <sql id="draftArticleProjection">
+        a.id,
+        d.title AS title,
+        d.summary AS summary,
+        d.body_markdown AS content,
+        d.cover AS cover,
+        a.author_id,
+        a.view_count,
+        a.like_count,
+        a.comment_count,
+        a.collect_count,
+        a.create_time,
+        d.updated_at AS update_time,
+        a.status,
+        a.latest_revision_id,
+        a.pending_revision_id,
+        a.published_revision_id,
+        a.visibility_state,
+        a.review_state,
+        a.lifecycle_epoch,
+        a.lock_version,
+        a.is_deleted,
+        a.delete_time,
+        d.content_hash AS content_hash,
+        CAST(d.tags_json AS CHAR) AS revision_tags_json,
+        d.draft_version AS draft_version
+    </sql>
+
+    <sql id="pendingArticleProjection">
+        a.id,
+        r.title AS title,
+        r.summary AS summary,
+        r.body_markdown AS content,
+        r.cover AS cover,
+        a.author_id,
+        a.view_count,
+        a.like_count,
+        a.comment_count,
+        a.collect_count,
+        a.create_time,
+        a.update_time,
+        a.status,
+        a.latest_revision_id,
+        a.pending_revision_id,
+        a.published_revision_id,
+        a.visibility_state,
+        a.review_state,
+        a.lifecycle_epoch,
+        a.lock_version,
+        a.is_deleted,
+        a.delete_time,
+        r.content_hash AS content_hash,
+        CAST(r.tags_json AS CHAR) AS revision_tags_json
+    </sql>
+
     <select id="selectPublishedByFollowedAuthors" resultType="cumt.zongzuo.community.entity.Article">
-        SELECT a.*
+        SELECT <include refid="publishedArticleProjection"/>
         FROM article a
         INNER JOIN follow f ON f.followed_id = a.author_id
+        INNER JOIN article_revision r
+          ON r.id = a.published_revision_id
+         AND r.article_id = a.id
         WHERE f.follower_id = #{userId}
-          AND a.status = 1
+          AND a.visibility_state = 'PUBLIC'
           AND a.is_deleted = 0
           AND a.author_id &lt;&gt; #{excludedAuthorId}
         <if test="shownArticleIds != null and !shownArticleIds.isEmpty()">
@@ -20,31 +105,38 @@
         LIMIT #{limit}
     </select>
 
-    <select id="selectPublishedByTagIds" resultType="cumt.zongzuo.community.entity.Article">
-        SELECT DISTINCT a.*
+    <select id="selectPublishedByTagNames" resultType="cumt.zongzuo.community.entity.Article">
+        SELECT DISTINCT <include refid="publishedArticleProjection"/>
         FROM article a
-        INNER JOIN article_tag at ON at.article_id = a.id
-        WHERE at.tag_id IN
-        <foreach collection="tagIds" item="tagId" open="(" separator="," close=")">
-            #{tagId}
+        INNER JOIN article_revision r ON r.id=a.published_revision_id AND r.article_id=a.id
+        CROSS JOIN JSON_TABLE(
+            r.tags_json,
+            '$[*]' COLUMNS(tag_name VARCHAR(64) PATH '$')
+        ) AS revision_tag
+        WHERE revision_tag.tag_name IN
+        <foreach collection="tagNames" item="tagName" open="(" separator="," close=")">
+            #{tagName}
         </foreach>
-          AND a.status = 1
-          AND a.is_deleted = 0
-          AND a.author_id &lt;&gt; #{excludedAuthorId}
+          AND a.visibility_state='PUBLIC'
+          AND a.is_deleted=0
+          AND a.author_id&lt;&gt;#{excludedAuthorId}
         <if test="shownArticleIds != null and !shownArticleIds.isEmpty()">
           AND a.id NOT IN
-            <foreach collection="shownArticleIds" item="shownArticleId" open="(" separator="," close=")">
-                #{shownArticleId}
-            </foreach>
+          <foreach collection="shownArticleIds" item="shownArticleId" open="(" separator="," close=")">
+            #{shownArticleId}
+          </foreach>
         </if>
-        ORDER BY a.create_time DESC, a.id DESC
+        ORDER BY a.create_time DESC,a.id DESC
         LIMIT #{limit}
     </select>
 
     <select id="selectPublishedHotFresh" resultType="cumt.zongzuo.community.entity.Article">
-        SELECT a.*
+        SELECT <include refid="publishedArticleProjection"/>
         FROM article a
-        WHERE a.status = 1
+        INNER JOIN article_revision r
+          ON r.id = a.published_revision_id
+         AND r.article_id = a.id
+        WHERE a.visibility_state = 'PUBLIC'
           AND a.is_deleted = 0
           AND a.author_id &lt;&gt; #{excludedAuthorId}
         <if test="shownArticleIds != null and !shownArticleIds.isEmpty()">
@@ -64,20 +156,26 @@
     </select>
 
     <select id="selectPublishedByIds" resultType="cumt.zongzuo.community.entity.Article">
-        SELECT a.*
+        SELECT <include refid="publishedArticleProjection"/>
         FROM article a
+        INNER JOIN article_revision r
+          ON r.id = a.published_revision_id
+         AND r.article_id = a.id
         WHERE a.id IN
         <foreach collection="articleIds" item="articleId" open="(" separator="," close=")">
             #{articleId}
         </foreach>
-          AND a.status = 1
+          AND a.visibility_state = 'PUBLIC'
           AND a.is_deleted = 0
     </select>
 
     <select id="selectPublishedChronological" resultType="cumt.zongzuo.community.entity.Article">
-        SELECT a.*
+        SELECT <include refid="publishedArticleProjection"/>
         FROM article a
-        WHERE a.status = 1
+        INNER JOIN article_revision r
+          ON r.id = a.published_revision_id
+         AND r.article_id = a.id
+        WHERE a.visibility_state = 'PUBLIC'
           AND a.is_deleted = 0
         <if test="beforeCreateTime != null and beforeId != null">
           AND (a.create_time &lt; #{beforeCreateTime}
@@ -90,19 +188,360 @@
     <select id="selectPublishedChronologicalIds" resultType="java.lang.Long">
         SELECT a.id
         FROM article a
-        WHERE a.status = 1
+        INNER JOIN article_revision r
+          ON r.id = a.published_revision_id
+         AND r.article_id = a.id
+        WHERE a.visibility_state = 'PUBLIC'
           AND a.is_deleted = 0
         ORDER BY a.create_time DESC, a.id DESC
         LIMIT #{limit}
     </select>
 
+    <select id="selectPublishedHot" resultType="cumt.zongzuo.community.entity.Article">
+        SELECT <include refid="publishedArticleProjection"/>
+        FROM article a
+        INNER JOIN article_revision r ON r.id=a.published_revision_id AND r.article_id=a.id
+        WHERE a.visibility_state='PUBLIC' AND a.is_deleted=0
+        ORDER BY a.create_time DESC, a.id DESC
+        LIMIT #{limit}
+    </select>
+
+    <select id="selectPublishedHotRank" resultType="cumt.zongzuo.community.entity.Article">
+        SELECT <include refid="publishedArticleProjection"/>
+        FROM article a
+        INNER JOIN article_revision r ON r.id=a.published_revision_id AND r.article_id=a.id
+        WHERE a.visibility_state='PUBLIC' AND a.is_deleted=0
+        ORDER BY a.view_count DESC, a.id DESC
+        LIMIT #{limit}
+    </select>
+
+    <select id="selectPublishedByAuthor" resultType="cumt.zongzuo.community.entity.Article">
+        SELECT <include refid="publishedArticleProjection"/>
+        FROM article a
+        INNER JOIN article_revision r ON r.id=a.published_revision_id AND r.article_id=a.id
+        WHERE a.author_id=#{authorId} AND a.visibility_state='PUBLIC' AND a.is_deleted=0
+        ORDER BY a.create_time DESC, a.id DESC
+        LIMIT #{offset}, #{limit}
+    </select>
+
+    <select id="countPublishedByAuthor" resultType="long">
+        SELECT COUNT(*)
+        FROM article a
+        INNER JOIN article_revision r ON r.id=a.published_revision_id AND r.article_id=a.id
+        WHERE a.author_id=#{authorId} AND a.visibility_state='PUBLIC' AND a.is_deleted=0
+    </select>
+
+    <select id="selectPublishedByFollowing" resultType="cumt.zongzuo.community.entity.Article">
+        SELECT <include refid="publishedArticleProjection"/>
+        FROM article a
+        INNER JOIN follow f ON f.followed_id=a.author_id
+        INNER JOIN article_revision r ON r.id=a.published_revision_id AND r.article_id=a.id
+        WHERE f.follower_id=#{userId} AND a.visibility_state='PUBLIC' AND a.is_deleted=0
+        ORDER BY a.create_time DESC, a.id DESC
+        LIMIT #{offset}, #{limit}
+    </select>
+
+    <select id="countPublishedByFollowing" resultType="long">
+        SELECT COUNT(*)
+        FROM article a
+        INNER JOIN follow f ON f.followed_id=a.author_id
+        INNER JOIN article_revision r ON r.id=a.published_revision_id AND r.article_id=a.id
+        WHERE f.follower_id=#{userId} AND a.visibility_state='PUBLIC' AND a.is_deleted=0
+    </select>
+
+    <select id="selectPublishedPage" resultType="cumt.zongzuo.community.entity.Article">
+        SELECT <include refid="publishedArticleProjection"/>
+        FROM article a
+        INNER JOIN article_revision r ON r.id=a.published_revision_id AND r.article_id=a.id
+        WHERE a.visibility_state='PUBLIC' AND a.is_deleted=0
+        ORDER BY a.create_time DESC, a.id DESC
+        LIMIT #{offset}, #{limit}
+    </select>
+
+    <select id="countPublished" resultType="long">
+        SELECT COUNT(*)
+        FROM article a
+        INNER JOIN article_revision r ON r.id=a.published_revision_id AND r.article_id=a.id
+        WHERE a.visibility_state='PUBLIC' AND a.is_deleted=0
+    </select>
+
+    <select id="selectPublishedHotSince" resultType="cumt.zongzuo.community.entity.Article">
+        SELECT <include refid="publishedArticleProjection"/>
+        FROM article a
+        INNER JOIN article_revision r ON r.id=a.published_revision_id AND r.article_id=a.id
+        WHERE a.visibility_state='PUBLIC' AND a.is_deleted=0 AND a.create_time&gt;=#{since}
+        ORDER BY a.view_count DESC, a.id DESC
+        LIMIT #{limit}
+    </select>
+
+    <select id="selectLegacyPublishedByFollowedAuthors" resultType="cumt.zongzuo.community.entity.Article">
+        SELECT a.*
+        FROM article a
+        INNER JOIN follow f ON f.followed_id=a.author_id
+        WHERE f.follower_id=#{userId} AND a.status=1 AND a.is_deleted=0
+          AND a.author_id&lt;&gt;#{excludedAuthorId}
+        <if test="shownArticleIds != null and !shownArticleIds.isEmpty()">
+          AND a.id NOT IN
+          <foreach collection="shownArticleIds" item="shownArticleId" open="(" separator="," close=")">
+            #{shownArticleId}
+          </foreach>
+        </if>
+        ORDER BY a.create_time DESC, a.id DESC
+        LIMIT #{limit}
+    </select>
+
+    <select id="selectLegacyPublishedByTagIds" resultType="cumt.zongzuo.community.entity.Article">
+        SELECT DISTINCT a.*
+        FROM article a
+        INNER JOIN article_tag at ON at.article_id=a.id
+        WHERE at.tag_id IN
+        <foreach collection="tagIds" item="tagId" open="(" separator="," close=")">#{tagId}</foreach>
+          AND a.status=1 AND a.is_deleted=0 AND a.author_id&lt;&gt;#{excludedAuthorId}
+        <if test="shownArticleIds != null and !shownArticleIds.isEmpty()">
+          AND a.id NOT IN
+          <foreach collection="shownArticleIds" item="shownArticleId" open="(" separator="," close=")">
+            #{shownArticleId}
+          </foreach>
+        </if>
+        ORDER BY a.create_time DESC, a.id DESC
+        LIMIT #{limit}
+    </select>
+
+    <select id="selectLegacyPublishedHotFresh" resultType="cumt.zongzuo.community.entity.Article">
+        SELECT a.*
+        FROM article a
+        WHERE a.status=1 AND a.is_deleted=0 AND a.author_id&lt;&gt;#{excludedAuthorId}
+        <if test="shownArticleIds != null and !shownArticleIds.isEmpty()">
+          AND a.id NOT IN
+          <foreach collection="shownArticleIds" item="shownArticleId" open="(" separator="," close=")">
+            #{shownArticleId}
+          </foreach>
+        </if>
+        ORDER BY (a.create_time&gt;=DATE_SUB(NOW(), INTERVAL 7 DAY)) DESC,
+                 (COALESCE(a.view_count,0)+COALESCE(a.like_count,0)*3
+                    +COALESCE(a.collect_count,0)*5+COALESCE(a.comment_count,0)*4) DESC,
+                 a.create_time DESC,a.id DESC
+        LIMIT #{limit}
+    </select>
+
+    <select id="selectLegacyPublishedByIds" resultType="cumt.zongzuo.community.entity.Article">
+        SELECT a.* FROM article a
+        WHERE a.id IN
+        <foreach collection="articleIds" item="articleId" open="(" separator="," close=")">#{articleId}</foreach>
+          AND a.status=1 AND a.is_deleted=0
+    </select>
+
+    <select id="selectLegacyPublishedChronological" resultType="cumt.zongzuo.community.entity.Article">
+        SELECT a.* FROM article a
+        WHERE a.status=1 AND a.is_deleted=0
+        <if test="beforeCreateTime != null and beforeId != null">
+          AND (a.create_time&lt;#{beforeCreateTime}
+               OR (a.create_time=#{beforeCreateTime} AND a.id&lt;#{beforeId}))
+        </if>
+        ORDER BY a.create_time DESC,a.id DESC LIMIT #{limit}
+    </select>
+
+    <select id="selectLegacyPublishedChronologicalIds" resultType="java.lang.Long">
+        SELECT a.id FROM article a
+        WHERE a.status=1 AND a.is_deleted=0
+        ORDER BY a.create_time DESC,a.id DESC LIMIT #{limit}
+    </select>
+
+    <select id="selectLegacyPublishedHot" resultType="cumt.zongzuo.community.entity.Article">
+        SELECT a.* FROM article a WHERE a.status=1 AND a.is_deleted=0
+        ORDER BY a.create_time DESC,a.id DESC LIMIT #{limit}
+    </select>
+
+    <select id="selectLegacyPublishedHotRank" resultType="cumt.zongzuo.community.entity.Article">
+        SELECT a.* FROM article a WHERE a.status=1 AND a.is_deleted=0
+        ORDER BY a.view_count DESC,a.id DESC LIMIT #{limit}
+    </select>
+
+    <select id="selectLegacyPublishedByAuthor" resultType="cumt.zongzuo.community.entity.Article">
+        SELECT a.* FROM article a
+        WHERE a.author_id=#{authorId} AND a.status=1 AND a.is_deleted=0
+        ORDER BY a.create_time DESC,a.id DESC LIMIT #{offset},#{limit}
+    </select>
+
+    <select id="countLegacyPublishedByAuthor" resultType="long">
+        SELECT COUNT(*) FROM article a
+        WHERE a.author_id=#{authorId} AND a.status=1 AND a.is_deleted=0
+    </select>
+
+    <select id="selectLegacyPublishedByFollowing" resultType="cumt.zongzuo.community.entity.Article">
+        SELECT a.* FROM article a
+        INNER JOIN follow f ON f.followed_id=a.author_id
+        WHERE f.follower_id=#{userId} AND a.status=1 AND a.is_deleted=0
+        ORDER BY a.create_time DESC,a.id DESC LIMIT #{offset},#{limit}
+    </select>
+
+    <select id="countLegacyPublishedByFollowing" resultType="long">
+        SELECT COUNT(*) FROM article a
+        INNER JOIN follow f ON f.followed_id=a.author_id
+        WHERE f.follower_id=#{userId} AND a.status=1 AND a.is_deleted=0
+    </select>
+
+    <select id="selectLegacyPublishedPage" resultType="cumt.zongzuo.community.entity.Article">
+        SELECT a.* FROM article a WHERE a.status=1 AND a.is_deleted=0
+        ORDER BY a.create_time DESC,a.id DESC LIMIT #{offset},#{limit}
+    </select>
+
+    <select id="countLegacyPublished" resultType="long">
+        SELECT COUNT(*) FROM article a WHERE a.status=1 AND a.is_deleted=0
+    </select>
+
+    <select id="selectLegacyPublishedHotSince" resultType="cumt.zongzuo.community.entity.Article">
+        SELECT a.* FROM article a
+        WHERE a.status=1 AND a.is_deleted=0 AND a.create_time&gt;=#{since}
+        ORDER BY a.view_count DESC,a.id DESC LIMIT #{limit}
+    </select>
+
     <select id="selectPublicById" resultType="cumt.zongzuo.community.entity.Article">
+        SELECT <include refid="publishedArticleProjection"/>
+        FROM article a
+        INNER JOIN article_revision r
+          ON r.id = a.published_revision_id
+         AND r.article_id = a.id
+        WHERE a.id = #{articleId}
+          AND a.visibility_state = 'PUBLIC'
+          AND a.is_deleted = 0
+        LIMIT 1
+    </select>
+
+    <select id="selectLegacyPublicById" resultType="cumt.zongzuo.community.entity.Article">
         SELECT a.*
         FROM article a
         WHERE a.id = #{articleId}
-          AND a.status = 1
+          AND a.status=1
           AND a.is_deleted = 0
         LIMIT 1
+    </select>
+
+    <select id="selectOwnerDraftById" resultType="cumt.zongzuo.community.entity.Article">
+        SELECT <include refid="draftArticleProjection"/>
+        FROM article a
+        INNER JOIN article_draft d
+          ON d.article_id = a.id
+         AND d.user_id = a.author_id
+        WHERE a.id = #{articleId}
+          AND a.author_id = #{authorId}
+          AND a.is_deleted = 0
+        LIMIT 1
+    </select>
+
+    <select id="selectOwnerLegacyById" resultType="cumt.zongzuo.community.entity.Article">
+        SELECT a.*
+        FROM article a
+        WHERE a.id = #{articleId}
+          AND a.author_id = #{authorId}
+          AND a.is_deleted = 0
+        LIMIT 1
+    </select>
+
+    <select id="selectOwnerDirtyDrafts" resultType="cumt.zongzuo.community.entity.Article">
+        SELECT <include refid="draftArticleProjection"/>
+        FROM article a
+        INNER JOIN article_draft d ON d.article_id=a.id AND d.user_id=a.author_id
+        LEFT JOIN article_revision latest
+          ON latest.id=a.latest_revision_id AND latest.article_id=a.id
+        WHERE a.author_id=#{authorId}
+          AND a.is_deleted=0
+          AND (a.latest_revision_id IS NULL OR NOT (d.content_hash &lt;=> latest.content_hash))
+        ORDER BY d.updated_at DESC,a.id DESC
+        LIMIT #{offset},#{limit}
+    </select>
+
+    <select id="countOwnerDirtyDrafts" resultType="long">
+        SELECT COUNT(*)
+        FROM article a
+        INNER JOIN article_draft d ON d.article_id=a.id AND d.user_id=a.author_id
+        LEFT JOIN article_revision latest
+          ON latest.id=a.latest_revision_id AND latest.article_id=a.id
+        WHERE a.author_id=#{authorId}
+          AND a.is_deleted=0
+          AND (a.latest_revision_id IS NULL OR NOT (d.content_hash &lt;=> latest.content_hash))
+    </select>
+
+    <select id="selectOwnerAllDrafts" resultType="cumt.zongzuo.community.entity.Article">
+        SELECT <include refid="draftArticleProjection"/>
+        FROM article a
+        INNER JOIN article_draft d ON d.article_id=a.id AND d.user_id=a.author_id
+        WHERE a.author_id=#{authorId} AND a.is_deleted=0
+        ORDER BY d.updated_at DESC,a.id DESC
+        LIMIT #{offset},#{limit}
+    </select>
+
+    <select id="countOwnerAllDrafts" resultType="long">
+        SELECT COUNT(*)
+        FROM article a
+        INNER JOIN article_draft d ON d.article_id=a.id AND d.user_id=a.author_id
+        WHERE a.author_id=#{authorId} AND a.is_deleted=0
+    </select>
+
+    <select id="selectOwnerLegacyDrafts" resultType="cumt.zongzuo.community.entity.Article">
+        SELECT a.* FROM article a
+        WHERE a.author_id=#{authorId} AND a.status=0 AND a.is_deleted=0
+        ORDER BY a.create_time DESC,a.id DESC LIMIT #{offset},#{limit}
+    </select>
+
+    <select id="countOwnerLegacyDrafts" resultType="long">
+        SELECT COUNT(*) FROM article a
+        WHERE a.author_id=#{authorId} AND a.status=0 AND a.is_deleted=0
+    </select>
+
+    <select id="selectOwnerLegacyAll" resultType="cumt.zongzuo.community.entity.Article">
+        SELECT a.* FROM article a
+        WHERE a.author_id=#{authorId} AND a.is_deleted=0
+        ORDER BY a.create_time DESC,a.id DESC LIMIT #{offset},#{limit}
+    </select>
+
+    <select id="countOwnerLegacyAll" resultType="long">
+        SELECT COUNT(*) FROM article a WHERE a.author_id=#{authorId} AND a.is_deleted=0
+    </select>
+
+    <select id="selectOwnerDraftRecycle" resultType="cumt.zongzuo.community.entity.Article">
+        SELECT <include refid="draftArticleProjection"/>
+        FROM article a
+        INNER JOIN article_draft d ON d.article_id=a.id AND d.user_id=a.author_id
+        WHERE a.author_id=#{authorId}
+          AND a.is_deleted=1
+          AND (a.visibility_state IS NULL OR a.visibility_state&lt;&gt;'PURGED')
+        ORDER BY a.delete_time DESC,a.id DESC
+    </select>
+
+    <select id="selectOwnerLegacyRecycle" resultType="cumt.zongzuo.community.entity.Article">
+        SELECT a.* FROM article a
+        WHERE a.author_id=#{authorId}
+          AND a.is_deleted=1
+          AND (a.visibility_state IS NULL OR a.visibility_state&lt;&gt;'PURGED')
+        ORDER BY a.delete_time DESC,a.id DESC
+    </select>
+
+    <select id="selectPendingRevisions" resultType="cumt.zongzuo.community.entity.Article">
+        SELECT <include refid="pendingArticleProjection"/>
+        FROM article a
+        INNER JOIN article_revision r ON r.id=a.pending_revision_id AND r.article_id=a.id
+        WHERE a.is_deleted=0
+        ORDER BY a.create_time ASC,a.id ASC
+        LIMIT #{offset},#{limit}
+    </select>
+
+    <select id="countPendingRevisions" resultType="long">
+        SELECT COUNT(*)
+        FROM article a
+        INNER JOIN article_revision r ON r.id=a.pending_revision_id AND r.article_id=a.id
+        WHERE a.is_deleted=0
+    </select>
+
+    <select id="selectLegacyPending" resultType="cumt.zongzuo.community.entity.Article">
+        SELECT a.* FROM article a
+        WHERE a.status=2 AND a.is_deleted=0
+        ORDER BY a.create_time ASC,a.id ASC
+        LIMIT #{offset},#{limit}
+    </select>
+
+    <select id="countLegacyPending" resultType="long">
+        SELECT COUNT(*) FROM article a WHERE a.status=2 AND a.is_deleted=0
     </select>
 
 </mapper>

@@ -8,6 +8,7 @@ import cumt.zongzuo.community.mapper.TagMapper;
 import cumt.zongzuo.community.recommendation.mapper.UserArticleEventMapper;
 import cumt.zongzuo.community.recommendation.service.RecommendationCandidate.Source;
 import cumt.zongzuo.community.recommendation.training.RecommendationModel;
+import cumt.zongzuo.community.article.service.PublishedArticleReadService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.elasticsearch.core.ElasticsearchOperations;
@@ -55,6 +56,7 @@ public class RecommendationCandidateService {
     private final ElasticsearchOperations elasticsearchOperations;
     private final RecommendationRankingService rankingService;
     private final Clock clock;
+    private final PublishedArticleReadService publishedReads;
 
     @Autowired
     public RecommendationCandidateService(ArticleMapper articleMapper,
@@ -64,9 +66,11 @@ public class RecommendationCandidateService {
                                           RecommendationProfileService profileService,
                                           ElasticsearchOperations elasticsearchOperations,
                                           RecommendationRankingService rankingService,
-                                          org.springframework.beans.factory.ObjectProvider<Clock> clockProvider) {
+                                          org.springframework.beans.factory.ObjectProvider<Clock> clockProvider,
+                                          PublishedArticleReadService publishedReads) {
         this(articleMapper, articleTagMapper, tagMapper, eventMapper, profileService,
-                elasticsearchOperations, rankingService, clockProvider.getIfAvailable(Clock::systemDefaultZone));
+                elasticsearchOperations, rankingService,
+                clockProvider.getIfAvailable(Clock::systemDefaultZone), publishedReads);
     }
 
     public RecommendationCandidateService(ArticleMapper articleMapper,
@@ -77,6 +81,19 @@ public class RecommendationCandidateService {
                                           ElasticsearchOperations elasticsearchOperations,
                                           RecommendationRankingService rankingService,
                                           Clock clock) {
+        this(articleMapper, articleTagMapper, tagMapper, eventMapper, profileService,
+                elasticsearchOperations, rankingService, clock, null);
+    }
+
+    private RecommendationCandidateService(ArticleMapper articleMapper,
+                                           ArticleTagMapper articleTagMapper,
+                                           TagMapper tagMapper,
+                                           UserArticleEventMapper eventMapper,
+                                           RecommendationProfileService profileService,
+                                           ElasticsearchOperations elasticsearchOperations,
+                                           RecommendationRankingService rankingService,
+                                           Clock clock,
+                                           PublishedArticleReadService publishedReads) {
         this.articleMapper = articleMapper;
         this.articleTagMapper = articleTagMapper;
         this.tagMapper = tagMapper;
@@ -85,6 +102,7 @@ public class RecommendationCandidateService {
         this.elasticsearchOperations = elasticsearchOperations;
         this.rankingService = rankingService;
         this.clock = clock;
+        this.publishedReads = publishedReads;
     }
 
     public List<RecommendationCandidate> recallAndRank(Long userId, Set<Long> shownArticleIds, int limit) {
@@ -104,11 +122,15 @@ public class RecommendationCandidateService {
         tagProfile = safeMap(profileService.profileTags(userId, PROFILE_TAG_LIMIT));
         authorProfile = safeMap(profileService.profileAuthors(userId, PROFILE_AUTHOR_LIMIT));
 
-        List<Article> follow = safeList(articleMapper.selectPublishedByFollowedAuthors(
-                userId, userId, shown, FOLLOW_LIMIT));
+        List<Article> follow = publishedReads == null
+                ? safeList(articleMapper.selectLegacyPublishedByFollowedAuthors(
+                        userId, userId, shown, FOLLOW_LIMIT))
+                : publishedReads.findFollowedCandidates(userId, userId, shown, FOLLOW_LIMIT);
         List<Article> tag = recallByTags(tagProfile.keySet(), userId, shown);
         List<Article> similar = recallSimilar(userId, shown);
-        List<Article> explore = safeList(articleMapper.selectPublishedHotFresh(userId, shown, EXPLORE_LIMIT));
+        List<Article> explore = publishedReads == null
+                ? safeList(articleMapper.selectLegacyPublishedHotFresh(userId, shown, EXPLORE_LIMIT))
+                : publishedReads.findHotFreshCandidates(userId, shown, EXPLORE_LIMIT);
         List<RecommendationCandidate> recalled = mergeRecallSources(follow, tag, similar, explore);
 
         LocalDateTime cutoff = LocalDateTime.now(clock).withNano(0).minusDays(READ_WINDOW_DAYS);
@@ -201,11 +223,13 @@ public class RecommendationCandidateService {
         if (hitIds.isEmpty()) {
             return List.of();
         }
-        Map<Long, Article> publishedById = safeList(articleMapper.selectPublishedByIds(hitIds)).stream()
+        List<Article> authorized = publishedReads == null
+                ? safeList(articleMapper.selectLegacyPublishedByIds(hitIds))
+                : publishedReads.findByIds(hitIds);
+        Map<Long, Article> publishedById = authorized.stream()
                 .collect(Collectors.toMap(Article::getId, article -> article, (first, ignored) -> first));
         return hitIds.stream().map(publishedById::get)
                 .filter(Objects::nonNull)
-                .filter(RecommendationCandidateService::isPublishedAndVisible)
                 .limit(SIMILAR_LIMIT)
                 .toList();
     }
@@ -245,18 +269,27 @@ public class RecommendationCandidateService {
         if (tagNames.isEmpty()) {
             return List.of();
         }
-        List<Long> tagIds = safeList(tagMapper.selectIdsByNames(tagNames));
-        if (tagIds.isEmpty()) {
-            return List.of();
+        List<Long> tagIds = publishedReads != null && publishedReads.pointerReadsEnabled()
+                ? List.of()
+                : safeList(tagMapper.selectIdsByNames(tagNames));
+        if (publishedReads != null) {
+            return publishedReads.findTagCandidates(tagNames, tagIds, excludedAuthorId,
+                    shownArticleIds, TAG_LIMIT);
         }
-        return safeList(articleMapper.selectPublishedByTagIds(tagIds, excludedAuthorId, shownArticleIds, TAG_LIMIT));
+        if (tagIds.isEmpty()) return List.of();
+        return safeList(articleMapper.selectLegacyPublishedByTagIds(
+                tagIds, excludedAuthorId, shownArticleIds, TAG_LIMIT));
     }
 
     private RecommendationCandidate assembleFeatures(RecommendationCandidate candidate,
                                                        Map<String, Double> tagProfile,
                                                        Map<Long, Double> authorProfile,
                                                        Set<Long> recentlyInteracted) {
-        List<String> articleTags = safeList(articleTagMapper.selectTagNamesByArticleId(candidate.articleId()));
+        List<String> articleTags = candidate.article().getTagList() != null
+                ? candidate.article().getTagList()
+                : publishedReads != null && publishedReads.pointerReadsEnabled()
+                        ? List.of()
+                        : safeList(articleTagMapper.selectTagNamesByArticleId(candidate.articleId()));
         LinkedHashSet<String> orderedTags = articleTags.stream()
                 .distinct()
                 .sorted((left, right) -> {
@@ -332,8 +365,4 @@ public class RecommendationCandidateService {
                 SIMILAR_LIMIT + Math.max(0, knownExclusionCount));
     }
 
-    private static boolean isPublishedAndVisible(Article article) {
-        return Integer.valueOf(1).equals(article.getStatus())
-                && Integer.valueOf(0).equals(article.getIsDeleted());
-    }
 }

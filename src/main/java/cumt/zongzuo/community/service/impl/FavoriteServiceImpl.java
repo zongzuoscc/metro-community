@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import cumt.zongzuo.community.entity.Article;
 import cumt.zongzuo.community.entity.Favorite;
 import cumt.zongzuo.community.entity.FavoriteFolder;
+import cumt.zongzuo.community.article.service.PublishedArticleReadService;
 import cumt.zongzuo.community.mapper.ArticleMapper;
 import cumt.zongzuo.community.mapper.FavoriteFolderMapper;
 import cumt.zongzuo.community.mapper.FavoriteMapper;
@@ -15,9 +16,12 @@ import cumt.zongzuo.community.service.FavoriteService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.time.LocalDateTime;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -32,6 +36,9 @@ public class FavoriteServiceImpl extends ServiceImpl<FavoriteFolderMapper, Favor
 
     @Autowired
     private ArticleMapper articleMapper;
+
+    @Autowired
+    private PublishedArticleReadService publishedArticleReadService;
 
     @Autowired
     private RecommendationEventOutboxService recommendationEventOutboxService;
@@ -77,6 +84,12 @@ public class FavoriteServiceImpl extends ServiceImpl<FavoriteFolderMapper, Favor
             folderId = defaultFolder.getId();
         }
 
+        // A client-provided folder id is never trusted. Resolve ownership in
+        // one query and hide both missing and foreign folders behind 404.
+        if (favoriteFolderMapper.selectOwnedById(folderId, userId) == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "收藏夹不存在");
+        }
+
         // 2. 检查该文章是否已在这个收藏夹里
         QueryWrapper<Favorite> query = new QueryWrapper<>();
         query.eq("user_id", userId)
@@ -119,17 +132,23 @@ public class FavoriteServiceImpl extends ServiceImpl<FavoriteFolderMapper, Favor
 
     // 【新增实现】严格的 Service 层业务逻辑
     @Override
-    public Map<String, Object> getFolderDetail(Long folderId) {
-        // 1. 校验收藏夹是否存在
+    public Map<String, Object> getFolderDetail(Long folderId, Long currentUserId) {
         FavoriteFolder folder = favoriteFolderMapper.selectById(folderId);
-        if (folder == null) {
-            throw new RuntimeException("收藏夹不存在"); // 抛出异常，由 Controller 或全局异常处理捕获
+        if (folder == null || (!folder.getUserId().equals(currentUserId)
+                && !Integer.valueOf(1).equals(folder.getIsPublic()))) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "收藏夹不存在");
         }
 
-        // 2. 查询该收藏夹下的文章
-        List<Article> articles = articleMapper.selectArticlesByFolderId(folderId);
+        List<Long> articleIds = articleMapper.selectArticleIdsByFolderId(folderId);
+        Map<Long, Article> publishedById = new LinkedHashMap<>();
+        for (Article article : publishedArticleReadService.findByIds(articleIds)) {
+            publishedById.put(article.getId(), article);
+        }
+        List<Article> articles = articleIds.stream()
+                .map(publishedById::get)
+                .filter(java.util.Objects::nonNull)
+                .toList();
 
-        // 3. 组装数据
         Map<String, Object> map = new HashMap<>();
         map.put("folder", folder);
         map.put("articles", articles);

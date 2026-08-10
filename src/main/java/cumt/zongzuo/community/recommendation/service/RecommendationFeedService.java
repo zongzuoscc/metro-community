@@ -1,5 +1,6 @@
 package cumt.zongzuo.community.recommendation.service;
 
+import cumt.zongzuo.community.article.service.PublishedArticleReadService;
 import cumt.zongzuo.community.entity.Article;
 import cumt.zongzuo.community.entity.User;
 import cumt.zongzuo.community.mapper.ArticleMapper;
@@ -35,6 +36,7 @@ import java.util.Base64;
 import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 
@@ -57,6 +59,7 @@ public class RecommendationFeedService {
     private final RecommendationEligibilityService eligibilityService;
     private final RecommendationModelStore modelStore;
     private final RecommendationFeedRateLimiter rateLimiter;
+    private final PublishedArticleReadService publishedArticleReadService;
     private final Clock clock;
 
     @Autowired
@@ -70,13 +73,15 @@ public class RecommendationFeedService {
                                      RecommendationEventOutboxService outboxService,
                                      RecommendationMetricsService metricsService,
                                      RecommendationFeedRateLimiter rateLimiter,
+                                     PublishedArticleReadService publishedArticleReadService,
                                      ObjectProvider<Clock> clockProvider,
                                      ObjectProvider<RecommendationEligibilityService> eligibilityProvider,
                                      ObjectProvider<RecommendationModelStore> modelStoreProvider) {
         this(properties, sessionStore, articleMapper, candidateService, rankingService, exposureService,
                 userService, outboxService, metricsService,
                 clockProvider.getIfAvailable(Clock::systemDefaultZone),
-                eligibilityProvider.getIfAvailable(), modelStoreProvider.getIfAvailable(), rateLimiter);
+                eligibilityProvider.getIfAvailable(), modelStoreProvider.getIfAvailable(), rateLimiter,
+                publishedArticleReadService);
     }
 
     public RecommendationFeedService(RecommendationProperties properties,
@@ -90,7 +95,7 @@ public class RecommendationFeedService {
                                      RecommendationMetricsService metricsService,
                                      Clock clock) {
         this(properties, sessionStore, articleMapper, candidateService, rankingService, exposureService, userService,
-                outboxService, metricsService, clock, null, null, null);
+                outboxService, metricsService, clock, null, null, null, null);
     }
 
     public RecommendationFeedService(RecommendationProperties properties,
@@ -101,7 +106,7 @@ public class RecommendationFeedService {
                                      RecommendationMetricsService metricsService, Clock clock,
                                      RecommendationEligibilityService eligibilityService, RecommendationModelStore modelStore) {
         this(properties, sessionStore, articleMapper, candidateService, rankingService, exposureService, userService,
-                outboxService, metricsService, clock, eligibilityService, modelStore, null);
+                outboxService, metricsService, clock, eligibilityService, modelStore, null, null);
     }
 
     public RecommendationFeedService(RecommendationProperties properties,
@@ -112,6 +117,19 @@ public class RecommendationFeedService {
                                      RecommendationMetricsService metricsService, Clock clock,
                                      RecommendationEligibilityService eligibilityService, RecommendationModelStore modelStore,
                                      RecommendationFeedRateLimiter rateLimiter) {
+        this(properties, sessionStore, articleMapper, candidateService, rankingService, exposureService, userService,
+                outboxService, metricsService, clock, eligibilityService, modelStore, rateLimiter, null);
+    }
+
+    public RecommendationFeedService(RecommendationProperties properties,
+                                     RecommendationSessionStore sessionStore, ArticleMapper articleMapper,
+                                     RecommendationCandidateService candidateService, RecommendationRankingService rankingService,
+                                     RecommendationExposureService exposureService,
+                                     UserService userService, RecommendationEventOutboxService outboxService,
+                                     RecommendationMetricsService metricsService, Clock clock,
+                                     RecommendationEligibilityService eligibilityService, RecommendationModelStore modelStore,
+                                     RecommendationFeedRateLimiter rateLimiter,
+                                     PublishedArticleReadService publishedArticleReadService) {
         this.properties = properties;
         this.sessionStore = sessionStore;
         this.articleMapper = articleMapper;
@@ -125,6 +143,7 @@ public class RecommendationFeedService {
         this.eligibilityService = eligibilityService;
         this.modelStore = modelStore;
         this.rateLimiter = rateLimiter;
+        this.publishedArticleReadService = publishedArticleReadService;
     }
 
     public RecommendationFeedResponse feed(Long userId, String cursor, int requestedSize) {
@@ -165,10 +184,18 @@ public class RecommendationFeedService {
                 if (ranked.size() >= size) return personalizedSession(userId, size, ranked);
             }
         }
-        List<Long> articleIds = articleMapper.selectPublishedChronologicalIds(SESSION_CANDIDATE_LIMIT);
-        List<RecommendationSessionItem> items = articleIds.stream()
-                .map(articleId -> new RecommendationSessionItem(articleId, null, CHRONOLOGICAL))
-                .toList();
+        List<RecommendationSessionItem> items;
+        if (publishedArticleReadService == null) {
+            items = articleMapper.selectLegacyPublishedChronologicalIds(SESSION_CANDIDATE_LIMIT).stream()
+                    .map(articleId -> new RecommendationSessionItem(articleId, null, CHRONOLOGICAL))
+                    .toList();
+        } else {
+            items = publishedArticleReadService.findChronological(null, null, SESSION_CANDIDATE_LIMIT).stream()
+                    .map(article -> new RecommendationSessionItem(
+                            article.getId(), null, CHRONOLOGICAL, null, null,
+                            article.getPublishedRevisionId(), article.getContentHash()))
+                    .toList();
+        }
         String sessionId = UUID.randomUUID().toString();
         RecommendationSession session = new RecommendationSession(userId, items, RecommendationMode.COLD_START);
         sessionStore.save(sessionId, session);
@@ -186,7 +213,8 @@ public class RecommendationFeedService {
                     candidate.sources().contains(RecommendationCandidate.Source.EXPLORE) ? 1D : 0D);
             return new RecommendationSessionItem(candidate.articleId(), candidate.reason(),
                     rankingService.winningSource(candidate), snapshot,
-                    rankingService.ruleScore(candidate));
+                    rankingService.ruleScore(candidate),
+                    candidate.article().getPublishedRevisionId(), candidate.article().getContentHash());
         }).toList();
         String sessionId = UUID.randomUUID().toString();
         RecommendationSession session = new RecommendationSession(userId, items, RecommendationMode.PERSONALIZED);
@@ -213,12 +241,16 @@ public class RecommendationFeedService {
         List<Long> pageIds = pageItems.stream().map(RecommendationSessionItem::articleId).toList();
         Map<Long, Article> articlesById = new LinkedHashMap<>();
         if (!pageIds.isEmpty()) {
-            for (Article article : articleMapper.selectPublishedByIds(pageIds)) {
+            List<Article> articles = publishedArticleReadService == null
+                    ? articleMapper.selectLegacyPublishedByIds(pageIds)
+                    : publishedArticleReadService.findByIds(pageIds);
+            for (Article article : articles) {
                 articlesById.put(article.getId(), article);
             }
         }
         List<HydratedRecommendationItem> hydrated = pageItems.stream()
                 .filter(item -> articlesById.containsKey(item.articleId()))
+                .filter(item -> hasSamePublishedIdentity(item, articlesById.get(item.articleId())))
                 .map(item -> hydrate(item, articlesById.get(item.articleId())))
                 .toList();
         enrichAuthors(hydrated.stream().map(item -> item.item().article()).toList());
@@ -232,9 +264,13 @@ public class RecommendationFeedService {
     private RecommendationFeedResponse fallback(Long userId, String cursor, int size) {
         FallbackCursor position = decodeFallbackCursor(cursor, userId);
         String visitNonce = position == null ? UUID.randomUUID().toString() : position.visitNonce();
-        List<Article> articles = articleMapper.selectPublishedChronological(
-                position == null ? null : position.createTime(),
-                position == null ? null : position.articleId(), size);
+        List<Article> articles = publishedArticleReadService == null
+                ? articleMapper.selectLegacyPublishedChronological(
+                        position == null ? null : position.createTime(),
+                        position == null ? null : position.articleId(), size)
+                : publishedArticleReadService.findChronological(
+                        position == null ? null : position.createTime(),
+                        position == null ? null : position.articleId(), size);
         enrichAuthors(articles);
         String pageSessionId = fallbackPageSessionId(userId, visitNonce, position);
         List<HydratedRecommendationItem> hydrated = articles.stream()
@@ -306,7 +342,9 @@ public class RecommendationFeedService {
     }
 
     public void recordView(Long userId, Long articleId, RecommendationViewRequest request) {
-        Article article = articleMapper.selectPublicById(articleId);
+        Article article = publishedArticleReadService == null
+                ? articleMapper.selectLegacyPublicById(articleId)
+                : publishedArticleReadService.findById(articleId);
         if (article == null) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "文章不存在或未发布");
         }
@@ -384,6 +422,18 @@ public class RecommendationFeedService {
             throw new IllegalArgumentException("Cursor is too long");
         }
         return new String(Base64.getUrlDecoder().decode(value), StandardCharsets.UTF_8);
+    }
+
+    private boolean hasSamePublishedIdentity(RecommendationSessionItem item, Article article) {
+        if (item.publishedRevisionId() == null && item.contentHash() == null) {
+            // Sessions written before identity-aware serving may only continue in
+            // legacy modes. Pointer modes must never combine an old ranking
+            // snapshot with whichever revision happens to be current now.
+            return publishedArticleReadService == null
+                    || !publishedArticleReadService.pointerReadsEnabled();
+        }
+        return Objects.equals(item.publishedRevisionId(), article.getPublishedRevisionId())
+                && Objects.equals(item.contentHash(), article.getContentHash());
     }
 
     private record SessionCursor(String sessionId, int offset) {

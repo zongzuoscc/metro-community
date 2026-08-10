@@ -56,11 +56,8 @@ public class FavoriteController {
     // 逻辑完全委托给 Service，Controller 只负责捕获异常和返回
     @GetMapping("/detail/{folderId}")
     public Result<Map<String, Object>> getFolderDetail(@PathVariable Long folderId) {
-        try {
-            Map<String, Object> detail = favoriteService.getFolderDetail(folderId);
-            return Result.success(detail);
-        } catch (RuntimeException e) {
-            return Result.error(e.getMessage());
-        }
+        Long currentUserId = CurrentUser.id();
+        Map<String, Object> detail = favoriteService.getFolderDetail(folderId, currentUserId);
+        return Result.success(detail);
     }
 }

@@ -619,7 +619,7 @@ class RecommendationFeedIntegrationTest extends IntegrationTestSupport {
     @Test
     void exposurePageRollsBackAllRowsWhenOneSnapshotIsInvalid() {
         insertArticles(1);
-        cumt.zongzuo.community.entity.Article valid = articleMapper.selectPublicById(60_001L);
+        cumt.zongzuo.community.entity.Article valid = articleMapper.selectLegacyPublicById(60_001L);
         cumt.zongzuo.community.entity.Article invalid = new cumt.zongzuo.community.entity.Article();
         invalid.setAuthorId(AUTHOR_ID);
         RecommendationCandidate validCandidate = candidateService.assembleChronologicalFeatures(valid);

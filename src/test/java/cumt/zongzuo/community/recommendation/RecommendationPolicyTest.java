@@ -224,10 +224,10 @@ class RecommendationPolicyTest {
         UserArticleEventMapper eventMapper = mock(UserArticleEventMapper.class);
         RecommendationProfileService profileService = mock(RecommendationProfileService.class);
         ElasticsearchOperations elasticsearchOperations = mock(ElasticsearchOperations.class);
-        when(articleMapper.selectPublishedByFollowedAuthors(eq(USER_ID), eq(USER_ID), any(), eq(20)))
+        when(articleMapper.selectLegacyPublishedByFollowedAuthors(eq(USER_ID), eq(USER_ID), any(), eq(20)))
                 .thenReturn(List.of());
         Article explore = article(9, 90, 1, 0);
-        when(articleMapper.selectPublishedHotFresh(eq(USER_ID), any(), eq(20))).thenReturn(List.of(explore));
+        when(articleMapper.selectLegacyPublishedHotFresh(eq(USER_ID), any(), eq(20))).thenReturn(List.of(explore));
         when(articleTagMapper.selectTagNamesByArticleId(9L)).thenReturn(List.of());
         when(profileService.profileTags(USER_ID, 40)).thenReturn(Map.of());
         when(profileService.profileAuthors(USER_ID, 100)).thenReturn(Map.of());
@@ -265,7 +265,7 @@ class RecommendationPolicyTest {
         when(eventMapper.selectRecentSeedArticleIds(eq(USER_ID), any(LocalDateTime.class), eq(5)))
                 .thenReturn(List.of(88L));
         when(elasticsearchOperations.search(any(Query.class), eq(ArticleDoc.class))).thenReturn(hits);
-        when(articleMapper.selectPublishedByIds(List.of(99L)))
+        when(articleMapper.selectLegacyPublishedByIds(List.of(99L)))
                 .thenThrow(new IllegalStateException("MySQL unavailable"));
         RecommendationCandidateService candidateService = new RecommendationCandidateService(
                 articleMapper, articleTagMapper, tagMapper, eventMapper, profileService,
@@ -295,7 +295,7 @@ class RecommendationPolicyTest {
         when(elasticsearchOperations.search(any(Query.class), eq(ArticleDoc.class))).thenReturn(hits);
         List<Article> hydrated = IntStream.rangeClosed(903, 932)
                 .mapToObj(id -> article(id, 30L + id, 1, 0)).toList();
-        when(articleMapper.selectPublishedByIds(any())).thenReturn(hydrated);
+        when(articleMapper.selectLegacyPublishedByIds(any())).thenReturn(hydrated);
         RecommendationCandidateService candidateService = new RecommendationCandidateService(
                 articleMapper, articleTagMapper, tagMapper, eventMapper, profileService,
                 elasticsearchOperations, rankingService, CLOCK);
@@ -304,7 +304,7 @@ class RecommendationPolicyTest {
 
         assertThat(result).extracting(Article::getId)
                 .containsExactlyElementsOf(IntStream.rangeClosed(903, 932).mapToObj(Long::valueOf).toList());
-        verify(articleMapper).selectPublishedByIds(
+        verify(articleMapper).selectLegacyPublishedByIds(
                 IntStream.rangeClosed(903, 932).mapToObj(Long::valueOf).toList());
         ArgumentCaptor<Query> queryCaptor = ArgumentCaptor.forClass(Query.class);
         verify(elasticsearchOperations).search(queryCaptor.capture(), eq(ArticleDoc.class));

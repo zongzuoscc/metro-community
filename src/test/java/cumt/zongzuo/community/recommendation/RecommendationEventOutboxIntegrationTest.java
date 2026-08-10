@@ -80,6 +80,7 @@ class RecommendationEventOutboxIntegrationTest extends IntegrationTestSupport {
         jdbcTemplate.update("DELETE FROM recommendation_event_outbox");
         jdbcTemplate.update("DELETE FROM like_record");
         jdbcTemplate.update("DELETE FROM favorite");
+        jdbcTemplate.update("DELETE FROM favorite_folder WHERE id = 3");
         jdbcTemplate.update("DELETE FROM follow");
         jdbcTemplate.update("DELETE FROM comment");
         jdbcTemplate.update("DELETE FROM article");
@@ -98,6 +99,10 @@ class RecommendationEventOutboxIntegrationTest extends IntegrationTestSupport {
     @Test
     void committedFavoritePersistsOutboxWithoutPublishingRecommendationInRequest() {
         assertThat(recommendationProperties.isEnabled()).isFalse();
+        jdbcTemplate.update("""
+                INSERT INTO favorite_folder (id,user_id,name,description,is_public,create_time)
+                VALUES (3,7,'outbox test folder','owned fixture',0,NOW(6))
+                """);
 
         favoriteService.toggleFavorite(7L, 21L, 3L);
 

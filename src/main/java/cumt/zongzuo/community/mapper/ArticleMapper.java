@@ -35,22 +35,23 @@ public interface ArticleMapper extends BaseMapper<Article> {
             """)
     int setViewCount(@Param("articleId") long articleId, @Param("viewCount") int viewCount);
 
-    // 【新增】查询指定收藏夹下的所有文章
-    @Select("SELECT a.* FROM article a " +
-            "LEFT JOIN favorite f ON a.id = f.article_id " +
-            "WHERE f.folder_id = #{folderId} " +
-            "ORDER BY f.create_time DESC")
-    List<Article> selectArticlesByFolderId(Long folderId);
+    @Select("""
+            SELECT f.article_id
+            FROM favorite f
+            WHERE f.folder_id=#{folderId}
+            ORDER BY f.create_time DESC,f.id DESC
+            """)
+    List<Long> selectArticleIdsByFolderId(@Param("folderId") Long folderId);
 
     List<Article> selectPublishedByFollowedAuthors(@Param("userId") Long userId,
                                                    @Param("excludedAuthorId") Long excludedAuthorId,
                                                    @Param("shownArticleIds") Collection<Long> shownArticleIds,
                                                    @Param("limit") int limit);
 
-    List<Article> selectPublishedByTagIds(@Param("tagIds") Collection<Long> tagIds,
-                                          @Param("excludedAuthorId") Long excludedAuthorId,
-                                          @Param("shownArticleIds") Collection<Long> shownArticleIds,
-                                          @Param("limit") int limit);
+    List<Article> selectPublishedByTagNames(@Param("tagNames") Collection<String> tagNames,
+                                            @Param("excludedAuthorId") Long excludedAuthorId,
+                                            @Param("shownArticleIds") Collection<Long> shownArticleIds,
+                                            @Param("limit") int limit);
 
     List<Article> selectPublishedHotFresh(@Param("excludedAuthorId") Long excludedAuthorId,
                                           @Param("shownArticleIds") Collection<Long> shownArticleIds,
@@ -64,7 +65,123 @@ public interface ArticleMapper extends BaseMapper<Article> {
 
     List<Long> selectPublishedChronologicalIds(@Param("limit") int limit);
 
+    List<Article> selectPublishedHot(@Param("limit") int limit);
+
+    List<Article> selectPublishedHotRank(@Param("limit") int limit);
+
+    List<Article> selectPublishedByAuthor(@Param("authorId") Long authorId,
+                                          @Param("offset") long offset,
+                                          @Param("limit") int limit);
+
+    long countPublishedByAuthor(@Param("authorId") Long authorId);
+
+    List<Article> selectPublishedByFollowing(@Param("userId") Long userId,
+                                             @Param("offset") long offset,
+                                             @Param("limit") int limit);
+
+    long countPublishedByFollowing(@Param("userId") Long userId);
+
+    List<Article> selectPublishedPage(@Param("offset") long offset,
+                                      @Param("limit") int limit);
+
+    long countPublished();
+
+    List<Article> selectPublishedHotSince(@Param("since") LocalDateTime since,
+                                          @Param("limit") int limit);
+
+    List<Article> selectLegacyPublishedByFollowedAuthors(@Param("userId") Long userId,
+                                                         @Param("excludedAuthorId") Long excludedAuthorId,
+                                                         @Param("shownArticleIds") Collection<Long> shownArticleIds,
+                                                         @Param("limit") int limit);
+
+    List<Article> selectLegacyPublishedByTagIds(@Param("tagIds") Collection<Long> tagIds,
+                                                @Param("excludedAuthorId") Long excludedAuthorId,
+                                                @Param("shownArticleIds") Collection<Long> shownArticleIds,
+                                                @Param("limit") int limit);
+
+    List<Article> selectLegacyPublishedHotFresh(@Param("excludedAuthorId") Long excludedAuthorId,
+                                                @Param("shownArticleIds") Collection<Long> shownArticleIds,
+                                                @Param("limit") int limit);
+
+    List<Article> selectLegacyPublishedByIds(@Param("articleIds") Collection<Long> articleIds);
+
+    List<Article> selectLegacyPublishedChronological(@Param("beforeCreateTime") LocalDateTime beforeCreateTime,
+                                                     @Param("beforeId") Long beforeId,
+                                                     @Param("limit") int limit);
+
+    List<Long> selectLegacyPublishedChronologicalIds(@Param("limit") int limit);
+
+    List<Article> selectLegacyPublishedHot(@Param("limit") int limit);
+
+    List<Article> selectLegacyPublishedHotRank(@Param("limit") int limit);
+
+    List<Article> selectLegacyPublishedByAuthor(@Param("authorId") Long authorId,
+                                                @Param("offset") long offset,
+                                                @Param("limit") int limit);
+
+    long countLegacyPublishedByAuthor(@Param("authorId") Long authorId);
+
+    List<Article> selectLegacyPublishedByFollowing(@Param("userId") Long userId,
+                                                   @Param("offset") long offset,
+                                                   @Param("limit") int limit);
+
+    long countLegacyPublishedByFollowing(@Param("userId") Long userId);
+
+    List<Article> selectLegacyPublishedPage(@Param("offset") long offset,
+                                            @Param("limit") int limit);
+
+    long countLegacyPublished();
+
+    List<Article> selectLegacyPublishedHotSince(@Param("since") LocalDateTime since,
+                                                @Param("limit") int limit);
+
     Article selectPublicById(@Param("articleId") Long articleId);
+
+    Article selectLegacyPublicById(@Param("articleId") Long articleId);
+
+    Article selectOwnerDraftById(@Param("articleId") Long articleId,
+                                 @Param("authorId") Long authorId);
+
+    Article selectOwnerLegacyById(@Param("articleId") Long articleId,
+                                  @Param("authorId") Long authorId);
+
+    List<Article> selectOwnerDirtyDrafts(@Param("authorId") Long authorId,
+                                         @Param("offset") long offset,
+                                         @Param("limit") int limit);
+
+    long countOwnerDirtyDrafts(@Param("authorId") Long authorId);
+
+    List<Article> selectOwnerAllDrafts(@Param("authorId") Long authorId,
+                                       @Param("offset") long offset,
+                                       @Param("limit") int limit);
+
+    long countOwnerAllDrafts(@Param("authorId") Long authorId);
+
+    List<Article> selectOwnerLegacyDrafts(@Param("authorId") Long authorId,
+                                          @Param("offset") long offset,
+                                          @Param("limit") int limit);
+
+    long countOwnerLegacyDrafts(@Param("authorId") Long authorId);
+
+    List<Article> selectOwnerLegacyAll(@Param("authorId") Long authorId,
+                                       @Param("offset") long offset,
+                                       @Param("limit") int limit);
+
+    long countOwnerLegacyAll(@Param("authorId") Long authorId);
+
+    List<Article> selectOwnerDraftRecycle(@Param("authorId") Long authorId);
+
+    List<Article> selectOwnerLegacyRecycle(@Param("authorId") Long authorId);
+
+    List<Article> selectPendingRevisions(@Param("offset") long offset,
+                                         @Param("limit") int limit);
+
+    long countPendingRevisions();
+
+    List<Article> selectLegacyPending(@Param("offset") long offset,
+                                      @Param("limit") int limit);
+
+    long countLegacyPending();
 
     @Select("SELECT * FROM article WHERE id = #{articleId} FOR UPDATE")
     Article selectByIdForUpdate(@Param("articleId") long articleId);

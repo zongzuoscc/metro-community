@@ -89,4 +89,19 @@ public class Article {
      */
     @TableField(exist = false)
     private List<String> tagList;
+
+    /**
+     * Internal identity of the content snapshot used to build this compatibility view.
+     * It is intentionally not part of the public JSON contract.
+     */
+    @JsonIgnore
+    @TableField(exist = false)
+    private String contentHash;
+
+    @JsonIgnore
+    @TableField(exist = false)
+    private String revisionTagsJson;
+
+    @TableField(exist = false)
+    private Long draftVersion;
 }
