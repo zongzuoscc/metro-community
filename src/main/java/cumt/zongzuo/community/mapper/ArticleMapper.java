@@ -14,6 +14,19 @@ import java.util.List;
 @Mapper
 public interface ArticleMapper extends BaseMapper<Article> {
 
+    @Select("""
+            SELECT id,lifecycle_epoch,lock_version
+            FROM article WHERE id > #{afterId} ORDER BY id LIMIT #{limit}
+            """)
+    List<Article> selectProjectionCursorsAfter(@Param("afterId") long afterId,
+                                               @Param("limit") int limit);
+
+    @Select("""
+            SELECT id,lifecycle_epoch,lock_version
+            FROM article WHERE id=#{articleId}
+            """)
+    Article selectProjectionCursorById(@Param("articleId") long articleId);
+
     @Select("SELECT IFNULL(SUM(like_count), 0) FROM article WHERE author_id = #{authorId}")
     Long sumLikesByAuthorId(Long authorId);
 

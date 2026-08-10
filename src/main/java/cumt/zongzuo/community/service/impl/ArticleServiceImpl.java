@@ -267,9 +267,12 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
                         .size(SEARCH_CANDIDATE_BATCH_SIZE)
                         .source(source -> source.fetch(false))
                         .trackTotalHits(track -> track.enabled(true))
-                        .query(query -> query.multiMatch(multiMatch -> multiMatch
-                                .query(keyword)
-                                .fields("title", "summary", "content")))
+                        .query(query -> query.bool(bool -> bool
+                                .must(must -> must.multiMatch(multiMatch -> multiMatch
+                                        .query(keyword)
+                                        .fields("title", "summary", "content")))
+                                .mustNot(mustNot -> mustNot.term(term -> term
+                                        .field("projectionTombstone").value(true)))))
                         .sort(sort -> sort.score(score -> score.order(SortOrder.Desc)))
                         .sort(sort -> sort.field(field -> field.field("_shard_doc").order(SortOrder.Asc)));
                 if (!searchAfter.isEmpty()) {
@@ -625,12 +628,13 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         // like: [{"_index": "article", "_id": "文章ID"}] 表示以这篇文章为基准
         // min_term_freq: 1 表示只要词出现过 1 次就参与计算
         String mltQueryJson = String.format(
-                "{\"more_like_this\": {" +
+                "{\"bool\":{\"must\":[{\"more_like_this\": {" +
                         "\"fields\": [\"title\", \"summary\", \"content\"]," +
                         "\"like\": [{\"_index\": \"article\", \"_id\": \"%s\"}]," +
                         "\"min_term_freq\": 1," +
                         "\"max_query_terms\": 25" +
-                        "}}", articleId);
+                        "}}],\"must_not\":[{\"term\":{\"projectionTombstone\":true}}]}}",
+                articleId);
 
         // 3. 封装为 Spring Data ES 的 StringQuery
         StringQuery stringQuery = new StringQuery(mltQueryJson);

@@ -32,6 +32,20 @@ app:
     ticket-ttl: PT30S
 
 metro:
+  article:
+    revision-mode: ${METRO_ARTICLE_REVISION_MODE:LEGACY}
+    projection:
+      lease-duration: ${METRO_ARTICLE_PROJECTION_LEASE_DURATION:PT30S}
+      index-name: ${METRO_ARTICLE_PROJECTION_INDEX:article}
+      reconcile-enabled: ${METRO_ARTICLE_PROJECTION_RECONCILE_ENABLED:false}
+      reconcile-start-after-id: ${METRO_ARTICLE_PROJECTION_RECONCILE_START_AFTER_ID:0}
+      reconcile-batch-size: ${METRO_ARTICLE_PROJECTION_RECONCILE_BATCH_SIZE:100}
+      reconcile-maximum-batches: ${METRO_ARTICLE_PROJECTION_RECONCILE_MAXIMUM_BATCHES:10000}
+      retry:
+        initial-interval: ${METRO_ARTICLE_PROJECTION_RETRY_INITIAL_INTERVAL:PT10S}
+        max-interval: ${METRO_ARTICLE_PROJECTION_RETRY_MAX_INTERVAL:PT30S}
+        multiplier: ${METRO_ARTICLE_PROJECTION_RETRY_MULTIPLIER:2.0}
+        max-attempts: ${METRO_ARTICLE_PROJECTION_RETRY_MAX_ATTEMPTS:5}
   ai:
     enabled: ${METRO_AI_ENABLED:false}
     agent:

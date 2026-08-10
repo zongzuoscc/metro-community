@@ -365,6 +365,8 @@ public class DefaultStageBArticleMigrationVerifier implements StageBArticleMigra
                 SearchRequest.Builder request = new SearchRequest.Builder()
                         .pit(pit -> pit.id(activePitId).keepAlive(time -> time.time(keepAlive)))
                         .size(pageSize)
+                        .query(query -> query.bool(bool -> bool.mustNot(mustNot ->
+                                mustNot.term(term -> term.field("projectionTombstone").value(true)))))
                         .sort(sort -> sort.field(field -> field.field("_shard_doc").order(SortOrder.Asc)));
                 if (!searchAfter.isEmpty()) {
                     request.searchAfter(searchAfter);
@@ -453,12 +455,14 @@ public class DefaultStageBArticleMigrationVerifier implements StageBArticleMigra
         String placeholders = String.join(",", java.util.Collections.nCopies(articleIds.size(), "?"));
         List<ExpectedDocument> documents = jdbc.query("""
                 SELECT a.id,a.author_id,a.view_count,a.like_count,a.comment_count,a.collect_count,
-                       a.create_time,r.title,r.body_markdown,r.summary,r.cover
+                       a.create_time,r.id AS revision_id,r.content_hash,
+                       r.title,r.body_markdown,r.summary,r.cover
                 FROM article a
                 JOIN article_revision r ON r.id=a.published_revision_id AND r.article_id=a.id
                 WHERE a.status=1 AND a.is_deleted=0 AND a.id IN (
                 """ + placeholders + ")", (rs, rowNum) -> new ExpectedDocument(
-                rs.getLong("id"), rs.getString("title"), rs.getString("body_markdown"),
+                rs.getLong("id"), rs.getLong("revision_id"), rs.getString("content_hash"),
+                rs.getString("title"), rs.getString("body_markdown"),
                 rs.getString("summary"), rs.getString("cover"), rs.getLong("author_id"),
                 rs.getInt("view_count"), rs.getInt("like_count"), rs.getInt("comment_count"),
                 rs.getInt("collect_count"), rs.getTimestamp("create_time").toLocalDateTime()),
@@ -740,7 +744,8 @@ public class DefaultStageBArticleMigrationVerifier implements StageBArticleMigra
     }
 
     private record ExpectedDocument(
-            long id, String title, String content, String summary, String cover, long authorId,
+            long id, long revisionId, String contentHash,
+            String title, String content, String summary, String cover, long authorId,
             int viewCount, int likeCount, int commentCount, int collectCount,
             LocalDateTime createTime) {
 
@@ -748,7 +753,9 @@ public class DefaultStageBArticleMigrationVerifier implements StageBArticleMigra
             if (source == null) {
                 return false;
             }
-            return Objects.equals(title, source.get("title"))
+            return numberEquals(revisionId, source.get("revisionId"))
+                    && Objects.equals(contentHash, source.get("contentHash"))
+                    && Objects.equals(title, source.get("title"))
                     && Objects.equals(content, source.get("content"))
                     && Objects.equals(summary, source.get("summary"))
                     && Objects.equals(cover, source.get("cover"))

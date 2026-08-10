@@ -296,6 +296,24 @@ class ArticleRevisionMigrationIntegrationTest extends IntegrationTestSupport {
     }
 
     @Test
+    void verifierFailsClosedWhenEsContentMatchesButPublishedIdentityDoesNot() {
+        long articleId = 94_171L;
+        seedArticle(articleId, 1, 0, "identity-content");
+        migrationService.backfillAfter(articleId - 1, 100);
+        ArticleDoc wrongIdentity = matchingDocument(articleId);
+        wrongIdentity.setRevisionId(wrongIdentity.getRevisionId() + 99);
+        wrongIdentity.setContentHash("f".repeat(64));
+        articleRepository.save(wrongIdentity);
+        refreshArticleIndex();
+
+        StageBMigrationReport report = verifier.verifyAll();
+
+        assertThat(report.passed()).isFalse();
+        assertThat(report.mismatches()).extracting(StageBMigrationMismatch::code)
+                .contains("ELASTICSEARCH_DOCUMENT_MISMATCH");
+    }
+
+    @Test
     void verifierRejectsAnAliasThatFansOutToMoreThanOneConcreteIndex() {
         String secondIndex = "article-migration-second";
         deleteIndexIfPresent(secondIndex);
@@ -333,13 +351,16 @@ class ArticleRevisionMigrationIntegrationTest extends IntegrationTestSupport {
     private ArticleDoc matchingDocument(long articleId) {
         Map<String, Object> row = jdbcTemplate.queryForMap("""
                 SELECT a.id,a.author_id,a.view_count,a.like_count,a.comment_count,a.collect_count,
-                       a.create_time,r.title,r.body_markdown,r.summary,r.cover
+                       a.create_time,r.id AS revision_id,r.content_hash,
+                       r.title,r.body_markdown,r.summary,r.cover
                 FROM article a
                 JOIN article_revision r ON r.id=a.published_revision_id AND r.article_id=a.id
                 WHERE a.id=?
                 """, articleId);
         ArticleDoc document = new ArticleDoc();
         document.setId(((Number) row.get("id")).longValue());
+        document.setRevisionId(((Number) row.get("revision_id")).longValue());
+        document.setContentHash((String) row.get("content_hash"));
         document.setAuthorId(((Number) row.get("author_id")).longValue());
         document.setViewCount(((Number) row.get("view_count")).intValue());
         document.setLikeCount(((Number) row.get("like_count")).intValue());

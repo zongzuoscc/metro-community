@@ -16,8 +16,30 @@ import java.time.LocalDateTime;
 @Document(indexName = "article")
 public class ArticleDoc {
 
+    public static final String INDEX_NAME = "article";
+
     @Id // 对应文章的真实 ID
     private Long id;
+
+    /** Immutable published revision used to build this current-state document. */
+    @Field(type = FieldType.Long)
+    private Long revisionId;
+
+    /** Canonical SHA-256 identity of the immutable published revision. */
+    @Field(type = FieldType.Keyword)
+    private String contentHash;
+
+    /** Durable monotonic fence for current-pointer projection effects. */
+    @Field(type = FieldType.Long)
+    private Long projectionLifecycleEpoch;
+
+    /** Article lock version read from the same current MySQL snapshot. */
+    @Field(type = FieldType.Long)
+    private Long projectionVersion;
+
+    /** Kept in the same ES document so a delayed write cannot revive a deletion. */
+    @Field(type = FieldType.Boolean)
+    private Boolean projectionTombstone;
 
     // 标题：细粒度拆分，粗粒度搜索
     @Field(type = FieldType.Text, analyzer = "ik_max_word", searchAnalyzer = "ik_smart")

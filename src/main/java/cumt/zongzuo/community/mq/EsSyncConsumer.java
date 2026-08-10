@@ -1,5 +1,7 @@
 package cumt.zongzuo.community.mq;
 
+import cumt.zongzuo.community.article.config.ArticleRevisionMode;
+import cumt.zongzuo.community.article.config.ArticleRevisionModeResolver;
 import cumt.zongzuo.community.document.ArticleDoc;
 import cumt.zongzuo.community.entity.Article;
 import cumt.zongzuo.community.repository.ArticleRepository;
@@ -7,7 +9,6 @@ import cumt.zongzuo.community.service.ArticleService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.annotation.RabbitHandler;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 @Slf4j
@@ -15,14 +16,24 @@ import org.springframework.stereotype.Component;
 @RabbitListener(queues = "es.sync.queue") // 监听我们刚刚创建的队列
 public class EsSyncConsumer {
 
-    @Autowired
-    private ArticleService articleService;
+    private final ArticleRevisionModeResolver modeResolver;
+    private final ArticleService articleService;
+    private final ArticleRepository articleRepository;
 
-    @Autowired
-    private ArticleRepository articleRepository;
+    public EsSyncConsumer(ArticleRevisionModeResolver modeResolver,
+                          ArticleService articleService,
+                          ArticleRepository articleRepository) {
+        this.modeResolver = modeResolver;
+        this.articleService = articleService;
+        this.articleRepository = articleRepository;
+    }
 
     @RabbitHandler
     public void handleSyncMessage(Long articleId) {
+        if (modeResolver.current() != ArticleRevisionMode.LEGACY) {
+            log.info("忽略非 LEGACY 模式下的裸 articleId ES 同步任务，文章 ID: {}", articleId);
+            return;
+        }
         log.info("接收到 ES 同步任务，文章 ID: {}", articleId);
 
         try {

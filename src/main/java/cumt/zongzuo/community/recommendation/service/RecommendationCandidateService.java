@@ -200,7 +200,8 @@ public class RecommendationCandidateService {
                 .collect(Collectors.joining(","));
         String queryJson = "{\"bool\":{\"must\":[" + mltQueryJson + "],\"must_not\":["
                 + "{\"ids\":{\"values\":[" + excludedIdsJson + "]}},"
-                + "{\"term\":{\"authorId\":" + userId + "}}]}}";
+                + "{\"term\":{\"authorId\":" + userId + "}},"
+                + "{\"term\":{\"projectionTombstone\":true}}]}}";
         StringQuery query = new StringQuery(queryJson);
         query.setPageable(PageRequest.of(0, similarSearchLimit(excludedArticleIds.size() + 1)));
         SearchHits<ArticleDoc> hits;

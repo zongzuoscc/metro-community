@@ -41,7 +41,7 @@ public abstract class IntegrationTestSupport {
 
     private static final AtomicBoolean SCHEMA_INITIALIZED = new AtomicBoolean();
 
-    static final MySQLContainer<?> MYSQL = new MySQLContainer<>("mysql:8.0");
+    protected static final MySQLContainer<?> MYSQL = new MySQLContainer<>("mysql:8.0");
 
     static final GenericContainer<?> REDIS = new GenericContainer<>("redis:7-alpine")
             .withExposedPorts(6379);

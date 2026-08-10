@@ -9,7 +9,7 @@ import lombok.Data;
 import java.time.LocalDateTime;
 
 @Data
-@TableName("message")
+@TableName(value = "message", autoResultMap = true)
 public class Message {
 
     @TableId(type = IdType.AUTO)
@@ -47,6 +47,10 @@ public class Message {
     private Integer status;
 
     private LocalDateTime createTime;
+
+    /** Original domain event UUID; null is retained for legacy notifications. */
+    @TableField(typeHandler = cumt.zongzuo.community.event.persistence.UuidBinaryTypeHandler.class)
+    private java.util.UUID sourceEventId;
 
     // --- 非数据库字段 (用于前端展示) ---
 

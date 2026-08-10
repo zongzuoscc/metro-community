@@ -28,4 +28,14 @@ public interface ConsumerInboxMapper {
     int insert(@Param("consumer") String consumer,
                @Param("eventId") UUID eventId,
                @Param("resultHash") String resultHash);
+
+    @Insert("""
+            INSERT IGNORE INTO consumer_inbox (consumer_name, event_id, processed_at, result_hash)
+            VALUES (#{consumer},
+              #{eventId,typeHandler=cumt.zongzuo.community.event.persistence.UuidBinaryTypeHandler},
+              CURRENT_TIMESTAMP(6), #{resultHash})
+            """)
+    int insertIgnore(@Param("consumer") String consumer,
+                     @Param("eventId") UUID eventId,
+                     @Param("resultHash") String resultHash);
 }
