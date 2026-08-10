@@ -25,4 +25,7 @@ public class ArticleDTO {
      * 【核心新增】是否发布 (true=发布, false=草稿)
      */
     private Boolean isPublish;
+
+    /** Optimistic draft version used after revision cutover. */
+    private Long expectedDraftVersion;
 }

@@ -4,6 +4,9 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import cumt.zongzuo.community.dto.NotificationMsgDTO;
+import cumt.zongzuo.community.article.config.ArticleRevisionMode;
+import cumt.zongzuo.community.article.config.ArticleRevisionModeResolver;
+import cumt.zongzuo.community.article.service.ArticleMutationFacade;
 import cumt.zongzuo.community.entity.Article;
 import cumt.zongzuo.community.entity.Comment;
 import cumt.zongzuo.community.entity.Report;
@@ -12,11 +15,14 @@ import cumt.zongzuo.community.mapper.ArticleMapper;
 import cumt.zongzuo.community.mapper.CommentMapper;
 import cumt.zongzuo.community.mapper.ReportMapper;
 import cumt.zongzuo.community.service.ReportService;
+import cumt.zongzuo.community.service.MessageService;
 import cumt.zongzuo.community.service.UserService;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.time.LocalDateTime;
 
@@ -29,6 +35,12 @@ public class ReportServiceImpl extends ServiceImpl<ReportMapper, Report> impleme
     private ArticleMapper articleMapper;
     @Autowired
     private CommentMapper commentMapper;
+    @Autowired
+    private ArticleMutationFacade articleMutationFacade;
+    @Autowired
+    private ArticleRevisionModeResolver articleRevisionModeResolver;
+    @Autowired
+    private MessageService messageService;
 
     @Autowired
     private RabbitTemplate rabbitTemplate;
@@ -83,11 +95,15 @@ public class ReportServiceImpl extends ServiceImpl<ReportMapper, Report> impleme
     public void processReport(Long adminId, Long reportId, boolean isViolation, String result) {
         Report report = getById(reportId);
         if (report == null) throw new RuntimeException("举报记录不存在");
+        if (!Integer.valueOf(0).equals(report.getStatus())) {
+            return;
+        }
 
         String feedbackContent; // 定义通知内容
+        int decisionStatus;
 
         if (isViolation) {
-            report.setStatus(1); // 确认违规
+            decisionStatus = 1; // 确认违规
             // 执行惩罚逻辑
             punishTarget(report.getTargetId(), report.getTargetType());
             // 【核心修改】针对文章，文案改为“退回修改”；针对评论，文案保持“删除”
@@ -97,20 +113,30 @@ public class ReportServiceImpl extends ServiceImpl<ReportMapper, Report> impleme
                 feedbackContent = "【违规处理通知】您发布的评论因违反社区规范已被删除。请注意言行，共同维护社区环境。处理备注：" + (result == null ? "无" : result);
             }
         } else {
-            report.setStatus(2); // 驳回
+            decisionStatus = 2; // 驳回
             feedbackContent = "【举报处理结果】您好，您举报的内容经核实未发现明显违规，暂不处理。如有疑问请联系管理员。处理备注：" + (result == null ? "无" : result);
         }
 
-        report.setHandlerId(adminId);
-        report.setHandleTime(LocalDateTime.now());
-        report.setResult(result);
-        updateById(report);
+        if (baseMapper.updateDecisionIfPending(reportId, decisionStatus, adminId,
+                LocalDateTime.now(), result) != 1) {
+            Report decided = getById(reportId);
+            if (decided != null && Integer.valueOf(decisionStatus).equals(decided.getStatus())) {
+                return;
+            }
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "REPORT_ALREADY_DECIDED");
+        }
 
-        sendSystemNotification(report.getReporterId(), report.getTargetId(), feedbackContent);
+        sendSystemNotification(report.getReporterId(), report.getTargetId(), report.getTargetType(),
+                feedbackContent);
     }
 
     // 发送系统通知
-    private void sendSystemNotification(Long toUserId, Long targetId, String content) {
+    private void sendSystemNotification(Long toUserId, Long targetId, Integer targetType, String content) {
+        if (Integer.valueOf(1).equals(targetType)
+                && articleRevisionModeResolver.current() != ArticleRevisionMode.LEGACY) {
+            messageService.send(1L, toUserId, 0, targetId, content);
+            return;
+        }
         try {
             NotificationMsgDTO msg = new NotificationMsgDTO();
             // 确保数据库中有一个 ID=1 的管理员用户，或者改成其他存在的系统账号ID
@@ -155,11 +181,7 @@ public class ReportServiceImpl extends ServiceImpl<ReportMapper, Report> impleme
     // 辅助：执行惩罚
     private void punishTarget(Long targetId, Integer targetType) {
         if (targetType == 1) { // 违规文章 -> 设为拒绝/违规下架
-            Article article = articleMapper.selectById(targetId);
-            if (article != null) {
-                article.setStatus(3); // 状态 3 表示违规/未通过
-                articleMapper.updateById(article);
-            }
+            articleMutationFacade.rejectReportedArticle(targetId);
         } else if (targetType == 2) { // 违规评论 -> 逻辑删除
             // 【核心修复】对于 @TableLogic 注解的实体，必须使用 deleteById 才能触发逻辑删除更新
             // 之前的 updateById + setIsDeleted(1) 会被 MP 忽略

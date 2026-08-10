@@ -1,8 +1,6 @@
 package cumt.zongzuo.community.task;
 
-import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
-import cumt.zongzuo.community.entity.Article;
-import cumt.zongzuo.community.service.ArticleService;
+import cumt.zongzuo.community.article.service.ArticleMutationFacade;
 import cumt.zongzuo.community.service.impl.ArticleServiceImpl; // 引入Service以获取常量Key
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -18,7 +16,7 @@ public class ViewCountSyncTask {
     private StringRedisTemplate stringRedisTemplate;
 
     @Autowired
-    private ArticleService articleService;
+    private ArticleMutationFacade articleMutationFacade;
 
     // 每分钟执行一次
     @Scheduled(cron = "0 0/1 * * * ?")
@@ -40,9 +38,7 @@ public class ViewCountSyncTask {
 
                 if (viewCountStr != null) {
                     // 更新数据库
-                    articleService.update(new UpdateWrapper<Article>()
-                            .eq("id", articleId)
-                            .set("view_count", Integer.parseInt(viewCountStr)));
+                    articleMutationFacade.syncViewCount(articleId, Integer.parseInt(viewCountStr));
 
                     // 同步成功后，从脏集合中移除
                     stringRedisTemplate.opsForSet().remove(ArticleServiceImpl.ARTICLE_VIEW_DIRTY_SET, idStr);

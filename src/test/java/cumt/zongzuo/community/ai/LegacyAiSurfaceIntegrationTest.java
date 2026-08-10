@@ -96,9 +96,14 @@ class LegacyAiSurfaceIntegrationTest extends IntegrationTestSupport {
 
         String articleService = Files.readString(Path.of(
                 "src/main/java/cumt/zongzuo/community/service/impl/ArticleServiceImpl.java"));
+        String articleMutationFacade = Files.readString(Path.of(
+                "src/main/java/cumt/zongzuo/community/article/service/ArticleMutationFacade.java"));
         assertThat(articleService).contains(
-                "article.setStatus(2)",
-                "rabbitTemplate.convertAndSend(\"article.audit.queue\", article.getId())");
+                "articleMutationFacade.publishOrSave(dto, isPublish, userId)");
+        assertThat(articleMutationFacade).contains(
+                "if (mode == ArticleRevisionMode.LEGACY)",
+                "int status = publish ? 2 : 0",
+                "rabbitTemplate.convertAndSend(publish ? \"article.audit.queue\" : \"es.sync.queue\"");
     }
 
     @Test

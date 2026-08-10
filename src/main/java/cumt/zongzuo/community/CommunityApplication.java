@@ -2,6 +2,7 @@ package cumt.zongzuo.community;
 
 import cumt.zongzuo.community.config.SecurityProperties;
 import cumt.zongzuo.community.config.WebSocketProperties;
+import cumt.zongzuo.community.article.config.ArticleRevisionProperties;
 import cumt.zongzuo.community.recommendation.config.RecommendationProperties;
 import org.mybatis.spring.annotation.MapperScan;
 import org.apache.ibatis.annotations.Mapper;
@@ -23,9 +24,11 @@ import org.springframework.scheduling.annotation.EnableScheduling;
         OllamaEmbeddingAutoConfiguration.class
 })
 @MapperScan(value = {"cumt.zongzuo.community.mapper", "cumt.zongzuo.community.recommendation.mapper",
-        "cumt.zongzuo.community.event"}, annotationClass = Mapper.class)
+        "cumt.zongzuo.community.event", "cumt.zongzuo.community.article.persistence",
+        "cumt.zongzuo.community.ai.moderation.revision"}, annotationClass = Mapper.class)
 @EnableScheduling
-@EnableConfigurationProperties({SecurityProperties.class, WebSocketProperties.class, RecommendationProperties.class})
+@EnableConfigurationProperties({SecurityProperties.class, WebSocketProperties.class, RecommendationProperties.class,
+        ArticleRevisionProperties.class})
 public class CommunityApplication {
 
 	public static void main(String[] args) {

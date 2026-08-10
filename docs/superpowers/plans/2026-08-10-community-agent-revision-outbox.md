@@ -555,7 +555,10 @@ SHADOW must be production-capable before Task 4 backfill starts. Every legacy mu
 1. `SELECT ... FOR UPDATE` article and owner draft.
 2. Verify not deleted, exact draft version and canonical hash.
 3. Allocate `revision_no = MAX(revision_no)+1` under the article lock and INSERT the immutable revision.
-4. CAS every older non-terminal job for that article to SUPERSEDED and append `ARTICLE_REVISION_SUPERSEDED` Outbox rows.
+4. CAS every older non-terminal job for that article to SUPERSEDED and append one
+   `ARTICLE_REVISION_SUPERSEDED` Outbox event whose sorted `supersededJobIds`,
+   `supersededRevisionIds` and `supersededContentHashes` arrays describe the whole batch. This keeps
+   the locked public event type while allocating one unique article aggregate version.
 5. INSERT a job bound to `(articleId,revisionId,contentHash)`. If AI moderation is disabled/unavailable, initialize HUMAN_PENDING; otherwise initialize PENDING.
 6. Update latest/pending pointers, review state and article lock version; do not change published pointer or compatible published fields. If an older published pointer exists, visibility/status remain PUBLIC/1 while the new review is pending; otherwise they are PRIVATE/2.
 7. Append `ARTICLE_REVISION_SUBMITTED` in the same transaction.
@@ -613,7 +616,7 @@ public interface StageBArticleMigrationVerifier {
 
 - [ ] **Step 1: Write the failing SHADOW-race/backfill/verify tests**
 
-Seed legacy rows for statuses 0/1/2/3, deleted rows, tags, nullable bodies, one invalid status and legacy ES documents. Start SHADOW first, then race legacy save/submit transactions against backfill while both lock the same article row. Assert the committed legacy value is also the committed shadow draft/revision value regardless of lock winner. A first run creates deterministic revision 1/draft rows, status mappings and a pending moderation job; a second run creates no rows and changes no hashes/ids. Assert:
+Seed legacy rows for statuses 0/1/2/3, deleted rows, tags, nullable bodies, one invalid status and legacy ES documents. Start SHADOW first, then race legacy save/submit transactions against backfill while both lock the same article row. For a status-0 autosave, assert the committed legacy value equals the current shadow draft regardless of lock winner. Revision 1 is the immutable `MIGRATION_BASELINE`: because every writer locks the article before applying its mutation, it deterministically freezes the pre-mutation legacy snapshot and remains self-consistent after the mutable draft advances. It has no latest/pending/published pointer; a later submission appends `MAX(revision_no)+1`. For status 1 the published baseline must equal the public mirror; status 2/3 use their frozen pending/rejected mapping. A first run creates deterministic revision 1/draft rows, status mappings and a pending moderation job; a second run creates no rows and changes no hashes/ids. Assert:
 
 ```text
 status=0 -> PRIVATE / NOT_SUBMITTED / no latest,pending,published pointer
@@ -628,7 +631,10 @@ Unknown status/delete flags are inserted into `article_revision_migration_issue`
 ```text
 article_count = migrated_draft_count + unresolved_issue_count
 article_count = revision1_count + unresolved_issue_count
-every migrated draft/revision hash = freshly canonicalized legacy snapshot hash
+every migrated draft hash = freshly canonicalized current legacy snapshot hash
+every revision hash = freshly canonicalized content stored in that immutable revision
+status0 baseline owns the article, is pointer-free and may differ from a later mutable draft/legacy value
+status1 published revision hash/content = current public legacy mirror
 every pointer references its own article
 every status2 row has exactly one job bound to revision/hash
 every public legacy ES document equals the published revision; no non-public/deleted id exists

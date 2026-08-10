@@ -90,6 +90,8 @@ app:
     ticket-ttl: ${WEBSOCKET_TICKET_TTL:PT30S}
 
 metro:
+  article:
+    revision-mode: ${METRO_ARTICLE_REVISION_MODE:LEGACY}
   events:
     outbox:
       dispatch-enabled: ${METRO_DOMAIN_EVENT_DISPATCH_ENABLED:true}

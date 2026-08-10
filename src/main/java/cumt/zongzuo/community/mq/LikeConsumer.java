@@ -12,6 +12,7 @@ import cumt.zongzuo.community.mapper.LikeRecordMapper;
 import cumt.zongzuo.community.recommendation.dto.RecommendationEventCommand;
 import cumt.zongzuo.community.recommendation.entity.RecommendationEventType;
 import cumt.zongzuo.community.recommendation.service.RecommendationEventOutboxService;
+import cumt.zongzuo.community.article.service.ArticleMutationFacade;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.amqp.rabbit.annotation.RabbitHandler;
@@ -38,6 +39,8 @@ public class LikeConsumer {
     private RabbitTemplate rabbitTemplate;
     @Autowired
     private RecommendationEventOutboxService recommendationEventOutboxService;
+    @Autowired
+    private ArticleMutationFacade articleMutationFacade;
 
     @RabbitHandler
     @Transactional
@@ -79,8 +82,7 @@ public class LikeConsumer {
                 if (targetType == 1) { // 文章
                     Article article = articleMapper.selectById(targetId);
                     if (article != null) {
-                        article.setLikeCount((article.getLikeCount() == null ? 0 : article.getLikeCount()) + 1);
-                        articleMapper.updateById(article);
+                        articleMutationFacade.addLikeCount(targetId, 1);
                         receiverId = article.getAuthorId();
                     }
                 } else if (targetType == 2) { // 评论
@@ -117,8 +119,7 @@ public class LikeConsumer {
                     if (targetType == 1) {
                         Article article = articleMapper.selectById(targetId);
                         if (article != null && article.getLikeCount() > 0) {
-                            article.setLikeCount(article.getLikeCount() - 1);
-                            articleMapper.updateById(article);
+                            articleMutationFacade.addLikeCount(targetId, -1);
                         }
                     } else if (targetType == 2) {
                         Comment comment = commentMapper.selectById(targetId);

@@ -12,9 +12,7 @@ import cumt.zongzuo.community.mapper.*;
 import cumt.zongzuo.community.service.ArticleService;
 import cumt.zongzuo.community.service.UserService;
 import cumt.zongzuo.community.security.CurrentUser;
-import cumt.zongzuo.community.utils.SensitiveUtils;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.elasticsearch.core.ElasticsearchOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -32,6 +30,7 @@ import org.springframework.data.elasticsearch.core.query.highlight.Highlight;
 import org.springframework.data.elasticsearch.core.query.highlight.HighlightField;
 import org.springframework.data.elasticsearch.core.query.highlight.HighlightParameters;
 import cumt.zongzuo.community.document.ArticleDoc;
+import cumt.zongzuo.community.article.service.ArticleMutationFacade;
 import java.util.Arrays;
 import jakarta.servlet.http.HttpServletRequest;
 import java.time.LocalDateTime;
@@ -41,7 +40,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
-import cumt.zongzuo.community.dto.NotificationMsgDTO;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.elasticsearch.core.query.StringQuery;
 import org.springframework.data.elasticsearch.core.SearchHit;
@@ -70,17 +68,14 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
     private ObjectMapper objectMapper;
 
     @Autowired
-    private SensitiveUtils sensitiveUtils;
-
-    @Autowired
     private FollowMapper followMapper;
-
-    @Autowired
-    private RabbitTemplate rabbitTemplate;
 
     // 【新增】注入 Elasticsearch 高级操作模板
     @Autowired
     private ElasticsearchOperations elasticsearchOperations;
+
+    @Autowired
+    private ArticleMutationFacade articleMutationFacade;
 
     // Redis Key 定义
     private static final String ARTICLE_DETAIL_CACHE_PREFIX = "article:detail:";
@@ -92,94 +87,10 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
     // 1. 发布/保存文章 (含机器审核逻辑)
     // --------------------------------------------------------------------------------
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public Long publishOrSave(ArticleDTO dto, boolean isPublish, Long userId) {
-        Article article;
-
-        // 1. 判断是【新增】还是【修改】
-        if (dto.getId() != null) {
-            // --- 修改逻辑 ---
-            article = getById(dto.getId());
-            if (article == null) {
-                throw new RuntimeException("文章不存在");
-            }
-            // 权限校验
-            if (!article.getAuthorId().equals(userId)) {
-                throw new RuntimeException("无权修改他人文章");
-            }
-            article.setUpdateTime(LocalDateTime.now());
-        } else {
-            // --- 新增逻辑 ---
-            article = new Article();
-            article.setAuthorId(userId);
-            article.setCreateTime(LocalDateTime.now());
-            article.setUpdateTime(LocalDateTime.now());
-            article.setViewCount(0);
-            article.setLikeCount(0);
-            article.setCommentCount(0);
-            article.setCollectCount(0); // 这里需要 Article.java 中有 collectCount 字段
-            article.setIsDeleted(0);
-        }
-
-        // 2. 【核心】敏感词机器审核 (仅发布时校验)
-        if (isPublish) {
-            String fullText = (dto.getTitle() == null ? "" : dto.getTitle())
-                    + (dto.getContent() == null ? "" : dto.getContent());
-            // 极速同步检测
-            String sensitiveWord = sensitiveUtils.check(fullText);
-            if (sensitiveWord != null) {
-                // 发现违规，直接抛异常阻断，前端会收到错误提示
-                throw new RuntimeException("发布失败：内容包含违规词汇 [" + sensitiveWord + "]，请修改");
-            }
-        }
-
-        // 3. 填充基础字段
-        article.setTitle(dto.getTitle());
-        article.setContent(dto.getContent());
-        article.setCover(dto.getCover());
-
-        // 自动生成摘要
-        if (StrUtil.isBlank(dto.getSummary())) {
-            String content = dto.getContent() == null ? "" : dto.getContent();
-            content = content.replaceAll("!\\[.*?\\]\\(.*?\\)", ""); // 去图片
-            String cleanTxt = content.replaceAll("[#*>`~-]", "").trim(); // 去Markdown符号
-            article.setSummary(cleanTxt.length() > 100 ? cleanTxt.substring(0, 100) + "..." : cleanTxt);
-        } else {
-            article.setSummary(dto.getSummary());
-        }
-
-        // 4. 【核心】状态设置逻辑
-        if (isPublish) {
-            // 机器审核通过 -> 进入人工审核状态 (2)
-            // 只有管理员后台通过后，状态才会变为 1 (已发布/公开)
-            article.setStatus(2);
-        } else {
-            // 存草稿
-            article.setStatus(0);
-        }
-
-        // 5. 落库
-        saveOrUpdate(article);
-
-        // 6. 处理标签
-        handleTags(article.getId(), dto.getTags());
-
-        // 7. 删除缓存 (保证数据一致性)
-        if (dto.getId() != null) {
-            stringRedisTemplate.delete(ARTICLE_DETAIL_CACHE_PREFIX + dto.getId());
-        }
-
-        // 8. 【新增】基于状态驱动的 MQ 异步投递
-        if (isPublish) {
-            // 文章发布，状态变为了 2 (审核中)，投递给 AI 审核队列
-            log.info("文章 ID: {} 已提交发布，投递至 AI 异步审核队列", article.getId());
-            rabbitTemplate.convertAndSend("article.audit.queue", article.getId());
-        } else {
-            // 存为草稿，状态变为了 0，同步通知 ES 更新/移除
-            rabbitTemplate.convertAndSend("es.sync.queue", article.getId());
-        }
-
-        return article.getId();
+        long articleId = articleMutationFacade.publishOrSave(dto, isPublish, userId);
+        stringRedisTemplate.delete(ARTICLE_DETAIL_CACHE_PREFIX + articleId);
+        return articleId;
     }
 
     /**
@@ -437,68 +348,16 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public void auditArticle(Long articleId, boolean pass, String reason) {
-        Long adminId = CurrentUser.id();
-        int targetStatus = pass ? 1 : 3;
-        int updated = baseMapper.updateModerationStatusIfPending(articleId, targetStatus);
-        if (updated == 0) {
-            Article current = getById(articleId);
-            if (current != null
-                    && Integer.valueOf(0).equals(current.getIsDeleted())
-                    && Integer.valueOf(targetStatus).equals(current.getStatus())) {
-                return;
-            }
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "文章审核状态已发生变化");
-        }
-
-        Article article = getById(articleId);
-        if (article == null) {
-            throw new IllegalStateException("审核状态更新后文章不存在");
-        }
-
-        if (pass) {
-            // 审核通过，同步到 Elasticsearch 提供搜索
-            rabbitTemplate.convertAndSend("es.sync.queue", articleId);
-
-            // 发送通过私信通知
-            sendSystemNotification(adminId, article.getAuthorId(), articleId,
-                    "🎉 恭喜！您的文章《" + article.getTitle() + "》已通过人工审核并成功发布。");
-        } else {
-            // 发送拒绝私信通知
-            String rejectReason = StrUtil.isNotBlank(reason) ? reason : "存在违规内容";
-            sendSystemNotification(adminId, article.getAuthorId(), articleId,
-                    "⚠️ 抱歉，您的文章《" + article.getTitle() + "》未通过人工审核。原因：" + rejectReason + "。请修改后重新发布。");
-        }
-
-        // 4. 清理旧缓存
+        articleMutationFacade.assertArticleWritesAllowed();
+        articleMutationFacade.auditLegacyArticle(articleId, pass, reason, CurrentUser.id());
         stringRedisTemplate.delete(ARTICLE_DETAIL_CACHE_PREFIX + articleId);
-    }
-
-    /**
-     * 抽取发送系统通知的私有方法
-     */
-    private void sendSystemNotification(Long fromId, Long toId, Long targetId, String content) {
-        NotificationMsgDTO msg = new NotificationMsgDTO();
-        msg.setFromId(fromId);
-        msg.setToId(toId);
-        msg.setType(4); // 系统通知
-        msg.setTargetId(targetId);
-        msg.setContent(content);
-        rabbitTemplate.convertAndSend("message.notify.queue", msg);
     }
 
     @Override
     public void moveToRecycleBin(Long articleId, Long userId) {
-        Article article = getById(articleId);
-        if (article == null) return;
-        if (!article.getAuthorId().equals(userId)) throw new RuntimeException("无权删除");
-        article.setIsDeleted(1);
-        article.setDeleteTime(LocalDateTime.now());
-        updateById(article);
+        articleMutationFacade.recycle(articleId, userId);
         stringRedisTemplate.delete(ARTICLE_DETAIL_CACHE_PREFIX + articleId);
-        // 【新增】发送同步消息 (通知 ES 删除)
-        rabbitTemplate.convertAndSend("es.sync.queue", articleId);
     }
 
     @Override
@@ -508,25 +367,14 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
 
     @Override
     public void restoreArticle(Long articleId, Long userId) {
-        Article article = getById(articleId);
-        if (article == null) return;
-        if (!article.getAuthorId().equals(userId)) throw new RuntimeException("无权操作");
-        article.setIsDeleted(0);
-        article.setDeleteTime(null);
-        updateById(article);
+        articleMutationFacade.restore(articleId, userId);
         stringRedisTemplate.delete(ARTICLE_DETAIL_CACHE_PREFIX + articleId);
-        // 【新增】发送同步消息 (通知 ES 重新建立索引)
-        rabbitTemplate.convertAndSend("es.sync.queue", articleId);
     }
 
     @Override
     public void deletePermanently(Long articleId, Long userId) {
-        Article article = getById(articleId);
-        if (article == null) return;
-        if (!article.getAuthorId().equals(userId)) throw new RuntimeException("无权操作");
-        removeById(articleId);
-        // 【新增】发送同步消息
-        rabbitTemplate.convertAndSend("es.sync.queue", articleId);
+        articleMutationFacade.purge(articleId, userId);
+        stringRedisTemplate.delete(ARTICLE_DETAIL_CACHE_PREFIX + articleId);
     }
 
     @Override
@@ -534,17 +382,14 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
         QueryWrapper<Article> wrapper = new QueryWrapper<>();
         wrapper.eq("author_id", userId);
         wrapper.eq("is_deleted", 1);
+        wrapper.and(nested -> nested.isNull("visibility_state").or().ne("visibility_state", "PURGED"));
         wrapper.orderByDesc("delete_time");
         return list(wrapper);
     }
 
     @Override
     public void cleanExpiredArticles() {
-        LocalDateTime sevenDaysAgo = LocalDateTime.now().minusDays(7);
-        QueryWrapper<Article> wrapper = new QueryWrapper<>();
-        wrapper.eq("is_deleted", 1);
-        wrapper.le("delete_time", sevenDaysAgo);
-        remove(wrapper);
+        articleMutationFacade.cleanExpiredArticles(LocalDateTime.now().minusDays(7), 1000);
     }
 
     @Override

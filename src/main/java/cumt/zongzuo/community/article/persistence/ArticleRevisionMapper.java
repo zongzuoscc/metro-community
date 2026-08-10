@@ -7,6 +7,8 @@ import org.apache.ibatis.annotations.Options;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
+import java.util.List;
+
 @Mapper
 public interface ArticleRevisionMapper {
 
@@ -24,4 +26,10 @@ public interface ArticleRevisionMapper {
 
     @Select("SELECT * FROM article_revision WHERE id = #{id}")
     ArticleRevision selectById(@Param("id") long id);
+
+    @Select("SELECT COALESCE(MAX(revision_no),0)+1 FROM article_revision WHERE article_id=#{articleId}")
+    long selectNextRevisionNo(@Param("articleId") long articleId);
+
+    @Select("SELECT * FROM article_revision WHERE article_id=#{articleId} ORDER BY revision_no")
+    List<ArticleRevision> selectByArticleId(@Param("articleId") long articleId);
 }
