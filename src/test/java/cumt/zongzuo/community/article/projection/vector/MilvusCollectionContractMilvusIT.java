@@ -60,6 +60,10 @@ class MilvusCollectionContractMilvusIT {
         assertThat(repository.upsert(MilvusCollectionSchemas.ARTICLE_COLLECTION, List.of(
                 document(firstId, 701L, unitVector(0)),
                 document(secondId, 702L, unitVector(1))))).isEqualTo(2L);
+        assertThat(repository.listChunkIdsByArticle(MilvusCollectionSchemas.ARTICLE_COLLECTION, 701L))
+                .containsExactly(firstId);
+        assertThat(repository.listChunkIdsByArticle(MilvusCollectionSchemas.ARTICLE_COLLECTION, 702L))
+                .containsExactly(secondId);
 
         await().atMost(Duration.ofSeconds(10)).untilAsserted(() ->
                 assertThat(repository.searchActive(MilvusCollectionSchemas.ARTICLE_ALIAS,

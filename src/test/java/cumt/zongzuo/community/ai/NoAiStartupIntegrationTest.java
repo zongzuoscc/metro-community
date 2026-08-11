@@ -9,6 +9,7 @@ import cumt.zongzuo.community.ai.moderation.revision.ArticleModerationRecovery;
 import cumt.zongzuo.community.article.chunk.ArticleChunkProjectionConsumer;
 import cumt.zongzuo.community.article.chunk.ArticleChunkProjectionService;
 import cumt.zongzuo.community.article.projection.chunk.ArticleChunkElasticsearchProjectionService;
+import cumt.zongzuo.community.article.projection.vector.ArticleMilvusProjectionService;
 import io.milvus.v2.client.MilvusClientV2;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.deepseek.DeepSeekChatModel;
@@ -52,6 +53,8 @@ class NoAiStartupIntegrationTest extends IntegrationTestSupport {
         assertThat(context.getBeanNamesForType(ArticleChunkProjectionConsumer.class)).isEmpty();
         assertThat(context.getBeanNamesForType(ArticleChunkElasticsearchProjectionService.class)).isEmpty();
         assertThat(context.containsBean("articleChunkElasticsearchProjectionConsumer")).isFalse();
+        assertThat(context.getBeanNamesForType(ArticleMilvusProjectionService.class)).isEmpty();
+        assertThat(context.containsBean("articleMilvusProjectionConsumer")).isFalse();
         assertThat(context.getBeanNamesForType(ArticleModerationRecovery.class)).isEmpty();
         assertThat(context.getBean(AiChatGateway.class)).isInstanceOf(DisabledAiChatGateway.class);
         assertThat(context.getBean(EmbeddingGateway.class)).isInstanceOf(DisabledEmbeddingGateway.class);

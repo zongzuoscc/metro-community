@@ -31,6 +31,32 @@ public final class SdkArticleVectorRepository implements ArticleVectorRepository
     }
 
     @Override
+    public List<Long> listChunkIdsByArticle(String physicalCollection, long articleId) {
+        requireCollection(physicalCollection);
+        if (articleId <= 0) {
+            throw new IllegalArgumentException("articleId must be positive");
+        }
+        client.loadCollection(LoadCollectionReq.builder()
+                .collectionName(physicalCollection)
+                .sync(true)
+                .timeout(60_000L)
+                .build());
+        QueryResp response = client.query(QueryReq.builder()
+                .collectionName(physicalCollection)
+                .filter("article_id == " + articleId)
+                .outputFields(List.of("chunk_id"))
+                .consistencyLevel(ConsistencyLevel.STRONG)
+                .build());
+        if (response.getQueryResults() == null) {
+            return List.of();
+        }
+        return response.getQueryResults().stream()
+                .map(row -> number(row.getEntity().get("chunk_id"), "chunk_id").longValue())
+                .sorted()
+                .toList();
+    }
+
+    @Override
     public long upsert(String physicalCollection, List<ArticleVectorDocument> documents) {
         requireCollection(physicalCollection);
         Objects.requireNonNull(documents, "documents");

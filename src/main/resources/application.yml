@@ -134,6 +134,15 @@ metro:
       enabled: ${METRO_ARTICLE_CHUNK_ELASTICSEARCH_ENABLED:false}
       index-name: ${METRO_ARTICLE_CHUNK_ELASTICSEARCH_INDEX:article-chunks-v1}
       lease-duration: ${METRO_ARTICLE_CHUNK_ELASTICSEARCH_LEASE_DURATION:PT30S}
+    article-chunk-milvus:
+      enabled: ${METRO_ARTICLE_CHUNK_MILVUS_ENABLED:false}
+      uri: ${METRO_ARTICLE_CHUNK_MILVUS_URI:http://127.0.0.1:29530}
+      username: ${METRO_ARTICLE_CHUNK_MILVUS_USERNAME:}
+      password: ${METRO_ARTICLE_CHUNK_MILVUS_PASSWORD:}
+      physical-collection: ${METRO_ARTICLE_CHUNK_MILVUS_COLLECTION:metro_article_chunks_bgem3_v1}
+      lease-duration: ${METRO_ARTICLE_CHUNK_MILVUS_LEASE_DURATION:PT60S}
+      connect-timeout: ${METRO_ARTICLE_CHUNK_MILVUS_CONNECT_TIMEOUT:PT10S}
+      rpc-timeout: ${METRO_ARTICLE_CHUNK_MILVUS_RPC_TIMEOUT:PT60S}
   events:
     outbox:
       dispatch-enabled: ${METRO_DOMAIN_EVENT_DISPATCH_ENABLED:true}

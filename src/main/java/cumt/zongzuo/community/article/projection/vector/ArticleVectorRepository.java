@@ -4,6 +4,8 @@ import java.util.List;
 
 public interface ArticleVectorRepository {
 
+    List<Long> listChunkIdsByArticle(String physicalCollection, long articleId);
+
     long upsert(String physicalCollection, List<ArticleVectorDocument> documents);
 
     List<ArticleVectorHit> searchActive(String readAlias,
