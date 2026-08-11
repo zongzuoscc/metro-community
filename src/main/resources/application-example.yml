@@ -72,6 +72,10 @@ metro:
     article-chunks:
       enabled: ${METRO_ARTICLE_CHUNKS_ENABLED:false}
       parser-generation: ${METRO_ARTICLE_CHUNK_PARSER_GENERATION:1}
+    article-chunk-elasticsearch:
+      enabled: ${METRO_ARTICLE_CHUNK_ELASTICSEARCH_ENABLED:false}
+      index-name: ${METRO_ARTICLE_CHUNK_ELASTICSEARCH_INDEX:article-chunks-v1}
+      lease-duration: ${METRO_ARTICLE_CHUNK_ELASTICSEARCH_LEASE_DURATION:PT30S}
   events:
     retention:
       scheduling-enabled: ${METRO_DOMAIN_EVENT_RETENTION_SCHEDULING_ENABLED:false}
