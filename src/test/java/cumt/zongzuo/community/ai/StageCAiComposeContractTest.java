@@ -177,6 +177,8 @@ class StageCAiComposeContractTest {
                     "config", "--format", "json");
             render.environment().put(
                     "ELASTICSEARCH_HOST_PORT", Integer.toString(occupiedBasePort.getLocalPort()));
+            render.environment().put("MILVUS_HOST_PORT", Integer.toString(unusedLoopbackPort()));
+            render.environment().put("OLLAMA_HOST_PORT", Integer.toString(unusedLoopbackPort()));
             Process renderProcess = render.redirectOutput(rendered.toFile()).redirectErrorStream(true).start();
             assertThat(renderProcess.waitFor()).isZero();
 
@@ -210,6 +212,12 @@ class StageCAiComposeContractTest {
             assertThat(launchProcess.waitFor()).as(output).isZero();
             assertThat(output).contains("Stage C AI Compose preflight passed");
             assertThat(Files.readString(invocationLog)).doesNotContain(" up ");
+        }
+    }
+
+    private static int unusedLoopbackPort() throws Exception {
+        try (ServerSocket socket = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))) {
+            return socket.getLocalPort();
         }
     }
 

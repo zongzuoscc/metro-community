@@ -6,6 +6,7 @@ import cumt.zongzuo.community.ai.provider.DisabledAiChatGateway;
 import cumt.zongzuo.community.ai.provider.DisabledEmbeddingGateway;
 import cumt.zongzuo.community.ai.provider.EmbeddingGateway;
 import cumt.zongzuo.community.ai.moderation.revision.ArticleModerationRecovery;
+import io.milvus.v2.client.MilvusClientV2;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.deepseek.DeepSeekChatModel;
 import org.springframework.ai.deepseek.api.DeepSeekApi;
@@ -43,6 +44,7 @@ class NoAiStartupIntegrationTest extends IntegrationTestSupport {
         assertThat(context.getBeanNamesForType(OllamaEmbeddingModel.class)).isEmpty();
         assertThat(context.getBeanNamesForType(DeepSeekApi.class)).isEmpty();
         assertThat(context.getBeanNamesForType(OllamaApi.class)).isEmpty();
+        assertThat(context.getBeanNamesForType(MilvusClientV2.class)).isEmpty();
         assertThat(context.getBeanNamesForType(ArticleModerationRecovery.class)).isEmpty();
         assertThat(context.getBean(AiChatGateway.class)).isInstanceOf(DisabledAiChatGateway.class);
         assertThat(context.getBean(EmbeddingGateway.class)).isInstanceOf(DisabledEmbeddingGateway.class);

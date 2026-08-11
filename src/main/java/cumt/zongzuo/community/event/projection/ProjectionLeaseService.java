@@ -12,7 +12,18 @@ import java.util.UUID;
 public interface ProjectionLeaseService {
     ProjectionLease acquire(String consumer, DomainEvent event, Duration lease);
 
+    void renew(ProjectionLease lease, Duration duration);
+
+    void assertOwned(ProjectionLease lease);
+
     void complete(ProjectionLease lease, DomainEvent event, boolean tombstone, String resultHash);
+
+    ProjectionRepairLease acquireRepair(String consumer, String aggregateType, long aggregateId,
+                                        long aggregateVersion, long lifecycleEpoch, Duration lease);
+
+    void assertOwned(ProjectionRepairLease lease);
+
+    void completeRepair(ProjectionRepairLease lease);
 }
 
 @Service
@@ -32,15 +43,7 @@ class DefaultProjectionLeaseService implements ProjectionLeaseService {
     public ProjectionLease acquire(String consumer, DomainEvent event, Duration lease) {
         requireConsumer(consumer);
         Objects.requireNonNull(event, "event");
-        if (lease == null || lease.isZero() || lease.isNegative()) {
-            throw new IllegalArgumentException("lease must be positive");
-        }
-        long leaseMicros;
-        try {
-            leaseMicros = Math.multiplyExact(lease.toMillis(), 1_000L);
-        } catch (ArithmeticException exception) {
-            throw new IllegalArgumentException("lease is too large", exception);
-        }
+        long leaseMicros = leaseMicros(lease);
 
         watermarkMapper.insertIfAbsent(consumer, event.aggregateType(), event.aggregateId());
         ProjectionWatermark watermark = watermarkMapper.selectForUpdate(
@@ -70,6 +73,26 @@ class DefaultProjectionLeaseService implements ProjectionLeaseService {
 
     @Override
     @Transactional
+    public void renew(ProjectionLease lease, Duration duration) {
+        requireAcquired(lease);
+        if (watermarkMapper.renew(lease.consumer(), lease.aggregateType(), lease.aggregateId(),
+                lease.leaseOwner(), leaseMicros(duration)) != 1) {
+            throw lost();
+        }
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public void assertOwned(ProjectionLease lease) {
+        requireAcquired(lease);
+        if (watermarkMapper.countOwned(lease.consumer(), lease.aggregateType(), lease.aggregateId(),
+                lease.leaseOwner()) != 1) {
+            throw lost();
+        }
+    }
+
+    @Override
+    @Transactional
     public void complete(ProjectionLease lease, DomainEvent event, boolean tombstone, String resultHash) {
         Objects.requireNonNull(lease, "lease");
         Objects.requireNonNull(event, "event");
@@ -93,6 +116,61 @@ class DefaultProjectionLeaseService implements ProjectionLeaseService {
         }
     }
 
+    @Override
+    @Transactional
+    public ProjectionRepairLease acquireRepair(String consumer, String aggregateType, long aggregateId,
+                                               long aggregateVersion, long lifecycleEpoch,
+                                               Duration lease) {
+        requireConsumer(consumer);
+        if (aggregateType == null || aggregateType.isBlank() || aggregateType.length() > 64) {
+            throw new IllegalArgumentException("aggregateType must contain 1..64 characters");
+        }
+        if (aggregateVersion < 0 || lifecycleEpoch < 0) {
+            throw new IllegalArgumentException("repair tuple must be non-negative");
+        }
+        long leaseMicros = leaseMicros(lease);
+        watermarkMapper.insertIfAbsent(consumer, aggregateType, aggregateId);
+        ProjectionWatermark watermark = watermarkMapper.selectForUpdate(consumer, aggregateType, aggregateId);
+        LocalDateTime databaseNow = watermarkMapper.selectDatabaseNow();
+        if (watermark.getLeaseOwner() != null && watermark.getLeaseUntil() != null
+                && watermark.getLeaseUntil().isAfter(databaseNow)) {
+            return repairSkipped(consumer, aggregateType, aggregateId, aggregateVersion,
+                    lifecycleEpoch, ProjectionRepairLease.Decision.BUSY);
+        }
+        if (watermark.getLastAppliedVersion() != aggregateVersion
+                || watermark.getLifecycleEpoch() != lifecycleEpoch) {
+            return repairSkipped(consumer, aggregateType, aggregateId, aggregateVersion,
+                    lifecycleEpoch, ProjectionRepairLease.Decision.STALE);
+        }
+        String owner = UUID.randomUUID().toString();
+        if (watermarkMapper.acquire(consumer, aggregateType, aggregateId, owner, leaseMicros) != 1) {
+            return repairSkipped(consumer, aggregateType, aggregateId, aggregateVersion,
+                    lifecycleEpoch, ProjectionRepairLease.Decision.BUSY);
+        }
+        return new ProjectionRepairLease(consumer, aggregateType, aggregateId, aggregateVersion,
+                lifecycleEpoch, owner, ProjectionRepairLease.Decision.ACQUIRED);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public void assertOwned(ProjectionRepairLease lease) {
+        requireAcquired(lease);
+        if (watermarkMapper.countRepairOwned(lease.consumer(), lease.aggregateType(), lease.aggregateId(),
+                lease.leaseOwner(), lease.aggregateVersion(), lease.lifecycleEpoch()) != 1) {
+            throw lost();
+        }
+    }
+
+    @Override
+    @Transactional
+    public void completeRepair(ProjectionRepairLease lease) {
+        requireAcquired(lease);
+        if (watermarkMapper.completeRepair(lease.consumer(), lease.aggregateType(), lease.aggregateId(),
+                lease.leaseOwner(), lease.aggregateVersion(), lease.lifecycleEpoch()) != 1) {
+            throw lost();
+        }
+    }
+
     private static boolean isStale(ProjectionWatermark watermark, DomainEvent event) {
         if (event.lifecycleEpoch() < watermark.getLifecycleEpoch()) {
             return true;
@@ -105,6 +183,43 @@ class DefaultProjectionLeaseService implements ProjectionLeaseService {
                                            ProjectionLease.Decision decision) {
         return new ProjectionLease(consumer, event.aggregateType(), event.aggregateId(),
                 event.eventId(), event.aggregateVersion(), event.lifecycleEpoch(), null, decision);
+    }
+
+    private static ProjectionRepairLease repairSkipped(String consumer, String aggregateType,
+                                                       long aggregateId, long aggregateVersion,
+                                                       long lifecycleEpoch,
+                                                       ProjectionRepairLease.Decision decision) {
+        return new ProjectionRepairLease(consumer, aggregateType, aggregateId, aggregateVersion,
+                lifecycleEpoch, null, decision);
+    }
+
+    private static long leaseMicros(Duration lease) {
+        if (lease == null || lease.isZero() || lease.isNegative()) {
+            throw new IllegalArgumentException("lease must be positive");
+        }
+        try {
+            return Math.multiplyExact(lease.toMillis(), 1_000L);
+        } catch (ArithmeticException exception) {
+            throw new IllegalArgumentException("lease is too large", exception);
+        }
+    }
+
+    private static void requireAcquired(ProjectionLease lease) {
+        Objects.requireNonNull(lease, "lease");
+        if (!lease.acquired() || lease.leaseOwner() == null) {
+            throw new IllegalArgumentException("only an acquired lease is owned");
+        }
+    }
+
+    private static void requireAcquired(ProjectionRepairLease lease) {
+        Objects.requireNonNull(lease, "lease");
+        if (!lease.acquired() || lease.leaseOwner() == null) {
+            throw new IllegalArgumentException("only an acquired repair lease is owned");
+        }
+    }
+
+    private static ProjectionLeaseLostException lost() {
+        return new ProjectionLeaseLostException("projection lease was lost");
     }
 
     private static void requireConsumer(String consumer) {

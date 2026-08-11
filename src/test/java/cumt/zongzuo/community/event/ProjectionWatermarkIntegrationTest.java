@@ -6,6 +6,7 @@ import cumt.zongzuo.community.event.domain.DomainEvent;
 import cumt.zongzuo.community.event.domain.DomainEventType;
 import cumt.zongzuo.community.event.projection.ProjectionLease;
 import cumt.zongzuo.community.event.projection.ProjectionLeaseService;
+import cumt.zongzuo.community.event.projection.ProjectionRepairLease;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -135,6 +136,79 @@ class ProjectionWatermarkIntegrationTest extends IntegrationTestSupport {
         assertThat(inboxCount()).isEqualTo(1L);
         assertWatermark(8L, 2L, false);
         assertThat(first.leaseOwner()).isNotEqualTo(recovered.leaseOwner());
+    }
+
+    @Test
+    void renewalAndOwnershipAssertionUseDatabaseTimeAndRejectAnExpiredOwner() {
+        DomainEvent event = event(UUID.randomUUID(), 9L, 3L);
+        ProjectionLease lease = projectionLeaseService.acquire(
+                "article-search", event, Duration.ofMillis(250));
+
+        projectionLeaseService.renew(lease, Duration.ofSeconds(30));
+        projectionLeaseService.assertOwned(lease);
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT lease_until > TIMESTAMPADD(SECOND, 20, CURRENT_TIMESTAMP(6))
+                FROM projection_watermark
+                WHERE consumer_name = 'article-search' AND aggregate_type = 'ARTICLE'
+                  AND aggregate_id = 41
+                """, Boolean.class)).isTrue();
+
+        expireProjectionLease();
+        assertThatThrownBy(() -> projectionLeaseService.assertOwned(lease))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("lost");
+        assertThatThrownBy(() -> projectionLeaseService.renew(lease, Duration.ofSeconds(30)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("lost");
+    }
+
+    @Test
+    void equalWatermarkRepairUsesTheAggregateLeaseWithoutAdvancingWatermarkOrInbox() {
+        DomainEvent applied = event(UUID.randomUUID(), 12L, 4L);
+        ProjectionLease eventLease = acquire(applied);
+        projectionLeaseService.complete(eventLease, applied, false, hash("applied"));
+
+        ProjectionRepairLease repair = projectionLeaseService.acquireRepair(
+                "article-search", "ARTICLE", 41L, 12L, 4L, Duration.ofSeconds(30));
+        assertThat(repair.acquired()).isTrue();
+        assertThat(projectionLeaseService.acquireRepair(
+                "article-search", "ARTICLE", 41L, 12L, 4L, Duration.ofSeconds(30)).decision())
+                .isEqualTo(ProjectionRepairLease.Decision.BUSY);
+
+        projectionLeaseService.assertOwned(repair);
+        projectionLeaseService.completeRepair(repair);
+
+        assertWatermark(12L, 4L, false);
+        assertThat(inboxCount()).isEqualTo(1L);
+        assertThat(jdbcTemplate.queryForMap("""
+                SELECT lease_owner, lease_until FROM projection_watermark
+                WHERE consumer_name = 'article-search' AND aggregate_type = 'ARTICLE'
+                  AND aggregate_id = 41
+                """)).containsEntry("lease_owner", null).containsEntry("lease_until", null);
+    }
+
+    @Test
+    void repairCannotUseAnOlderTupleOrCompleteAfterAReplacementOwnerAdvancesTruth() {
+        DomainEvent applied = event(UUID.randomUUID(), 15L, 5L);
+        ProjectionLease appliedLease = acquire(applied);
+        projectionLeaseService.complete(appliedLease, applied, false, hash("applied"));
+
+        assertThat(projectionLeaseService.acquireRepair(
+                "article-search", "ARTICLE", 41L, 14L, 5L, Duration.ofSeconds(30)).decision())
+                .isEqualTo(ProjectionRepairLease.Decision.STALE);
+
+        ProjectionRepairLease oldRepair = projectionLeaseService.acquireRepair(
+                "article-search", "ARTICLE", 41L, 15L, 5L, Duration.ofSeconds(30));
+        expireProjectionLease();
+        DomainEvent newer = event(UUID.randomUUID(), 16L, 5L);
+        ProjectionLease newOwner = acquire(newer);
+        projectionLeaseService.complete(newOwner, newer, false, hash("newer"));
+
+        assertThatThrownBy(() -> projectionLeaseService.completeRepair(oldRepair))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("lost");
+        assertWatermark(16L, 5L, false);
+        assertThat(inboxCount()).isEqualTo(2L);
     }
 
     private ProjectionLease acquire(DomainEvent event) {
