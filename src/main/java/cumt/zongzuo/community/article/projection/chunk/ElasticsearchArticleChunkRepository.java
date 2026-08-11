@@ -16,7 +16,7 @@ import java.time.format.DateTimeFormatter;
 @Component
 @ConditionalOnProperty(prefix = "metro.projection.article-chunk-elasticsearch",
         name = "enabled", havingValue = "true")
-class ElasticsearchArticleChunkRepository {
+class ElasticsearchArticleChunkRepository implements ArticleChunkSearchRepository {
 
     private static final DateTimeFormatter ES_DATE = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
     private static final String REPLACE_IF_CURRENT = """
@@ -110,6 +110,39 @@ class ElasticsearchArticleChunkRepository {
     void compensate(ArticleChunkSearchSource.Snapshot snapshot) {
         deactivate(snapshot.articleId(), snapshot.lifecycleEpoch(), snapshot.chunkSetVersion(), true);
         refresh();
+    }
+
+    @Override
+    public java.util.List<ArticleChunkSearchHit> searchActive(String query, int topK) {
+        if (query == null || query.isBlank()) {
+            throw new IllegalArgumentException("article chunk search query must not be blank");
+        }
+        if (topK < 1 || topK > 100) {
+            throw new IllegalArgumentException("article chunk search topK must be between 1 and 100");
+        }
+        ensureCompatible();
+        ObjectNode body = objectMapper.createObjectNode().put("size", topK);
+        ObjectNode bool = body.putObject("query").putObject("bool");
+        bool.putArray("filter").addObject().putObject("term").put("active", true);
+        ObjectNode multiMatch = bool.putObject("must").putObject("multi_match");
+        multiMatch.put("query", query).put("type", "best_fields");
+        multiMatch.putArray("fields").add("title^3").add("headingPath^2").add("bodyText");
+        body.putArray("_source").add("chunkId").add("articleId").add("revisionId");
+        Request request = new Request("POST", "/" + indexName + "/_search");
+        request.setJsonEntity(body.toString());
+        try {
+            JsonNode hits = response(request).path("hits").path("hits");
+            java.util.ArrayList<ArticleChunkSearchHit> result = new java.util.ArrayList<>();
+            for (JsonNode hit : hits) {
+                JsonNode source = hit.path("_source");
+                result.add(new ArticleChunkSearchHit(source.path("chunkId").asLong(),
+                        source.path("articleId").asLong(), source.path("revisionId").asLong(),
+                        (float) hit.path("_score").asDouble()));
+            }
+            return java.util.List.copyOf(result);
+        } catch (Exception exception) {
+            throw new IllegalStateException("search active article chunks failed", exception);
+        }
     }
 
     private void deactivate(long articleId, long epoch, long version, Boolean exactTuple) {

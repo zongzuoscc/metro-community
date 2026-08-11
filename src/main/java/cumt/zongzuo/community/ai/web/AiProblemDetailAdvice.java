@@ -1,5 +1,6 @@
 package cumt.zongzuo.community.ai.web;
 
+import cumt.zongzuo.community.ai.agent.InvalidAgentAnswerException;
 import cumt.zongzuo.community.ai.provider.AiProviderErrorReason;
 import cumt.zongzuo.community.ai.provider.AiProviderException;
 import cumt.zongzuo.community.ai.runtime.AiExecutionErrorReason;
@@ -61,6 +62,13 @@ public class AiProblemDetailAdvice extends ResponseEntityExceptionHandler {
         Integer retryAfter = contract.retryable() ? DEFAULT_RETRY_AFTER_SECONDS : null;
         return response(request, contract.status(), contract.code(), contract.retryable(),
                 retryAfter, List.of());
+    }
+
+    @ExceptionHandler(InvalidAgentAnswerException.class)
+    ResponseEntity<Object> handleInvalidAgentAnswer(InvalidAgentAnswerException error,
+                                                     HttpServletRequest request) {
+        return response(request, HttpStatus.SERVICE_UNAVAILABLE, "AI_UNAVAILABLE",
+                false, null, List.of());
     }
 
     @ExceptionHandler(ConstraintViolationException.class)

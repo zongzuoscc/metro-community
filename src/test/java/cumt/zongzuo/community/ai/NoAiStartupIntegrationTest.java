@@ -1,6 +1,7 @@
 package cumt.zongzuo.community.ai;
 
 import cumt.zongzuo.community.IntegrationTestSupport;
+import cumt.zongzuo.community.ai.agent.GroundedAnswerService;
 import cumt.zongzuo.community.ai.provider.AiChatGateway;
 import cumt.zongzuo.community.ai.provider.DisabledAiChatGateway;
 import cumt.zongzuo.community.ai.provider.DisabledEmbeddingGateway;
@@ -22,6 +23,9 @@ import org.springframework.boot.actuate.endpoint.web.WebEndpointsSupplier;
 import org.springframework.context.ApplicationContext;
 import org.springframework.core.env.Environment;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.servlet.DispatcherServlet;
 
@@ -54,6 +58,7 @@ class NoAiStartupIntegrationTest extends IntegrationTestSupport {
         assertThat(context.getBeanNamesForType(ArticleChunkElasticsearchProjectionService.class)).isEmpty();
         assertThat(context.containsBean("articleChunkElasticsearchProjectionConsumer")).isFalse();
         assertThat(context.getBeanNamesForType(ArticleMilvusProjectionService.class)).isEmpty();
+        assertThat(context.getBeanNamesForType(GroundedAnswerService.class)).isEmpty();
         assertThat(context.containsBean("articleMilvusProjectionConsumer")).isFalse();
         assertThat(context.getBeanNamesForType(ArticleModerationRecovery.class)).isEmpty();
         assertThat(context.getBean(AiChatGateway.class)).isInstanceOf(DisabledAiChatGateway.class);
@@ -72,6 +77,27 @@ class NoAiStartupIntegrationTest extends IntegrationTestSupport {
 
         assertThat(response.getStatusCode().is2xxSuccessful()).isTrue();
         assertThat(response.getBody()).contains("\"status\":\"UP\"");
+    }
+
+    @Test
+    void authenticatedAgentAnswerReturnsStableDisabledProblemWhenAiIsOff() {
+        jdbcTemplate.update("""
+                INSERT INTO sys_user (id,username,password,email,role,status)
+                VALUES (7001,'no-ai-agent-user','unused','no-ai-agent@example.com',0,0)
+                ON DUPLICATE KEY UPDATE status=0
+                """);
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(jwtService.generate(7_001L));
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        ResponseEntity<String> response = restTemplate.postForEntity(url("/api/agent/answer"),
+                new HttpEntity<>("""
+                        {"clientRequestId":"00000000-0000-0000-0000-000000000001",
+                         "message":"hello"}
+                        """, headers), String.class);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(503);
+        assertThat(response.getHeaders().getContentType()).isEqualTo(MediaType.APPLICATION_PROBLEM_JSON);
+        assertThat(response.getBody()).contains("\"code\":\"AI_DISABLED\"");
     }
 
     @Test
