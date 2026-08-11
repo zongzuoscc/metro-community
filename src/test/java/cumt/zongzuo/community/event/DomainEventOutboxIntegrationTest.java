@@ -43,6 +43,9 @@ class DomainEventOutboxIntegrationTest extends IntegrationTestSupport {
     private static final List<String> EVENT_QUEUES = List.of(
             RabbitConfig.ARTICLE_MODERATION_QUEUE,
             RabbitConfig.ARTICLE_SEARCH_PROJECTION_QUEUE,
+            RabbitConfig.ARTICLE_CHUNK_FACT_QUEUE,
+            RabbitConfig.ARTICLE_CHUNK_ELASTICSEARCH_QUEUE,
+            RabbitConfig.ARTICLE_CHUNK_MILVUS_QUEUE,
             RabbitConfig.ARTICLE_MODERATION_NOTIFICATION_QUEUE);
 
     @Autowired
@@ -232,18 +235,28 @@ class DomainEventOutboxIntegrationTest extends IntegrationTestSupport {
                 DomainEventType.ARTICLE_UNPUBLISHED, "routes-unpublished");
         UUID deleted = append(61L, 6L, 1L,
                 DomainEventType.ARTICLE_DELETED, "routes-deleted");
+        UUID chunkReindex = outboxService.append("ARTICLE_CHUNK_SET", 61L, 1L, 1L,
+                DomainEventType.ARTICLE_CHUNK_REINDEX_REQUESTED, 1,
+                objectMapper.createObjectNode().put("articleId", 61L),
+                "ARTICLE_CHUNK_SET:61:1:1:ARTICLE_CHUNK_REINDEX_REQUESTED");
 
         dispatcher.dispatchPending();
 
         assertThat(eventIds(RabbitConfig.ARTICLE_MODERATION_QUEUE, 1)).containsExactly(submitted);
         assertThat(eventIds(RabbitConfig.ARTICLE_SEARCH_PROJECTION_QUEUE, 5))
                 .containsExactly(published, rejected, superseded, unpublished, deleted);
+        assertThat(eventIds(RabbitConfig.ARTICLE_CHUNK_FACT_QUEUE, 5))
+                .containsExactly(published, rejected, superseded, unpublished, deleted);
+        assertThat(eventIds(RabbitConfig.ARTICLE_CHUNK_ELASTICSEARCH_QUEUE, 1))
+                .containsExactly(chunkReindex);
+        assertThat(eventIds(RabbitConfig.ARTICLE_CHUNK_MILVUS_QUEUE, 1))
+                .containsExactly(chunkReindex);
         assertThat(eventIds(RabbitConfig.ARTICLE_MODERATION_NOTIFICATION_QUEUE, 2))
                 .containsExactly(published, rejected);
         EVENT_QUEUES.forEach(queue -> assertThat(rabbitTemplate.receive(queue, 100)).isNull());
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM domain_event_outbox WHERE state='PUBLISHED'", Long.class))
-                .isEqualTo(6L);
+                .isEqualTo(7L);
     }
 
     @Test

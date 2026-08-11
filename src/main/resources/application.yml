@@ -126,6 +126,10 @@ metro:
         max-interval: ${METRO_ARTICLE_PROJECTION_RETRY_MAX_INTERVAL:PT30S}
         multiplier: ${METRO_ARTICLE_PROJECTION_RETRY_MULTIPLIER:2.0}
         max-attempts: ${METRO_ARTICLE_PROJECTION_RETRY_MAX_ATTEMPTS:5}
+  projection:
+    article-chunks:
+      enabled: ${METRO_ARTICLE_CHUNKS_ENABLED:false}
+      parser-generation: ${METRO_ARTICLE_CHUNK_PARSER_GENERATION:1}
   events:
     outbox:
       dispatch-enabled: ${METRO_DOMAIN_EVENT_DISPATCH_ENABLED:true}

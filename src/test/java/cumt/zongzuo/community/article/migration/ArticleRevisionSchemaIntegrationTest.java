@@ -1129,7 +1129,12 @@ class ArticleRevisionSchemaIntegrationTest {
                 MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword());
         ResourceDatabasePopulator reset = new ResourceDatabasePopulator(new ByteArrayResource("""
                 SET FOREIGN_KEY_CHECKS=0;
-                DROP TABLE IF EXISTS article_revision_rollout_checkpoint,
+                DROP TABLE IF EXISTS article_chunk,article_chunk_set,
+                    article_chunk_parser_checkpoint,article_chunk_parser_generation,
+                    projection_rebuild_item,projection_rebuild_job,projection_switch_fence,
+                    projection_entity_manifest,projection_target_registry,
+                    projection_consumer_event_type,projection_consumer_registry,
+                    article_revision_rollout_checkpoint,
                     projection_watermark,consumer_inbox,domain_event_outbox,
                     article_revision_migration_issue,article_moderation_attempt,article_moderation_job,
                     article_draft,article_revision,recommendation_exposure,recommendation_event_outbox,

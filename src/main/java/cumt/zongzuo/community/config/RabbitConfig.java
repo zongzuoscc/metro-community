@@ -25,6 +25,9 @@ public class RabbitConfig {
     public static final String ARTICLE_MODERATION_QUEUE = "article.moderation.queue";
     public static final String ARTICLE_MODERATION_RETRY_QUEUE = "article.moderation.retry.queue";
     public static final String ARTICLE_SEARCH_PROJECTION_QUEUE = "article.search.projection.queue";
+    public static final String ARTICLE_CHUNK_FACT_QUEUE = "article.chunk.fact.queue";
+    public static final String ARTICLE_CHUNK_ELASTICSEARCH_QUEUE = "article.chunk.elasticsearch.queue";
+    public static final String ARTICLE_CHUNK_MILVUS_QUEUE = "article.chunk.milvus.queue";
     public static final String ARTICLE_MODERATION_NOTIFICATION_QUEUE = "article.moderation.notification.queue";
 
     @Bean
@@ -48,6 +51,21 @@ public class RabbitConfig {
     }
 
     @Bean
+    public Queue articleChunkFactQueue() {
+        return workQueue(ARTICLE_CHUNK_FACT_QUEUE);
+    }
+
+    @Bean
+    public Queue articleChunkElasticsearchQueue() {
+        return workQueue(ARTICLE_CHUNK_ELASTICSEARCH_QUEUE);
+    }
+
+    @Bean
+    public Queue articleChunkMilvusQueue() {
+        return workQueue(ARTICLE_CHUNK_MILVUS_QUEUE);
+    }
+
+    @Bean
     public Queue articleModerationNotificationQueue() {
         return workQueue(ARTICLE_MODERATION_NOTIFICATION_QUEUE);
     }
@@ -63,6 +81,21 @@ public class RabbitConfig {
     }
 
     @Bean
+    public Queue articleChunkFactDeadLetterQueue() {
+        return deadLetterQueue(ARTICLE_CHUNK_FACT_QUEUE);
+    }
+
+    @Bean
+    public Queue articleChunkElasticsearchDeadLetterQueue() {
+        return deadLetterQueue(ARTICLE_CHUNK_ELASTICSEARCH_QUEUE);
+    }
+
+    @Bean
+    public Queue articleChunkMilvusDeadLetterQueue() {
+        return deadLetterQueue(ARTICLE_CHUNK_MILVUS_QUEUE);
+    }
+
+    @Bean
     public Queue articleModerationNotificationDeadLetterQueue() {
         return deadLetterQueue(ARTICLE_MODERATION_NOTIFICATION_QUEUE);
     }
@@ -75,6 +108,22 @@ public class RabbitConfig {
     @Bean
     public Binding articleSearchProjectionDeadLetterBinding() {
         return deadLetterBinding(articleSearchProjectionDeadLetterQueue(), ARTICLE_SEARCH_PROJECTION_QUEUE);
+    }
+
+    @Bean
+    public Binding articleChunkFactDeadLetterBinding() {
+        return deadLetterBinding(articleChunkFactDeadLetterQueue(), ARTICLE_CHUNK_FACT_QUEUE);
+    }
+
+    @Bean
+    public Binding articleChunkElasticsearchDeadLetterBinding() {
+        return deadLetterBinding(articleChunkElasticsearchDeadLetterQueue(),
+                ARTICLE_CHUNK_ELASTICSEARCH_QUEUE);
+    }
+
+    @Bean
+    public Binding articleChunkMilvusDeadLetterBinding() {
+        return deadLetterBinding(articleChunkMilvusDeadLetterQueue(), ARTICLE_CHUNK_MILVUS_QUEUE);
     }
 
     @Bean
@@ -116,6 +165,48 @@ public class RabbitConfig {
     public Binding deletedSearchBinding() {
         return BindingBuilder.bind(articleSearchProjectionQueue()).to(domainEventExchange())
                 .with("article.deleted");
+    }
+
+    @Bean
+    public Binding publishedChunkFactBinding() {
+        return BindingBuilder.bind(articleChunkFactQueue()).to(domainEventExchange())
+                .with("article.revision.published");
+    }
+
+    @Bean
+    public Binding rejectedChunkFactBinding() {
+        return BindingBuilder.bind(articleChunkFactQueue()).to(domainEventExchange())
+                .with("article.revision.rejected");
+    }
+
+    @Bean
+    public Binding supersededChunkFactBinding() {
+        return BindingBuilder.bind(articleChunkFactQueue()).to(domainEventExchange())
+                .with("article.revision.superseded");
+    }
+
+    @Bean
+    public Binding unpublishedChunkFactBinding() {
+        return BindingBuilder.bind(articleChunkFactQueue()).to(domainEventExchange())
+                .with("article.unpublished");
+    }
+
+    @Bean
+    public Binding deletedChunkFactBinding() {
+        return BindingBuilder.bind(articleChunkFactQueue()).to(domainEventExchange())
+                .with("article.deleted");
+    }
+
+    @Bean
+    public Binding chunkReindexElasticsearchBinding() {
+        return BindingBuilder.bind(articleChunkElasticsearchQueue()).to(domainEventExchange())
+                .with("article.chunk.reindex.requested");
+    }
+
+    @Bean
+    public Binding chunkReindexMilvusBinding() {
+        return BindingBuilder.bind(articleChunkMilvusQueue()).to(domainEventExchange())
+                .with("article.chunk.reindex.requested");
     }
 
     @Bean

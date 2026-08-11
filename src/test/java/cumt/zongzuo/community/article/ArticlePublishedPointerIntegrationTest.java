@@ -75,6 +75,8 @@ class ArticlePublishedPointerIntegrationTest extends IntegrationTestSupport {
         jdbcTemplate.update("DELETE FROM favorite WHERE folder_id=?", FOLDER_ID);
         jdbcTemplate.update("DELETE FROM favorite_folder WHERE id=?", FOLDER_ID);
         jdbcTemplate.update("UPDATE article SET latest_revision_id=NULL,pending_revision_id=NULL,published_revision_id=NULL WHERE id BETWEEN 95101 AND 95109");
+        jdbcTemplate.update("DELETE FROM article_chunk WHERE article_id BETWEEN 95101 AND 95109");
+        jdbcTemplate.update("DELETE FROM article_chunk_set WHERE article_id BETWEEN 95101 AND 95109");
         jdbcTemplate.update("""
                 DELETE FROM article_moderation_attempt
                 WHERE job_id IN (

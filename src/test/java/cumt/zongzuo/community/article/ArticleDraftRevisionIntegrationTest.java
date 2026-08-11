@@ -90,6 +90,8 @@ class ArticleDraftRevisionIntegrationTest extends IntegrationTestSupport {
                 UPDATE article SET latest_revision_id=NULL,pending_revision_id=NULL,published_revision_id=NULL
                 WHERE id >= 91000
                 """);
+        jdbcTemplate.update("DELETE FROM article_chunk WHERE article_id >= 91000");
+        jdbcTemplate.update("DELETE FROM article_chunk_set WHERE article_id >= 91000");
         jdbcTemplate.update("DELETE FROM article_moderation_job WHERE article_id >= 91000");
         jdbcTemplate.update("DELETE FROM article_revision WHERE article_id >= 91000");
         jdbcTemplate.update("DELETE FROM article_draft WHERE article_id >= 91000");
