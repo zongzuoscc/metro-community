@@ -110,8 +110,8 @@ class CommunityApplicationTests {
                 "DEEPSEEK_BASE_URL=https://api.deepseek.com",
                 "DEEPSEEK_API_KEY=",
                 "DEEPSEEK_MODEL=deepseek-v4-flash",
-                "OLLAMA_BASE_URL=http://127.0.0.1:11434",
-                "OLLAMA_EMBEDDING_MODEL=bge-m3");
+                "OLLAMA_BASE_URL=http://127.0.0.1:21434",
+                "OLLAMA_EMBEDDING_MODEL=metro-bge-m3:790764642607");
         assertThat(exampleConfig).contains(
                 "chat: none",
                 "embedding: none",
@@ -151,7 +151,6 @@ class CommunityApplicationTests {
                 .doesNotContain("9999")
                 .doesNotContain("1.0.0-M5")
                 .doesNotContain("spring-ai-openai-spring-boot-starter")
-                .doesNotContain("MILVUS_")
                 .doesNotContain("图片和音频模型");
     }
 }

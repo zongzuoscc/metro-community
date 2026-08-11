@@ -110,7 +110,7 @@ metro:
       model: ${DEEPSEEK_MODEL:deepseek-v4-flash}
     ollama:
       base-url: ${OLLAMA_BASE_URL:http://127.0.0.1:11434}
-      model: ${OLLAMA_EMBEDDING_MODEL:bge-m3}
+      model: "${OLLAMA_EMBEDDING_MODEL:metro-bge-m3:790764642607}"
 
 recommendation:
   training-exposure-scan-limit: 200000

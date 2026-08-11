@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-08-12T00:00:00+08:00",
+  "milvusJavaSdk": "2.6.22",
+  "officialMilvusCompose": {
+    "source": "https://github.com/milvus-io/milvus/releases/download/v2.6.20/milvus-standalone-docker-compose.yml",
+    "sha256": "9e0e8187e197ce23d3da3e63c19bc20189782f96bacb97287f8fcee80ba628c3"
+  },
+  "models": {
+    "bgeM3": {
+      "upstreamReference": "bge-m3:latest",
+      "registryManifestUrl": "https://registry.ollama.ai/v2/library/bge-m3/manifests/latest",
+      "manifestDigest": "sha256:7907646426070047a77226ac3e684fbbe8410524f7b4a74d02837e43f2146bab",
+      "localAlias": "metro-bge-m3:790764642607",
+      "embeddingDimension": 1024,
+      "blobs": [
+        {
+          "mediaType": "application/vnd.docker.container.image.v1+json",
+          "digest": "sha256:0c4c9c2a325fb1cdafec606e6809cb745f1cb26a6d919994400d27372303e276",
+          "size": 337
+        },
+        {
+          "mediaType": "application/vnd.ollama.image.model",
+          "digest": "sha256:daec91ffb5dd0c27411bd71f29932917c49cf529a641d0168496c3a501e3062c",
+          "size": 1157671200
+        },
+        {
+          "mediaType": "application/vnd.ollama.image.license",
+          "digest": "sha256:a406579cd136771c705c521db86ca7d60a6f3de7c9b5460e6193a2df27861bde",
+          "size": 1068
+        }
+      ]
+    }
+  },
+  "images": {
+    "etcd": {
+      "tag": "quay.io/coreos/etcd:v3.5.25",
+      "manifestDigest": "sha256:52f17f7e56e4f7239f0320dbfcbcc24721163d7d78ae710b466af3254ccf6366",
+      "reference": "quay.io/coreos/etcd:v3.5.25@sha256:52f17f7e56e4f7239f0320dbfcbcc24721163d7d78ae710b466af3254ccf6366",
+      "platforms": {
+        "linux/amd64": "sha256:dc2bdc588d2adc5272204a1fff7f1d89f31e8caacea78fdf509fd409d7162a9d",
+        "linux/arm64": "sha256:8da34a9df5dc1bd879bea716a301113c4e49b6bbdbe5778214707c6043ccf65d"
+      }
+    },
+    "minio": {
+      "tag": "minio/minio:RELEASE.2024-12-18T13-15-44Z",
+      "manifestDigest": "sha256:1dce27c494a16bae114774f1cec295493f3613142713130c2d22dd5696be6ad3",
+      "reference": "minio/minio:RELEASE.2024-12-18T13-15-44Z@sha256:1dce27c494a16bae114774f1cec295493f3613142713130c2d22dd5696be6ad3",
+      "platforms": {
+        "linux/amd64": "sha256:34c8e2f52a5984492555427fee07254c80036bdb7079bb91679232abd7a4fa20",
+        "linux/arm64": "sha256:dca4c608031e569387ebb9dbc5738542a4ddd68f57464c1f7ad5a2d31cefcb8d"
+      }
+    },
+    "milvus": {
+      "tag": "milvusdb/milvus:v2.6.20",
+      "manifestDigest": "sha256:e5420c36bac36a605c1ea6e04114f5d7923f114e87bbb774bd0669b9f3e41d27",
+      "reference": "milvusdb/milvus:v2.6.20@sha256:e5420c36bac36a605c1ea6e04114f5d7923f114e87bbb774bd0669b9f3e41d27",
+      "platforms": {
+        "linux/amd64": "sha256:e514fced2aa26cf3b94e7de20986fe9e535159fde08f9934d245d0e1a909c18c",
+        "linux/arm64": "sha256:4543d678dda4a4fdf9acaa6a225d0b97137d3f64bf5f689c3985d3ee7132c1e3"
+      }
+    },
+    "ollama": {
+      "tag": "ollama/ollama:0.32.2",
+      "manifestDigest": "sha256:c3886c198155aa7d45a29851100cc16f5d6ea6777d635ddd0597fe95874161af",
+      "reference": "ollama/ollama:0.32.2@sha256:c3886c198155aa7d45a29851100cc16f5d6ea6777d635ddd0597fe95874161af",
+      "platforms": {
+        "linux/amd64": "sha256:ebdabd6f617b2a05d723270bda060bdaaee04af47f8bb1a2a259f2bb2f04ddd7",
+        "linux/arm64": "sha256:ea9f8613241dcaf96f0a93d3305cd342cec98bb169ab89b7996c933aeb163133"
+      }
+    }
+  }
+}
