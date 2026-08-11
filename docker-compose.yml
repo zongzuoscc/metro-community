@@ -77,7 +77,7 @@ services:
       retries: 20
 
   kibana:
-    image: docker.elastic.co/kibana/kibana:8.4.1
+    image: docker.elastic.co/kibana/kibana:8.18.1
     restart: unless-stopped
     environment:
       ELASTICSEARCH_HOSTS: '["http://es:9200"]'

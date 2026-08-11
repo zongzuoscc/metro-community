@@ -60,10 +60,10 @@ public abstract class IntegrationTestSupport {
      * the same Elasticsearch image composition as the local Docker deployment.
      */
     static final ImageFromDockerfile ELASTICSEARCH_WITH_IK = new ImageFromDockerfile(
-            "community-elasticsearch-ik-test:8.4.1", false)
+            "community-elasticsearch-ik-test:8.18.1", false)
             .withFileFromPath("Dockerfile", Path.of("elasticsearch", "Dockerfile"))
-            .withFileFromPath("elasticsearch-analysis-ik-8.4.1.zip",
-                    Path.of("elasticsearch", "elasticsearch-analysis-ik-8.4.1.zip"));
+            .withFileFromPath("elasticsearch-analysis-ik-8.18.1.zip",
+                    Path.of("elasticsearch", "elasticsearch-analysis-ik-8.18.1.zip"));
 
     static final ElasticsearchContainer ELASTICSEARCH = new ElasticsearchContainer(
             DockerImageName.parse(ELASTICSEARCH_WITH_IK.get())
