@@ -27,6 +27,10 @@
 
         <div class="navbar-right">
           <div class="action-btns">
+            <button class="agent-entry" type="button" @click="$router.push('/agent')">
+              <el-icon><MagicStick /></el-icon>
+              <span class="agent-entry-label">问 Agent</span>
+            </button>
             <el-button type="primary" round @click="$router.push('/publish')">提问</el-button>
           </div>
 
@@ -777,6 +781,27 @@ onUnmounted(() => {
 .navbar-left .nav-links .nav-item.active { border-bottom-color: var(--accent); }
 .navbar-center .search-box :deep(.el-input__wrapper) { border-radius: var(--radius-sm); background: #fffdf9; }
 .navbar-right { margin-right: 0; gap: var(--space-4); }
+.navbar-right .action-btns { display: flex; align-items: center; gap: var(--space-2); }
+.agent-entry {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 0 var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--accent);
+  background: #fffdf9;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 160ms ease, border-color 160ms ease, background-color 160ms ease, transform 120ms ease;
+}
+.agent-entry:active { transform: scale(.96); }
+@media (hover: hover) {
+  .agent-entry:hover { color: var(--accent-dark); border-color: var(--accent); background: #fffaf3; }
+}
 .navbar-right .user-area { gap: var(--space-4); }
 .main-container { width: min(1180px, calc(100% - 32px)); margin-top: 78px; gap: var(--space-5); }
 .mobile-feed-controls { display: none; }
@@ -806,7 +831,9 @@ onUnmounted(() => {
   .navbar-center, .navbar-left .nav-links { display: none; }
   .navbar-container { justify-content: space-between; }
   .navbar-left .logo { margin-right: 0; }
-  .navbar-right .action-btns { display: none; }
+  .navbar-right .action-btns .el-button { display: none; }
+  .agent-entry { width: 40px; padding: 0; }
+  .agent-entry-label { display: none; }
   .navbar-right .user-area { gap: var(--space-3); }
   .main-container { width: 100%; padding: 0 var(--space-3); margin-top: 70px; flex-direction: column; gap: var(--space-3); }
   .mobile-feed-controls { display: grid; width: 100%; gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fffdf9; }

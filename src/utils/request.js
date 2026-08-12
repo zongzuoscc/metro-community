@@ -29,6 +29,11 @@ service.interceptors.request.use(
 // 响应拦截器
 service.interceptors.response.use(
     response => {
+        // Agent 的新接口使用标准 HTTP 状态码并直接返回 DTO，不套用项目早期的 code/data/msg 外壳。
+        // 只有调用方显式声明 rawResponse 才走这条分支，避免改变现有文章、用户等接口的解析语义。
+        if (response.config?.rawResponse) {
+            return response.data
+        }
         const res = response.data
         if (res.code !== 200) {
             if (!response.config?.silent) ElMessage.error(res.msg || '系统错误')

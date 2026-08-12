@@ -48,4 +48,20 @@ describe('request authentication failure handling', () => {
     expect(mocks.closeWebSocket).toHaveBeenCalledOnce()
     expect(mocks.routerPush).toHaveBeenCalledWith('/login')
   })
+
+  it('returns raw Agent payloads and accepts an empty 204 response when explicitly requested', () => {
+    const successHandler = mocks.responseUse.mock.calls[0][0]
+
+    expect(successHandler({
+      data: { sessionId: 'temporary-session', expiresAt: '2026-08-13T08:00:00Z' },
+      config: { rawResponse: true },
+      status: 201,
+    })).toEqual({ sessionId: 'temporary-session', expiresAt: '2026-08-13T08:00:00Z' })
+
+    expect(successHandler({
+      data: undefined,
+      config: { rawResponse: true },
+      status: 204,
+    })).toBeUndefined()
+  })
 })

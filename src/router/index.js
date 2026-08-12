@@ -78,6 +78,13 @@ const routes = [
         name: 'Chat',
         component: () => import('../views/Chat.vue')
     },
+    // Agent 使用登录用户的历史、记忆设置和临时会话所有权，因此必须经过统一登录守卫。
+    {
+        path: '/agent',
+        name: 'Agent',
+        component: () => import('../views/Agent.vue'),
+        meta: { requiresAuth: true }
+    },
     {
         path: '/admin',
         component: AdminLayout,
