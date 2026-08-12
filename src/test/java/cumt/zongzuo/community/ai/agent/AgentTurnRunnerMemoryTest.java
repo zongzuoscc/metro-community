@@ -58,7 +58,8 @@ class AgentTurnRunnerMemoryTest {
                 .submit(admission, 9L, "我喜欢简洁回答");
 
         verify(events).append(41L, 9L, runId, 7L, "done", java.util.Map.of(
-                "finalMessage", "answer", "finishReason", "stop", "citationCount", 0));
+                "finalMessage", "answer", "finishReason", "stop", "citationCount", 0,
+                "fundingSource", "PLATFORM", "provider", "", "model", ""));
     }
 
     @Test
@@ -89,7 +90,8 @@ class AgentTurnRunnerMemoryTest {
                 .submit(admission, 9L, "question");
 
         verify(events).append(42L, 9L, runId, 8L, "done", java.util.Map.of(
-                "finalMessage", "answer", "finishReason", "stop", "citationCount", 0));
+                "finalMessage", "answer", "finishReason", "stop", "citationCount", 0,
+                "fundingSource", "PLATFORM", "provider", "", "model", ""));
         verify(failures, org.mockito.Mockito.never()).fail(anyLong(), anyLong(), any(), anyLong(), any());
     }
 }

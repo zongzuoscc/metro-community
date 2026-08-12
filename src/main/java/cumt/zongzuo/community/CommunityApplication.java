@@ -31,7 +31,8 @@ import org.springframework.scheduling.annotation.EnableScheduling;
         "cumt.zongzuo.community.ai.moderation.revision",
         "cumt.zongzuo.community.ai.agent.turn",
         "cumt.zongzuo.community.ai.agent.memory",
-        "cumt.zongzuo.community.ai.agent.history"}, annotationClass = Mapper.class)
+        "cumt.zongzuo.community.ai.agent.history",
+        "cumt.zongzuo.community.ai.userprovider"}, annotationClass = Mapper.class)
 @EnableScheduling
 @EnableConfigurationProperties({SecurityProperties.class, WebSocketProperties.class,
         RecommendationProperties.class, ArticleRevisionProperties.class,

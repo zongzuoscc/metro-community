@@ -6,7 +6,7 @@ import cumt.zongzuo.community.ai.agent.GroundedAnswerService;
 import cumt.zongzuo.community.ai.agent.history.AgentConversationHistorySearchService;
 import cumt.zongzuo.community.ai.agent.memory.AgentMemoryRecallService;
 import cumt.zongzuo.community.ai.config.MetroAiProperties;
-import cumt.zongzuo.community.ai.provider.AiChatGateway;
+import cumt.zongzuo.community.ai.userprovider.UserAiChatRouter;
 import cumt.zongzuo.community.ai.provider.EmbeddingGateway;
 import cumt.zongzuo.community.ai.runtime.AiCapabilityExecutor;
 import cumt.zongzuo.community.article.projection.chunk.ArticleChunkSearchRepository;
@@ -56,7 +56,7 @@ class ArticleAgentRetrievalConfiguration {
     @Bean
     GroundedAnswerService groundedAnswerService(HybridArticleRetrievalService retrieval,
                                                 AiCapabilityExecutor executor,
-                                                AiChatGateway gateway,
+                                                UserAiChatRouter router,
                                                 ObjectMapper objectMapper,
                                                 MetroAiProperties properties,
                                                 Clock clock,
@@ -66,7 +66,7 @@ class ArticleAgentRetrievalConfiguration {
         if (model == null || model.isBlank()) {
             throw new IllegalStateException("Agent model must not be blank");
         }
-        return new GroundedAnswerService(retrieval, executor, gateway,
+        return new GroundedAnswerService(retrieval, executor, router,
                 new GroundedAnswerParser(objectMapper), clock, model,
                 properties.getAgent().getTimeout(), memories.getIfAvailable(),
                 history.getIfAvailable(), properties.getMemory().isEnabled());

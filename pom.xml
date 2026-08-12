@@ -45,6 +45,12 @@
 	</dependencyManagement>
 
 	<dependencies>
+		<!-- 用户自定义 AI 端点必须固定到安全校验得到的 DNS 地址；OkHttp 允许保留原域名 TLS 校验并替换单次请求的解析结果。 -->
+		<dependency>
+			<groupId>com.squareup.okhttp3</groupId>
+			<artifactId>okhttp</artifactId>
+			<version>4.12.0</version>
+		</dependency>
 		<dependency>
 			<groupId>io.milvus</groupId>
 			<artifactId>milvus-sdk-java</artifactId>

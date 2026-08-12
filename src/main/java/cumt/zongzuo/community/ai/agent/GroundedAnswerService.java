@@ -14,13 +14,15 @@ import cumt.zongzuo.community.ai.agent.memory.AgentMemoryRecallService;
 import cumt.zongzuo.community.ai.agent.memory.AgentMemoryView;
 import cumt.zongzuo.community.ai.provider.AiCapability;
 import cumt.zongzuo.community.ai.provider.AiChatCommand;
-import cumt.zongzuo.community.ai.provider.AiChatGateway;
 import cumt.zongzuo.community.ai.provider.AiChatResult;
 import cumt.zongzuo.community.ai.provider.AiPromptMessage;
 import cumt.zongzuo.community.ai.provider.AiPromptRole;
 import cumt.zongzuo.community.ai.provider.AiResponseMode;
 import cumt.zongzuo.community.ai.runtime.AiCapabilityExecutor;
 import cumt.zongzuo.community.ai.runtime.AiInvocationContext;
+import cumt.zongzuo.community.ai.userprovider.UserAiChatRouter;
+import cumt.zongzuo.community.ai.userprovider.UserAiRoutedResult;
+import cumt.zongzuo.community.ai.userprovider.UserAiFundingSource;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -48,7 +50,7 @@ public class GroundedAnswerService {
 
     private final HybridArticleRetrievalService retrieval;
     private final AiCapabilityExecutor executor;
-    private final AiChatGateway gateway;
+    private final UserAiChatRouter router;
     private final GroundedAnswerParser parser;
     private final Clock clock;
     private final String expectedModel;
@@ -60,7 +62,7 @@ public class GroundedAnswerService {
 
     public GroundedAnswerService(HybridArticleRetrievalService retrieval,
                                  AiCapabilityExecutor executor,
-                                 AiChatGateway gateway,
+                                 UserAiChatRouter router,
                                  GroundedAnswerParser parser,
                                  Clock clock,
                                  String expectedModel,
@@ -70,7 +72,7 @@ public class GroundedAnswerService {
                                  boolean memoryEnabled) {
         this.retrieval = retrieval;
         this.executor = executor;
-        this.gateway = gateway;
+        this.router = router;
         this.parser = parser;
         this.clock = clock;
         this.expectedModel = expectedModel;
@@ -122,17 +124,22 @@ public class GroundedAnswerService {
                 historical, temporaryContext);
         int characters = prompt.stream().mapToInt(message -> message.text().length()).sum();
         Instant generationDeadline = min(deadline, clock.instant().plus(generationTimeout));
-        AiChatResult generated = executor.execute(new AiInvocationContext(AiCapability.AGENT,
+        UserAiRoutedResult routed = executor.execute(new AiInvocationContext(AiCapability.AGENT,
                         userId, requestId + ":answer", characters, generationDeadline, false),
-                () -> gateway.generate(new AiChatCommand(AiCapability.AGENT, prompt,
+                () -> router.generate(userId, new AiChatCommand(AiCapability.AGENT, prompt,
                         AiResponseMode.JSON_OBJECT)));
-        GroundedAgentAnswer parsed = parser.parse(generated, expectedModel, result.authorizedChunks(),
+        AiChatResult generated = routed.result();
+        // 平台调用必须仍匹配部署配置；用户调用由兼容网关先校验响应 model 与其已保存配置一致。
+        String allowedModel = routed.fundingSource() == UserAiFundingSource.PLATFORM
+                ? expectedModel : generated.model();
+        GroundedAgentAnswer parsed = parser.parse(generated, allowedModel, result.authorizedChunks(),
                 !recalled.isEmpty() || !historical.isEmpty() || !temporaryContext.isEmpty());
         return new GroundedAgentAnswer(parsed.answer(), parsed.citations(), parsed.finishReason(),
                 recalled.stream().map(memory -> new AgentMemoryUse(memory.id(), memory.version(),
                         memory.category(), memory.content())).toList(),
                 historical.stream().map(hit -> new AgentHistoryUse(hit.messageId(), hit.turnId(),
-                        hit.role(), hit.content(), hit.createdAt())).toList());
+                        hit.role(), hit.content(), hit.createdAt())).toList(),
+                routed.fundingSource(), generated.provider(), generated.model());
     }
 
     private List<AiPromptMessage> prompt(String question, List<ResolvedArticleChunk> sources,

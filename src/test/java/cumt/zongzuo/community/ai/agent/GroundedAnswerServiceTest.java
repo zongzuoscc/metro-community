@@ -14,6 +14,9 @@ import cumt.zongzuo.community.ai.provider.AiCapability;
 import cumt.zongzuo.community.ai.provider.AiChatGateway;
 import cumt.zongzuo.community.ai.provider.AiChatResult;
 import cumt.zongzuo.community.ai.runtime.AiCapabilityExecutor;
+import cumt.zongzuo.community.ai.userprovider.UserAiChatRouter;
+import cumt.zongzuo.community.ai.userprovider.UserAiFundingSource;
+import cumt.zongzuo.community.ai.userprovider.UserAiRoutedResult;
 import io.github.resilience4j.core.functions.CheckedSupplier;
 import org.junit.jupiter.api.Test;
 
@@ -62,6 +65,9 @@ class GroundedAnswerServiceTest {
         assertThat(answer.citations()).containsExactly(new AgentCitation(1,
                 "A301:R3001:C31", 301L, 3001L, 31L, "MySQL locks",
                 "Use SELECT FOR UPDATE to serialize writers", "/article/301"));
+        assertThat(answer.fundingSource()).isEqualTo(UserAiFundingSource.USER);
+        assertThat(answer.provider()).isEqualTo("test");
+        assertThat(answer.model()).isEqualTo("deepseek-test");
         assertThat(calls).hasValue(1);
     }
 
@@ -163,7 +169,9 @@ class GroundedAnswerServiceTest {
     }
 
     private GroundedAnswerService service(boolean memoryEnabled) {
-        return new GroundedAnswerService(retrieval, new DirectExecutor(), gateway,
+        UserAiChatRouter router = (userId, command) -> new UserAiRoutedResult(
+                gateway.generate(command), UserAiFundingSource.USER);
+        return new GroundedAnswerService(retrieval, new DirectExecutor(), router,
                 new GroundedAnswerParser(new ObjectMapper()),
                 Clock.fixed(Instant.parse("2026-08-12T00:00:00Z"), ZoneOffset.UTC),
                 "deepseek-test", Duration.ofSeconds(30), memories, history, memoryEnabled);

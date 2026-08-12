@@ -76,7 +76,9 @@ public class DefaultTemporaryTurnRunner implements TemporaryTurnRunner {
             if (!lifecycle.complete(admission, userId, answer)) return;
             events.append(admission.turnId(), userId, admission.runId(), admission.runFence(),
                     "done", Map.of("finalMessage", answer.answer(), "finishReason",
-                            answer.finishReason(), "citationCount", answer.citations().size()));
+                            answer.finishReason(), "citationCount", answer.citations().size(),
+                            "fundingSource", answer.fundingSource().name(),
+                            "provider", safe(answer.provider()), "model", safe(answer.model())));
         } catch (RuntimeException error) {
             if (lifecycle.fail(admission, userId, "AGENT_EXECUTION_FAILED")) {
                 events.append(admission.turnId(), userId, admission.runId(), admission.runFence(),
@@ -86,5 +88,9 @@ public class DefaultTemporaryTurnRunner implements TemporaryTurnRunner {
         } finally {
             if (heartbeat != null) heartbeat.cancel(false);
         }
+    }
+
+    private static String safe(String value) {
+        return value == null ? "" : value;
     }
 }

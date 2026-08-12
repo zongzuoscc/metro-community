@@ -96,6 +96,12 @@ metro:
       metrics-initial-delay: ${METRO_DOMAIN_EVENT_RETENTION_METRICS_INITIAL_DELAY:PT30S}
   ai:
     enabled: ${METRO_AI_ENABLED:false}
+    # 生产环境请由密钥管理服务生成并注入，不要把主密钥提交到仓库。
+    user-provider:
+      enabled: ${METRO_AI_USER_PROVIDER_ENABLED:false}
+      credential-master-key: ${METRO_AI_USER_CREDENTIAL_MASTER_KEY:}
+      connect-timeout: ${METRO_AI_USER_PROVIDER_CONNECT_TIMEOUT:PT3S}
+      request-timeout: ${METRO_AI_USER_PROVIDER_REQUEST_TIMEOUT:PT60S}
     agent:
       enabled: ${METRO_AI_AGENT_ENABLED:false}
       turn-recovery-enabled: ${METRO_AI_AGENT_TURN_RECOVERY_ENABLED:false}

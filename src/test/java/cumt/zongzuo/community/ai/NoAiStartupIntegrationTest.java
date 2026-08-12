@@ -108,6 +108,32 @@ class NoAiStartupIntegrationTest extends IntegrationTestSupport {
     }
 
     @Test
+    void userProviderMutationReturnsStableDisabledProblemWhenByokIsOff() {
+        jdbcTemplate.update("""
+                INSERT INTO sys_user (id,username,password,email,role,status)
+                VALUES (7002,'no-byok-user','unused','no-byok@example.com',0,0)
+                ON DUPLICATE KEY UPDATE status=0
+                """);
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(jwtService.generate(7_002L));
+        headers.setContentType(MediaType.APPLICATION_JSON);
+
+        ResponseEntity<String> response = restTemplate.exchange(
+                url("/api/agent/provider-settings"), HttpMethod.PUT,
+                new HttpEntity<>("""
+                        {"provider":"OPENAI","model":"gpt-4.1-mini",
+                         "apiKey":"must-not-be-saved","enabled":true}
+                        """, headers), String.class);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(503);
+        assertThat(response.getHeaders().getContentType()).isEqualTo(MediaType.APPLICATION_PROBLEM_JSON);
+        assertThat(response.getBody()).contains("\"code\":\"AI_DISABLED\"");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM user_ai_provider_setting WHERE user_id=7002", Integer.class))
+                .isZero();
+    }
+
+    @Test
     void exposesOnlyGetHealthFromTheActuatorSurface() {
         Set<String> exposedEndpointIds = webEndpointsSupplier.getEndpoints().stream()
                 .map(ExposableWebEndpoint::getEndpointId)

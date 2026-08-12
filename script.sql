@@ -999,3 +999,21 @@ ALTER TABLE agent_memory_item
     ADD CONSTRAINT fk_agent_memory_current_version
         FOREIGN KEY (current_version_id,id,user_id)
         REFERENCES agent_memory_version(id,memory_id,user_id);
+
+-- 用户自带模型配置只保存 AES-GCM 密文。浏览器只会拿到 key_hint，永不取回密文或明文。
+CREATE TABLE user_ai_provider_setting (
+    user_id            BIGINT       NOT NULL,
+    provider           VARCHAR(24)  NOT NULL,
+    base_url           VARCHAR(512) NOT NULL,
+    model              VARCHAR(128) NOT NULL,
+    encrypted_api_key  TEXT         NOT NULL,
+    key_hint           VARCHAR(16)  NOT NULL,
+    enabled            TINYINT(1)   NOT NULL DEFAULT 1,
+    created_at         DATETIME(6)  NOT NULL,
+    updated_at         DATETIME(6)  NOT NULL,
+    lock_version       BIGINT       NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id),
+    CONSTRAINT fk_user_ai_provider_owner FOREIGN KEY (user_id) REFERENCES sys_user(id),
+    CONSTRAINT chk_user_ai_provider_type CHECK (
+        provider IN ('OPENAI','DEEPSEEK','QWEN','CUSTOM'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
