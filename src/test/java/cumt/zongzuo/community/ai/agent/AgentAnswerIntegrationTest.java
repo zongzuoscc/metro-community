@@ -169,11 +169,14 @@ class AgentAnswerIntegrationTest extends IntegrationTestSupport {
     }
 
     @Test
-    void staleSearchHitIsDroppedAfterTheArticleStopsBeingPublic() {
+    void staleSearchHitIsDroppedButTheModelMayStillAnswerWithGeneralKnowledge() {
         jdbcTemplate.update("""
                 UPDATE article SET is_deleted=1,visibility_state='RECYCLED',status=0,
                   lifecycle_epoch=lifecycle_epoch+1,lock_version=lock_version+1 WHERE id=?
                 """, ARTICLE_ID);
+        when(gateway.generate(any())).thenReturn(new AiChatResult("""
+                {"answer":"【模型通用知识】可以使用事务与行锁协调并发写入。","citations":[]}
+                """, "stop", 100, 20, "test", "deepseek-v4-flash"));
         HttpHeaders headers = new HttpHeaders();
         headers.setBearerAuth(jwtService.generate(USER_ID));
         headers.setContentType(MediaType.APPLICATION_JSON);
@@ -185,8 +188,8 @@ class AgentAnswerIntegrationTest extends IntegrationTestSupport {
                         """, headers), String.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(response.getBody()).contains("现有社区资料不足", "\"citations\":[]");
-        verify(gateway, never()).generate(any());
+        assertThat(response.getBody()).contains("【模型通用知识】", "\"citations\":[]");
+        verify(gateway).generate(any());
     }
 
     @Test

@@ -44,6 +44,17 @@ public final class GroundedAnswerParser {
     GroundedAgentAnswer parse(AiChatResult result, String expectedModel,
                               List<ResolvedArticleChunk> authorized,
                               boolean personalContextAvailable) {
+        return parse(result, expectedModel, authorized, personalContextAvailable, false);
+    }
+
+    /**
+     * 校验模型回答及站内引用；只有确实没有授权站内资料时，才允许以显式标签输出通用知识。
+     * 这样前端无需猜测信息来源，用户也不会把模型自身知识误认为社区文章结论。
+     */
+    GroundedAgentAnswer parse(AiChatResult result, String expectedModel,
+                              List<ResolvedArticleChunk> authorized,
+                              boolean personalContextAvailable,
+                              boolean generalKnowledgeAllowed) {
         if (result == null || !"stop".equals(result.finishReason())
                 || !expectedModel.equals(result.model()) || result.text() == null
                 || result.text().isBlank()
@@ -85,7 +96,15 @@ public final class GroundedAnswerParser {
             citations.add(new AgentCitation(marker, sourceId, source.articleId(), source.revisionId(),
                     source.chunkId(), source.title(), quote, "/article/" + source.articleId()));
         }
-        if ((!personalContextAvailable && citations.isEmpty()) || citations.size() > 8) {
+        if (!personalContextAvailable && citations.isEmpty() && generalKnowledgeAllowed
+                && !answer.startsWith("【模型通用知识】")) {
+            // 无站内资料、记忆或历史时，回答只能来自模型自身知识。即使用户提示词要求
+            // “只回复一句话”而导致供应商遗漏标签，也由可信后端确定性补齐来源说明；
+            // 这样既不会让整轮对话失败，也不会把模型知识伪装成社区或个人资料。
+            answer = "【模型通用知识】" + answer;
+        }
+        if ((!personalContextAvailable && citations.isEmpty() && !generalKnowledgeAllowed)
+                || citations.size() > 8) {
             throw invalid("Grounded answer must contain citations");
         }
         Set<Integer> answerMarkers = new HashSet<>();

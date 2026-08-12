@@ -85,26 +85,32 @@ class GroundedAnswerServiceTest {
     }
 
     @Test
-    void insufficientCommunityEvidenceReturnsWithoutCallingTheModel() {
+    void answersWithClearlyMarkedModelKnowledgeWhenCommunityEvidenceIsUnavailable() {
         retrievalResult(List.of());
+        when(gateway.generate(any())).thenReturn(new AiChatResult("""
+                {"answer":"可以先从问题目标和约束开始分析。","citations":[]}
+                """, "stop", 80, 20, "test", "deepseek-test"));
 
         GroundedAgentAnswer answer = service().answer(9L, "request-3", "unknown",
                 Instant.parse("2026-08-12T00:00:30Z"));
 
-        assertThat(answer.answer()).isEqualTo("现有社区资料不足，暂时无法给出有引用的回答。");
+        assertThat(answer.answer()).startsWith("【模型通用知识】");
         assertThat(answer.citations()).isEmpty();
-        verify(gateway, never()).generate(any());
+        verify(gateway).generate(any());
     }
 
     @Test
     void disabledMemoryIsNeitherReadNorSentToTheModel() {
         retrievalResult(List.of());
+        when(gateway.generate(any())).thenReturn(new AiChatResult("""
+                {"answer":"【模型通用知识】当前没有可使用的个人记忆。","citations":[]}
+                """, "stop", 80, 20, "test", "deepseek-test"));
         GroundedAgentAnswer answer = service(false).answer(9L, "request-memory-off", "你记得我吗",
                 Instant.parse("2026-08-12T00:00:30Z"));
 
-        assertThat(answer.finishReason()).isEqualTo("insufficient_evidence");
+        assertThat(answer.finishReason()).isEqualTo("stop");
         verify(memories, never()).recall(any(Long.class), any(), any(Integer.class));
-        verify(gateway, never()).generate(any());
+        verify(gateway).generate(any());
     }
 
     @Test
