@@ -4,6 +4,7 @@ import cumt.zongzuo.community.IntegrationTestSupport;
 import cumt.zongzuo.community.ai.agent.GroundedAnswerService;
 import cumt.zongzuo.community.ai.agent.turn.AgentTurnRecovery;
 import cumt.zongzuo.community.ai.agent.turn.AgentTurnRunner;
+import cumt.zongzuo.community.ai.agent.web.AgentMemoryController;
 import cumt.zongzuo.community.ai.provider.AiChatGateway;
 import cumt.zongzuo.community.ai.provider.DisabledAiChatGateway;
 import cumt.zongzuo.community.ai.provider.DisabledEmbeddingGateway;
@@ -63,6 +64,7 @@ class NoAiStartupIntegrationTest extends IntegrationTestSupport {
         assertThat(context.getBeanNamesForType(GroundedAnswerService.class)).isEmpty();
         assertThat(context.getBeanNamesForType(AgentTurnRunner.class)).isEmpty();
         assertThat(context.getBeanNamesForType(AgentTurnRecovery.class)).isEmpty();
+        assertThat(context.getBeanNamesForType(AgentMemoryController.class)).isEmpty();
         assertThat(context.containsBean("agentTurnRecoverySchedule")).isFalse();
         assertThat(context.containsBean("articleMilvusProjectionConsumer")).isFalse();
         assertThat(context.getBeanNamesForType(ArticleModerationRecovery.class)).isEmpty();

@@ -163,6 +163,28 @@ class AgentRunGuardIntegrationTest extends IntegrationTestSupport {
     }
 
     @Test
+    void completionPersistsOwnerScopedMemoryAndHistoryUseEvidence() {
+        AgentTurnAdmission turn = admissions.admit(command(UUID.randomUUID(), "remember"));
+        GroundedAgentAnswer answer = new GroundedAgentAnswer("I remember.", java.util.List.of(),
+                "stop", java.util.List.of(new AgentMemoryUse(71L, 3L, "PREFERENCE", "concise")),
+                java.util.List.of(new AgentHistoryUse(81L, 801L, "USER", "old words",
+                        java.time.LocalDateTime.parse("2026-01-02T03:04:05"))));
+
+        assertThat(finalizer.complete(turn.turnId(), turn.runId(), turn.runFence(), answer)).isTrue();
+
+        assertThat(jdbcTemplate.queryForList("""
+                SELECT source_type,source_key,memory_id,metadata_json
+                FROM agent_retrieval_hit WHERE user_id=? AND turn_id=? ORDER BY rank_no
+                """, USER_ID, turn.turnId())).hasSize(2)
+                .extracting(row -> row.get("source_type"))
+                .containsExactly("MEMORY", "CONVERSATION_HISTORY");
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT memory_id FROM agent_retrieval_hit
+                WHERE user_id=? AND turn_id=? AND source_type='MEMORY'
+                """, Long.class, USER_ID, turn.turnId())).isEqualTo(71L);
+    }
+
+    @Test
     void redisLeaseAcceptsOnlyTheNewestFenceAndExactOwnerCanRenewOrRelease() {
         UUID first = UUID.randomUUID();
         UUID second = UUID.randomUUID();

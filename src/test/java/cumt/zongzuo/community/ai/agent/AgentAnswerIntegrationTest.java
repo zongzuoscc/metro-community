@@ -34,6 +34,7 @@ import static org.mockito.Mockito.when;
 @TestPropertySource(properties = {
         "metro.ai.enabled=true",
         "metro.ai.agent.enabled=true",
+        "metro.ai.memory.enabled=true",
         "metro.ai.embedding.enabled=false",
         "metro.projection.article-chunks.enabled=true",
         "metro.projection.article-chunks.parser-generation=97",
@@ -230,6 +231,38 @@ class AgentAnswerIntegrationTest extends IntegrationTestSupport {
                 "event: generating", "event: done");
     }
 
+    @Test
+    void persistentTurnsAutomaticallySaveAndRecallLowRiskMemory() throws Exception {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(jwtService.generate(USER_ID));
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        ResponseEntity<String> first = restTemplate.postForEntity(url("/api/agent/turns"),
+                new HttpEntity<>("""
+                        {"clientRequestId":"00000000-0000-0000-0000-000000000091",
+                         "message":"我喜欢简洁的回答风格",
+                         "temporary":false,"context":{}}
+                        """, headers), String.class);
+        long firstTurn = Long.parseLong(new com.fasterxml.jackson.databind.ObjectMapper()
+                .readTree(first.getBody()).path("turnId").asText());
+        assertThat(awaitTerminal(firstTurn, headers)).contains("\"state\":\"SUCCEEDED\"");
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM agent_memory_item WHERE user_id=? AND state='ACTIVE'
+                """, Integer.class, USER_ID)).isOne();
+        when(gateway.generate(any())).thenReturn(new AiChatResult("""
+                {"answer":"你喜欢简洁的回答风格。","citations":[]}
+                """, "stop", 100, 20, "test", "deepseek-v4-flash"));
+
+        ResponseEntity<String> recalled = restTemplate.postForEntity(url("/api/agent/answer"),
+                new HttpEntity<>("""
+                        {"clientRequestId":"00000000-0000-0000-0000-000000000092",
+                         "message":"你记得我喜欢什么样的回答吗？"}
+                        """, headers), String.class);
+
+        assertThat(recalled.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(recalled.getBody()).contains("你喜欢简洁的回答风格",
+                "\"memoryUses\":[", "\"category\":\"PREFERENCE\"");
+    }
+
     private String awaitTerminal(long turnId, HttpHeaders headers) {
         long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(15);
         String body = null;
@@ -249,6 +282,12 @@ class AgentAnswerIntegrationTest extends IntegrationTestSupport {
     }
 
     private void cleanupAgentTimeline() {
+        jdbcTemplate.update("DELETE FROM agent_memory_projection WHERE user_id=?", USER_ID);
+        jdbcTemplate.update("DELETE FROM agent_memory_source WHERE user_id=?", USER_ID);
+        jdbcTemplate.update("UPDATE agent_memory_item SET current_version_id=NULL WHERE user_id=?", USER_ID);
+        jdbcTemplate.update("DELETE FROM agent_memory_version WHERE user_id=?", USER_ID);
+        jdbcTemplate.update("DELETE FROM agent_memory_item WHERE user_id=?", USER_ID);
+        jdbcTemplate.update("DELETE FROM agent_memory_setting WHERE user_id=?", USER_ID);
         jdbcTemplate.update("DELETE FROM agent_answer_citation WHERE user_id=?", USER_ID);
         jdbcTemplate.update("DELETE FROM agent_retrieval_hit WHERE user_id=?", USER_ID);
         jdbcTemplate.update("DELETE FROM agent_tool_call WHERE user_id=?", USER_ID);

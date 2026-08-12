@@ -199,6 +199,24 @@ public interface AgentTurnMapper {
                        @Param("title") String title, @Param("quote") String quote,
                        @Param("quoteHash") String quoteHash);
 
+    @Insert("""
+            INSERT INTO agent_retrieval_hit
+                (user_id,turn_id,source_type,source_key,article_id,revision_id,chunk_id,
+                 memory_id,bm25_score,dense_score,rrf_score,rank_no,excerpt_snapshot,
+                 metadata_json,expires_at)
+            VALUES (#{userId},#{turnId},#{sourceType},#{sourceKey},NULL,NULL,NULL,
+                    #{memoryId},NULL,NULL,1.0,#{rankNo},#{excerpt},#{metadataJson},
+                    DATE_ADD(CURRENT_TIMESTAMP(6), INTERVAL 30 DAY))
+            """)
+    int insertPersonalContextUse(@Param("userId") long userId,
+                                 @Param("turnId") long turnId,
+                                 @Param("sourceType") String sourceType,
+                                 @Param("sourceKey") String sourceKey,
+                                 @Param("memoryId") Long memoryId,
+                                 @Param("rankNo") int rankNo,
+                                 @Param("excerpt") String excerpt,
+                                 @Param("metadataJson") String metadataJson);
+
     @Update("""
             UPDATE agent_turn
             SET state='SUCCEEDED',completed_at=CURRENT_TIMESTAMP(6),lease_until=NULL,error_code=NULL

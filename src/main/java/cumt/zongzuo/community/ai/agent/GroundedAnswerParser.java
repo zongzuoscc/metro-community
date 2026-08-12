@@ -38,6 +38,12 @@ public final class GroundedAnswerParser {
 
     GroundedAgentAnswer parse(AiChatResult result, String expectedModel,
                               List<ResolvedArticleChunk> authorized) {
+        return parse(result, expectedModel, authorized, false);
+    }
+
+    GroundedAgentAnswer parse(AiChatResult result, String expectedModel,
+                              List<ResolvedArticleChunk> authorized,
+                              boolean personalContextAvailable) {
         if (result == null || !"stop".equals(result.finishReason())
                 || !expectedModel.equals(result.model()) || result.text() == null
                 || result.text().isBlank()
@@ -79,7 +85,7 @@ public final class GroundedAnswerParser {
             citations.add(new AgentCitation(marker, sourceId, source.articleId(), source.revisionId(),
                     source.chunkId(), source.title(), quote, "/article/" + source.articleId()));
         }
-        if (citations.isEmpty() || citations.size() > 8) {
+        if ((!personalContextAvailable && citations.isEmpty()) || citations.size() > 8) {
             throw invalid("Grounded answer must contain citations");
         }
         Set<Integer> answerMarkers = new HashSet<>();

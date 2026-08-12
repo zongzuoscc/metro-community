@@ -3,6 +3,8 @@ package cumt.zongzuo.community.ai.agent.retrieval;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import cumt.zongzuo.community.ai.agent.GroundedAnswerParser;
 import cumt.zongzuo.community.ai.agent.GroundedAnswerService;
+import cumt.zongzuo.community.ai.agent.history.AgentConversationHistorySearchService;
+import cumt.zongzuo.community.ai.agent.memory.AgentMemoryRecallService;
 import cumt.zongzuo.community.ai.config.MetroAiProperties;
 import cumt.zongzuo.community.ai.provider.AiChatGateway;
 import cumt.zongzuo.community.ai.provider.EmbeddingGateway;
@@ -57,14 +59,17 @@ class ArticleAgentRetrievalConfiguration {
                                                 AiChatGateway gateway,
                                                 ObjectMapper objectMapper,
                                                 MetroAiProperties properties,
-                                                Clock clock) {
+                                                Clock clock,
+                                                ObjectProvider<AgentMemoryRecallService> memories,
+                                                ObjectProvider<AgentConversationHistorySearchService> history) {
         String model = properties.getDeepSeek().getModel();
         if (model == null || model.isBlank()) {
             throw new IllegalStateException("Agent model must not be blank");
         }
         return new GroundedAnswerService(retrieval, executor, gateway,
                 new GroundedAnswerParser(objectMapper), clock, model,
-                properties.getAgent().getTimeout());
+                properties.getAgent().getTimeout(), memories.getIfAvailable(),
+                history.getIfAvailable(), properties.getMemory().isEnabled());
     }
 
     private static Duration min(Duration left, Duration right) {

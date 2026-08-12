@@ -2,8 +2,10 @@ package cumt.zongzuo.community.ai.agent.turn;
 
 import cumt.zongzuo.community.ai.agent.GroundedAgentAnswer;
 import cumt.zongzuo.community.ai.agent.GroundedAnswerService;
+import cumt.zongzuo.community.ai.agent.memory.AgentMemoryCaptureService;
 import org.springframework.stereotype.Service;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.beans.factory.annotation.Value;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -12,10 +14,14 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @Service
 @ConditionalOnProperty(name = {"metro.ai.enabled", "metro.ai.agent.enabled"}, havingValue = "true")
 public class AgentTurnRunner {
+
+    private static final Logger log = LoggerFactory.getLogger(AgentTurnRunner.class);
 
     private final GroundedAnswerService answers;
     private final AgentTurnFinalizer finalizer;
@@ -25,12 +31,16 @@ public class AgentTurnRunner {
     private final ScheduledExecutorService heartbeatExecutor;
     private final AgentTurnLeaseService turnLeases;
     private final Clock clock;
+    private final AgentMemoryCaptureService memories;
+    private final boolean memoryEnabled;
 
     public AgentTurnRunner(GroundedAnswerService answers, AgentTurnFinalizer finalizer,
                            AgentTurnFailureService failures, AgentTurnEventStore events,
                            ExecutorService agentTurnExecutor,
                            ScheduledExecutorService agentTurnHeartbeatExecutor,
-                           AgentTurnLeaseService turnLeases, Clock clock) {
+                           AgentTurnLeaseService turnLeases, Clock clock,
+                           AgentMemoryCaptureService memories,
+                           @Value("${metro.ai.memory.enabled:false}") boolean memoryEnabled) {
         this.answers = answers;
         this.finalizer = finalizer;
         this.failures = failures;
@@ -39,6 +49,8 @@ public class AgentTurnRunner {
         this.heartbeatExecutor = agentTurnHeartbeatExecutor;
         this.turnLeases = turnLeases;
         this.clock = clock;
+        this.memories = memories;
+        this.memoryEnabled = memoryEnabled;
     }
 
     public void submit(AgentTurnAdmission admission, long userId, String question) {
@@ -67,6 +79,14 @@ public class AgentTurnRunner {
             }
             if (!finalizer.complete(admission.turnId(), admission.runId(), admission.runFence(), answer)) {
                 return;
+            }
+            if (memoryEnabled) {
+                try {
+                    memories.captureUserMessage(userId, admission.turnId());
+                } catch (RuntimeException error) {
+                    log.warn("Agent memory capture failed after completed turn: turnId={}",
+                            admission.turnId(), error);
+                }
             }
             events.append(admission.turnId(), userId, admission.runId(), admission.runFence(),
                     "done", Map.of("finalMessage", answer.answer(),

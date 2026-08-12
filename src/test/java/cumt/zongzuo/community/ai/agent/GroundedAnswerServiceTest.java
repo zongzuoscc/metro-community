@@ -6,6 +6,10 @@ import cumt.zongzuo.community.ai.agent.retrieval.ArticleRetrievalResult;
 import cumt.zongzuo.community.ai.agent.retrieval.HybridArticleRetrievalService;
 import cumt.zongzuo.community.ai.agent.retrieval.RankedArticleChunk;
 import cumt.zongzuo.community.ai.agent.retrieval.ResolvedArticleChunk;
+import cumt.zongzuo.community.ai.agent.history.AgentConversationHistoryHit;
+import cumt.zongzuo.community.ai.agent.history.AgentConversationHistorySearchService;
+import cumt.zongzuo.community.ai.agent.memory.AgentMemoryRecallService;
+import cumt.zongzuo.community.ai.agent.memory.AgentMemoryView;
 import cumt.zongzuo.community.ai.provider.AiCapability;
 import cumt.zongzuo.community.ai.provider.AiChatGateway;
 import cumt.zongzuo.community.ai.provider.AiChatResult;
@@ -17,6 +21,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -32,6 +37,9 @@ class GroundedAnswerServiceTest {
 
     private final HybridArticleRetrievalService retrieval = mock(HybridArticleRetrievalService.class);
     private final AiChatGateway gateway = mock(AiChatGateway.class);
+    private final AgentMemoryRecallService memories = mock(AgentMemoryRecallService.class);
+    private final AgentConversationHistorySearchService history =
+            mock(AgentConversationHistorySearchService.class);
     private final AtomicInteger calls = new AtomicInteger();
     private final ResolvedArticleChunk source = new ResolvedArticleChunk(31L, 301L, 3001L, 0,
             "MySQL locks", List.of("Transactions"),
@@ -82,6 +90,47 @@ class GroundedAnswerServiceTest {
         verify(gateway, never()).generate(any());
     }
 
+    @Test
+    void disabledMemoryIsNeitherReadNorSentToTheModel() {
+        retrievalResult(List.of());
+        GroundedAgentAnswer answer = service(false).answer(9L, "request-memory-off", "你记得我吗",
+                Instant.parse("2026-08-12T00:00:30Z"));
+
+        assertThat(answer.finishReason()).isEqualTo("insufficient_evidence");
+        verify(memories, never()).recall(any(Long.class), any(), any(Integer.class));
+        verify(gateway, never()).generate(any());
+    }
+
+    @Test
+    void answersFromOwnerMemoryAndOldConversationWithoutCommunityCitations() {
+        retrievalResult(List.of());
+        when(memories.recall(9L, "你记得我喜欢什么，以及我说过的重话吗？", 6))
+                .thenReturn(List.of(new AgentMemoryView(71L, "PREFERENCE",
+                        "我喜欢简洁的回答风格", 2L, "ACTIVE")));
+        when(history.search(9L, "你记得我喜欢什么，以及我说过的重话吗？", 6))
+                .thenReturn(List.of(new AgentConversationHistoryHit(81L, 801L, 9L, "USER",
+                        "你是我用过最难用的助手",
+                        LocalDateTime.parse("2026-01-02T03:04:05"))));
+        when(gateway.generate(any())).thenReturn(new AiChatResult("""
+                {"answer":"你喜欢简洁回答；你曾说我是你用过最难用的助手。","citations":[]}
+                """, "stop", 100, 20, "test", "deepseek-test"));
+
+        GroundedAgentAnswer answer = service().answer(9L, "request-personal",
+                "你记得我喜欢什么，以及我说过的重话吗？",
+                Instant.parse("2026-08-12T00:00:30Z"));
+
+        assertThat(answer.citations()).isEmpty();
+        assertThat(answer.memoryUses()).extracting(AgentMemoryUse::memoryId)
+                .containsExactly(71L);
+        assertThat(answer.historyUses()).extracting(AgentHistoryUse::messageId)
+                .containsExactly(81L);
+        var command = org.mockito.ArgumentCaptor.forClass(
+                cumt.zongzuo.community.ai.provider.AiChatCommand.class);
+        verify(gateway).generate(command.capture());
+        assertThat(command.getValue().messages().toString())
+                .contains("我喜欢简洁的回答风格", "你是我用过最难用的助手");
+    }
+
     private void retrievalResult(List<ResolvedArticleChunk> chunks) {
         when(retrieval.retrieve(any(ArticleRetrievalQuery.class))).thenReturn(new ArticleRetrievalResult(
                 chunks.size(), chunks.size(), true, true, chunks,
@@ -89,10 +138,14 @@ class GroundedAnswerServiceTest {
     }
 
     private GroundedAnswerService service() {
+        return service(true);
+    }
+
+    private GroundedAnswerService service(boolean memoryEnabled) {
         return new GroundedAnswerService(retrieval, new DirectExecutor(), gateway,
                 new GroundedAnswerParser(new ObjectMapper()),
                 Clock.fixed(Instant.parse("2026-08-12T00:00:00Z"), ZoneOffset.UTC),
-                "deepseek-test", Duration.ofSeconds(30));
+                "deepseek-test", Duration.ofSeconds(30), memories, history, memoryEnabled);
     }
 
     private final class DirectExecutor implements AiCapabilityExecutor {
