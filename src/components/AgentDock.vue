@@ -14,9 +14,19 @@
       >
         <div class="agent-window__identity">
           <strong>Metro Agent</strong>
-          <span>{{ contextLabel }}</span>
+          <span>{{ memoryCenterOpen ? '记忆都由你决定' : contextLabel }}</span>
         </div>
         <div class="agent-window__controls">
+          <button
+            v-if="!temporaryEnabled"
+            data-test="memory-center-toggle"
+            type="button"
+            :aria-label="memoryCenterOpen ? '返回 Agent 对话' : '打开长期记忆中心'"
+            @pointerdown.stop
+            @click.stop="memoryCenterOpen = !memoryCenterOpen"
+          >
+            {{ memoryCenterOpen ? '问' : '忆' }}
+          </button>
           <button
             data-test="agent-expand"
             type="button"
@@ -30,7 +40,9 @@
         </div>
       </header>
 
-      <section v-if="pageContext.kind !== 'general'" class="agent-context">
+      <AgentMemoryCenter v-if="memoryCenterOpen" data-test="memory-center" />
+
+      <section v-else-if="pageContext.kind !== 'general'" class="agent-context">
         <div class="agent-context__title">
           <span>{{ pageContext.kind === 'article' ? '当前文章' : '当前草稿' }}</span>
           <strong>{{ pageContext.title || '未命名内容' }}</strong>
@@ -53,7 +65,7 @@
         </div>
       </section>
 
-      <section ref="conversation" class="agent-conversation" aria-live="polite">
+      <section v-if="!memoryCenterOpen" ref="conversation" class="agent-conversation" aria-live="polite">
         <div v-if="messages.length === 0 && !suggestion" class="agent-empty">
           <span class="agent-empty__seal">问</span>
           <h2>{{ emptyTitle }}</h2>
@@ -86,7 +98,7 @@
         </article>
       </section>
 
-      <footer class="agent-composer">
+      <footer v-if="!memoryCenterOpen" class="agent-composer">
         <div class="agent-composer__meta">
           <span>{{ temporaryEnabled ? '临时对话，不保存历史' : '普通对话' }}</span>
           <button data-test="temporary-toggle" type="button" :disabled="sessionLoading" @click="toggleTemporaryMode">
@@ -124,6 +136,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import AgentMemoryCenter from './AgentMemoryCenter.vue'
 import {
   createAgentTurn,
   createTemporarySession,
@@ -148,6 +161,7 @@ const messages = ref([])
 const taskLoading = ref(false)
 const taskStatus = ref('正在思考')
 const suggestion = ref(null)
+const memoryCenterOpen = ref(false)
 const funding = ref({ fundingSource: 'PLATFORM', provider: null, model: null })
 const conversation = ref(null)
 const position = ref({ right: 24, bottom: 18 })
@@ -165,6 +179,7 @@ function resetPrivateState() {
   streamController = null
   messages.value = []
   suggestion.value = null
+  memoryCenterOpen.value = false
   temporaryEnabled.value = false
   temporarySession.value = null
   draft.value = ''
@@ -354,6 +369,8 @@ async function toggleTemporaryMode() {
       messages.value = []
       ElMessage.success('临时对话已清除')
     } else {
+      // 临时会话不允许展示长期记忆，进入前先关闭记忆中心，避免形成错误的隐私暗示。
+      memoryCenterOpen.value = false
       const createdSession = await createTemporarySession()
       if (requestEpoch !== authenticationEpoch) return
       temporarySession.value = createdSession

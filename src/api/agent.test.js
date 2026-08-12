@@ -2,14 +2,15 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { get, post, deleteRequest } = vi.hoisted(() => ({
+const { get, post, put, deleteRequest } = vi.hoisted(() => ({
   get: vi.fn(),
   post: vi.fn(),
+  put: vi.fn(),
   deleteRequest: vi.fn(),
 }))
 
 vi.mock('../utils/request', () => ({
-  default: { get, post, delete: deleteRequest },
+  default: { get, post, put, delete: deleteRequest },
 }))
 
 import {
@@ -19,6 +20,12 @@ import {
   deleteTemporarySession,
   getAgentTurn,
   getTemporarySession,
+  getAgentMemories,
+  getAgentMemorySetting,
+  updateAgentMemory,
+  setAgentMemoryState,
+  updateAgentMemorySetting,
+  deleteAgentMemory,
   streamAgentTurnEvents,
 } from './agent'
 
@@ -26,7 +33,34 @@ describe('Agent 前端接口契约', () => {
   beforeEach(() => {
     get.mockReset()
     post.mockReset()
+    put.mockReset()
     deleteRequest.mockReset()
+  })
+
+  it('uses owner-scoped raw endpoints for memory management', async () => {
+    get.mockResolvedValue([])
+    put.mockResolvedValue({ id: 7, version: 2 })
+    deleteRequest.mockResolvedValue(undefined)
+
+    await getAgentMemories()
+    await getAgentMemorySetting()
+    await updateAgentMemory(7, { content: '偏好简洁回答', expectedVersion: 1 })
+    await setAgentMemoryState(7, { paused: true, expectedVersion: 2 })
+    await updateAgentMemorySetting({ enabled: false, expectedVersion: 0 })
+    await deleteAgentMemory(7)
+
+    expect(get).toHaveBeenNthCalledWith(1, '/api/agent/memories', { rawResponse: true })
+    expect(get).toHaveBeenNthCalledWith(2, '/api/agent/memory-settings', { rawResponse: true })
+    expect(put).toHaveBeenNthCalledWith(1, '/api/agent/memories/7', {
+      content: '偏好简洁回答', expectedVersion: 1,
+    }, { rawResponse: true })
+    expect(put).toHaveBeenNthCalledWith(2, '/api/agent/memories/7/state', {
+      paused: true, expectedVersion: 2,
+    }, { rawResponse: true })
+    expect(put).toHaveBeenNthCalledWith(3, '/api/agent/memory-settings', {
+      enabled: false, expectedVersion: 0,
+    }, { rawResponse: true })
+    expect(deleteRequest).toHaveBeenCalledWith('/api/agent/memories/7', { rawResponse: true })
   })
 
   it('uses the raw temporary-session endpoints without persisting content in the browser', async () => {

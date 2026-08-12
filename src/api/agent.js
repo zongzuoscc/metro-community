@@ -64,6 +64,30 @@ export const testAiProviderConnection = () =>
 export const deleteAiProviderSetting = () =>
   request.delete('/api/agent/provider-settings', raw)
 
+/** 读取当前用户可管理的全部长期记忆，包含 ACTIVE 与 PAUSED，不返回已删除内容。 */
+export const getAgentMemories = () =>
+  request.get('/api/agent/memories', raw)
+
+/** 读取长期记忆总开关及其乐观锁版本。 */
+export const getAgentMemorySetting = () =>
+  request.get('/api/agent/memory-settings', raw)
+
+/** 编辑只会追加新的不可变版本，expectedVersion 防止覆盖并发修改。 */
+export const updateAgentMemory = (memoryId, payload) =>
+  request.put(`/api/agent/memories/${memoryId}`, payload, raw)
+
+/** 暂停会立即切断召回，恢复不会丢失原内容和来源。 */
+export const setAgentMemoryState = (memoryId, payload) =>
+  request.put(`/api/agent/memories/${memoryId}/state`, payload, raw)
+
+/** 开关全部长期记忆；关闭后 Agent 不会把任何记忆放入模型上下文。 */
+export const updateAgentMemorySetting = payload =>
+  request.put('/api/agent/memory-settings', payload, raw)
+
+/** 删除单条记忆事实，并让后端进入派生向量清理流程。 */
+export const deleteAgentMemory = memoryId =>
+  request.delete(`/api/agent/memories/${memoryId}`, raw)
+
 /**
  * 通过 fetch 读取 Agent 的 SSE 流。
  * axios 在当前项目中用于 JSON 请求；流式正文改用 ReadableStream，才能在完整响应结束前逐帧更新界面。

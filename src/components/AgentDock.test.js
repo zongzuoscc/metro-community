@@ -12,6 +12,8 @@ const mocks = vi.hoisted(() => ({
   getTemporarySession: vi.fn(),
   createTemporarySession: vi.fn(),
   deleteTemporarySession: vi.fn(),
+  getAgentMemories: vi.fn(),
+  getAgentMemorySetting: vi.fn(),
 }))
 
 vi.mock('../api/agent', () => ({
@@ -23,6 +25,8 @@ vi.mock('../api/agent', () => ({
   getTemporarySession: mocks.getTemporarySession,
   createTemporarySession: mocks.createTemporarySession,
   deleteTemporarySession: mocks.deleteTemporarySession,
+  getAgentMemories: mocks.getAgentMemories,
+  getAgentMemorySetting: mocks.getAgentMemorySetting,
   getAgentTurn: vi.fn(),
   cancelAgentTurn: vi.fn(),
 }))
@@ -36,6 +40,8 @@ beforeEach(() => {
   clearAgentPageContext()
   Object.values(mocks).forEach(mock => mock.mockReset())
   mocks.getTemporarySession.mockRejectedValue({ response: { status: 404 } })
+  mocks.getAgentMemories.mockResolvedValue([])
+  mocks.getAgentMemorySetting.mockResolvedValue({ enabled: true, version: 0 })
 })
 
 function mountDock() {
@@ -71,6 +77,22 @@ describe('全局 Agent 桌宠小窗', () => {
 
     await wrapper.get('[data-test="agent-expand"]').trigger('click')
     expect(wrapper.get('[data-test="agent-dock"]').classes()).toContain('is-fullscreen')
+  })
+
+  it('opens the memory center from normal chat and hides the entry in temporary mode', async () => {
+    mocks.createTemporarySession.mockResolvedValue({ sessionId: 'temporary-memory-boundary' })
+    const wrapper = mountDock()
+    await wrapper.get('[data-test="agent-pet"]').trigger('click')
+
+    await wrapper.get('[data-test="memory-center-toggle"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('你的长期记忆')
+    expect(mocks.getAgentMemories).toHaveBeenCalledTimes(1)
+
+    await wrapper.get('[data-test="memory-center-toggle"]').trigger('click')
+    await wrapper.get('[data-test="temporary-toggle"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-test="memory-center-toggle"]').exists()).toBe(false)
   })
 
   it('同标签页退出登录后立即隐藏桌宠和已打开的对话内容', async () => {
