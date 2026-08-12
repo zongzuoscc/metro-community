@@ -51,7 +51,9 @@ service.interceptors.response.use(
             window.dispatchEvent(new Event('metro-auth-changed'))
             closeWebSocket()
             router.push('/login') // 强制跳转
-        } else if (!error.config?.silent) {
+        } else if (!error.config?.silent && !error.config?.rawResponse) {
+            // raw Agent 接口由桌宠或设置面板给出与业务场景对应的中文提示。
+            // 拦截器若再弹一次 Axios 原始错误，会形成重复且不可理解的两条通知。
             ElMessage.error(error.message || '网络异常')
         }
         return Promise.reject(error)

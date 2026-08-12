@@ -64,4 +64,17 @@ describe('request authentication failure handling', () => {
       status: 204,
     })).toBeUndefined()
   })
+
+  it('does not show a generic network toast for raw Agent errors handled by the feature UI', async () => {
+    const errorHandler = mocks.responseUse.mock.calls[0][1]
+    const error = {
+      message: 'Request failed with status code 503',
+      config: { rawResponse: true },
+      response: { status: 503 },
+    }
+
+    await expect(errorHandler(error)).rejects.toBe(error)
+
+    expect(mocks.messageError).not.toHaveBeenCalled()
+  })
 })
