@@ -28,7 +28,8 @@ class MetroAiPropertiesTest {
             assertThat(properties.getWriting().isEnabled()).isFalse();
             assertThat(properties.getModeration().isEnabled()).isFalse();
             assertThat(properties.getEmbedding().isEnabled()).isFalse();
-            assertThat(properties.getDeepSeek().getModel()).isEqualTo("deepseek-v4-flash");
+            assertThat(properties.getPlatform().getProvider()).isEqualTo("qwen");
+            assertThat(properties.getPlatform().getModel()).isEqualTo("qwen-plus");
             assertThat(properties.getOllama().getModel()).isEqualTo("bge-m3");
             assertThat(properties.getAgent().getMaxInputCharacters()).isEqualTo(4_000);
             assertThat(properties.getAgent().getPerMinute()).isEqualTo(8);
@@ -124,9 +125,10 @@ class MetroAiPropertiesTest {
                         "metro.ai.writing.enabled=true",
                         "metro.ai.moderation.enabled=true",
                         "metro.ai.embedding.enabled=true",
-                        "metro.ai.deep-seek.base-url=http://127.0.0.1:18080",
-                        "metro.ai.deep-seek.api-key=test-key",
-                        "metro.ai.deep-seek.model=chat-test",
+                        "metro.ai.platform.provider=qwen-workspace",
+                        "metro.ai.platform.base-url=http://127.0.0.1:18080",
+                        "metro.ai.platform.api-key=test-key",
+                        "metro.ai.platform.model=chat-test",
                         "metro.ai.ollama.base-url=http://127.0.0.1:11435",
                         "metro.ai.ollama.model=embed-test",
                         "metro.ai.agent.max-input-characters=1234",
@@ -149,9 +151,10 @@ class MetroAiPropertiesTest {
                     assertThat(properties.getWriting().isEnabled()).isTrue();
                     assertThat(properties.getModeration().isEnabled()).isTrue();
                     assertThat(properties.getEmbedding().isEnabled()).isTrue();
-                    assertThat(properties.getDeepSeek().getBaseUrl()).isEqualTo("http://127.0.0.1:18080");
-                    assertThat(properties.getDeepSeek().getApiKey()).isEqualTo("test-key");
-                    assertThat(properties.getDeepSeek().getModel()).isEqualTo("chat-test");
+                    assertThat(properties.getPlatform().getProvider()).isEqualTo("qwen-workspace");
+                    assertThat(properties.getPlatform().getBaseUrl()).isEqualTo("http://127.0.0.1:18080");
+                    assertThat(properties.getPlatform().getApiKey()).isEqualTo("test-key");
+                    assertThat(properties.getPlatform().getModel()).isEqualTo("chat-test");
                     assertThat(properties.getOllama().getBaseUrl()).isEqualTo("http://127.0.0.1:11435");
                     assertThat(properties.getOllama().getModel()).isEqualTo("embed-test");
                     assertThat(properties.getAgent().getMaxInputCharacters()).isEqualTo(1234);
@@ -165,6 +168,8 @@ class MetroAiPropertiesTest {
                     assertThat(properties.getHyde().getMaxOutputCharacters()).isEqualTo(321);
                     assertThat(properties.getModeration().getTaskTimeout()).isEqualTo(Duration.ofSeconds(33));
                     assertThat(properties.getEmbedding().getBulkhead()).isEqualTo(6);
+                    assertThat(new cumt.zongzuo.community.ai.runtime.AiCapabilityPolicyResolver(properties)
+                            .resolve(AiCapability.AGENT).provider()).isEqualTo("qwen-workspace");
                 });
     }
 

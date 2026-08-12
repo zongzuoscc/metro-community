@@ -88,9 +88,10 @@ class ArticleModerationIntegrationTest extends IntegrationTestSupport {
     static void moderationProperties(DynamicPropertyRegistry registry) {
         registry.add("metro.ai.enabled", () -> "true");
         registry.add("metro.ai.moderation.enabled", () -> "true");
-        registry.add("metro.ai.deep-seek.api-key", () -> "integration-key");
-        registry.add("metro.ai.deep-seek.model", () -> MODEL);
-        registry.add("metro.ai.deep-seek.base-url",
+        registry.add("metro.ai.platform.provider", () -> "qwen");
+        registry.add("metro.ai.platform.api-key", () -> "integration-key");
+        registry.add("metro.ai.platform.model", () -> MODEL);
+        registry.add("metro.ai.platform.base-url",
                 () -> "http://127.0.0.1:" + PROVIDER.getAddress().getPort());
         registry.add("metro.ai.moderation.timeout", () -> "PT1S");
         registry.add("metro.ai.moderation.task-timeout", () -> "PT3S");
@@ -118,7 +119,7 @@ class ArticleModerationIntegrationTest extends IntegrationTestSupport {
         when(sensitiveUtils.findFirst(anyString())).thenReturn(Optional.empty());
         aiProperties.getModeration().setEnabled(true);
         aiProperties.getModeration().setTaskTimeout(Duration.ofSeconds(3));
-        aiProperties.getDeepSeek().setApiKey("integration-key");
+        aiProperties.getPlatform().setApiKey("integration-key");
         purge(RabbitConfig.ARTICLE_MODERATION_QUEUE);
         purge(RabbitConfig.ARTICLE_MODERATION_RETRY_QUEUE);
         purge(RabbitConfig.ARTICLE_MODERATION_QUEUE + ".dlq");
@@ -246,7 +247,7 @@ class ArticleModerationIntegrationTest extends IntegrationTestSupport {
     @Test
     void missingProviderKeyFailsClosedBeforeClaimAndWithoutHttp() {
         Fixture fixture = insertPendingFixture("The provider key disappeared after submission.");
-        aiProperties.getDeepSeek().setApiKey(" ");
+        aiProperties.getPlatform().setApiKey(" ");
         try {
             worker.process(event(fixture));
 
@@ -257,7 +258,7 @@ class ArticleModerationIntegrationTest extends IntegrationTestSupport {
                     .isEqualTo("AI_UNAVAILABLE");
         }
         finally {
-            aiProperties.getDeepSeek().setApiKey("integration-key");
+            aiProperties.getPlatform().setApiKey("integration-key");
         }
     }
 
@@ -361,7 +362,7 @@ class ArticleModerationIntegrationTest extends IntegrationTestSupport {
         try {
             Future<?> review = caller.submit(() -> worker.process(event(fixture)));
             assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue();
-            aiProperties.getDeepSeek().setModel(" ");
+            aiProperties.getPlatform().setModel(" ");
             release.countDown();
             review.get(3, TimeUnit.SECONDS);
 
@@ -374,7 +375,7 @@ class ArticleModerationIntegrationTest extends IntegrationTestSupport {
         }
         finally {
             release.countDown();
-            aiProperties.getDeepSeek().setModel(MODEL);
+            aiProperties.getPlatform().setModel(MODEL);
             caller.shutdownNow();
         }
     }

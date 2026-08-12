@@ -350,8 +350,8 @@ public class ArticleModerationStateMachine {
         row.setJobId(lease.jobId());
         row.setAttemptNo(attemptNo);
         AiChatResult result = record.result();
-        row.setProvider(result == null ? "deepseek" : result.provider());
-        row.setModel(result == null ? properties.getDeepSeek().getModel() : result.model());
+        row.setProvider(result == null ? properties.getPlatform().getProvider() : result.provider());
+        row.setModel(result == null ? properties.getPlatform().getModel() : result.model());
         row.setPromptVersion(ModerationPromptFactory.PROMPT_VERSION);
         row.setInputHash(record.inputHash());
         row.setStructuredOutputJson(structuredEvidence(record));

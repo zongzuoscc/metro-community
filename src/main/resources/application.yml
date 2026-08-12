@@ -2,6 +2,10 @@ server:
   port: ${SERVER_PORT:8080}
 
 spring:
+  config:
+    # 本地开发可把平台密钥放在仓库根目录的 .env；该文件已被 Git 忽略。
+    # 系统环境变量优先级更高，生产环境仍应通过密钥管理服务或部署平台注入。
+    import: optional:file:.env[.properties]
   application:
     name: community
 
@@ -236,10 +240,11 @@ metro:
       shutdown-timeout: PT5S
       provider-connect-timeout: PT2S
       provider-timeout-margin: PT1S
-    deep-seek:
-      base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
-      api-key: ${DEEPSEEK_API_KEY:}
-      model: ${DEEPSEEK_MODEL:deepseek-v4-flash}
+    platform:
+      provider: ${METRO_AI_PLATFORM_PROVIDER:qwen}
+      base-url: ${METRO_AI_PLATFORM_BASE_URL:}
+      api-key: ${METRO_AI_PLATFORM_API_KEY:}
+      model: ${METRO_AI_PLATFORM_MODEL:qwen-plus}
     ollama:
       base-url: ${OLLAMA_BASE_URL:http://127.0.0.1:11434}
       model: "${OLLAMA_EMBEDDING_MODEL:metro-bge-m3:790764642607}"

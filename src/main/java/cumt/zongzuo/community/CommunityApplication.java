@@ -9,7 +9,6 @@ import cumt.zongzuo.community.article.rollout.StageBRolloutOperatorApplication;
 import cumt.zongzuo.community.recommendation.config.RecommendationProperties;
 import org.mybatis.spring.annotation.MapperScan;
 import org.apache.ibatis.annotations.Mapper;
-import org.springframework.ai.model.deepseek.autoconfigure.DeepSeekChatAutoConfiguration;
 import org.springframework.ai.model.ollama.autoconfigure.OllamaApiAutoConfiguration;
 import org.springframework.ai.model.ollama.autoconfigure.OllamaChatAutoConfiguration;
 import org.springframework.ai.model.ollama.autoconfigure.OllamaEmbeddingAutoConfiguration;
@@ -21,7 +20,6 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 
 @SpringBootApplication(exclude = {
         UserDetailsServiceAutoConfiguration.class,
-        DeepSeekChatAutoConfiguration.class,
         OllamaApiAutoConfiguration.class,
         OllamaChatAutoConfiguration.class,
         OllamaEmbeddingAutoConfiguration.class

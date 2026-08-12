@@ -12,9 +12,8 @@ import cumt.zongzuo.community.ai.provider.DisabledAiChatGateway;
 import cumt.zongzuo.community.ai.provider.DisabledEmbeddingGateway;
 import cumt.zongzuo.community.ai.provider.EmbeddingCommand;
 import cumt.zongzuo.community.ai.provider.EmbeddingGateway;
+import cumt.zongzuo.community.ai.provider.OpenAiCompatibleAiChatGateway;
 import org.junit.jupiter.api.Test;
-import org.springframework.ai.deepseek.DeepSeekChatModel;
-import org.springframework.ai.deepseek.api.DeepSeekApi;
 import org.springframework.ai.ollama.OllamaEmbeddingModel;
 import org.springframework.ai.ollama.api.OllamaApi;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
@@ -36,8 +35,6 @@ class AiProviderConfigurationTest {
             assertThat(context).hasSingleBean(EmbeddingGateway.class);
             assertThat(context.getBean(AiChatGateway.class)).isInstanceOf(DisabledAiChatGateway.class);
             assertThat(context.getBean(EmbeddingGateway.class)).isInstanceOf(DisabledEmbeddingGateway.class);
-            assertThat(context).doesNotHaveBean(DeepSeekApi.class);
-            assertThat(context).doesNotHaveBean(DeepSeekChatModel.class);
             assertThat(context).doesNotHaveBean(OllamaApi.class);
             assertThat(context).doesNotHaveBean(OllamaEmbeddingModel.class);
         });
@@ -65,7 +62,7 @@ class AiProviderConfigurationTest {
                         "metro.ai.enabled=true",
                         "metro.ai.agent.enabled=true",
                         "metro.ai.embedding.enabled=true",
-                        "metro.ai.deep-seek.api-key=",
+                        "metro.ai.platform.api-key=",
                         "metro.ai.ollama.base-url=")
                 .run(context -> {
                     assertThatThrownBy(() -> context.getBean(AiChatGateway.class).generate(chatCommand()))
@@ -75,9 +72,21 @@ class AiProviderConfigurationTest {
                             new EmbeddingCommand(AiCapability.EMBEDDING, List.of("hello"))))
                             .isInstanceOfSatisfying(AiProviderException.class,
                                     error -> assertThat(error.reason()).isEqualTo(AiProviderErrorReason.AI_UNAVAILABLE));
-                    assertThat(context).doesNotHaveBean(DeepSeekApi.class);
                     assertThat(context).doesNotHaveBean(OllamaApi.class);
                 });
+    }
+
+    @Test
+    void configuredPlatformUsesTheGenericOpenAiCompatibleGateway() {
+        contextRunner.withPropertyValues(
+                        "metro.ai.enabled=true",
+                        "metro.ai.agent.enabled=true",
+                        "metro.ai.platform.provider=qwen",
+                        "metro.ai.platform.base-url=https://example.invalid/compatible-mode/v1",
+                        "metro.ai.platform.api-key=test-key",
+                        "metro.ai.platform.model=qwen-plus")
+                .run(context -> assertThat(context.getBean(AiChatGateway.class))
+                        .isInstanceOf(OpenAiCompatibleAiChatGateway.class));
     }
 
     @Test
@@ -86,8 +95,8 @@ class AiProviderConfigurationTest {
                         "metro.ai.enabled=true",
                         "metro.ai.agent.enabled=true",
                         "metro.ai.moderation.enabled=false",
-                        "metro.ai.deep-seek.base-url=http://127.0.0.1:1",
-                        "metro.ai.deep-seek.api-key=test-key")
+                        "metro.ai.platform.base-url=http://127.0.0.1:1",
+                        "metro.ai.platform.api-key=test-key")
                 .run(context -> assertThatThrownBy(() -> context.getBean(AiChatGateway.class).generate(
                         new AiChatCommand(AiCapability.MODERATION,
                                 List.of(new AiPromptMessage(AiPromptRole.USER, "moderate")), AiResponseMode.TEXT)))

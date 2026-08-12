@@ -62,7 +62,7 @@ public class ArticleModerationWorker {
         this.outputParser = new ModerationOutputParser(objectMapper);
         MetroAiProperties.ModerationProperties moderation = properties.getModeration();
         this.chunker = new ModerationChunker(new JTokkitTokenCountEstimator(), promptFactory,
-                properties.getDeepSeek().getModel(),
+                properties.getPlatform().getModel(),
                 moderation.getMaxChunkTokens(), moderation.getOverlapTokens(),
                 moderation.getMaxChunks(), moderation.getMaxEstimatedTokens(),
                 moderation.getMaxOutputTokens(),
@@ -143,7 +143,7 @@ public class ArticleModerationWorker {
 
         List<ModerationModelOutput> outputs = new ArrayList<>(chunks.size());
         for (ModerationChunk chunk : chunks) {
-            ModerationPrompt prompt = promptFactory.create(chunk, properties.getDeepSeek().getModel());
+            ModerationPrompt prompt = promptFactory.create(chunk, properties.getPlatform().getModel());
             AtomicReference<ModerationJobLease> leaseCursor = new AtomicReference<>(lease);
             try {
                 ModerationCallResult call = executor.execute(new AiInvocationContext(
@@ -215,7 +215,7 @@ public class ArticleModerationWorker {
         AiChatResult result = invokeBound(lease, prompt);
         try {
             ModerationModelOutput output = outputParser.parse(result,
-                    properties.getDeepSeek().getModel(), prompt.promptVersion(),
+                    properties.getPlatform().getModel(), prompt.promptVersion(),
                     chunk.content().length());
             return new ModerationCallResult(result, output);
         }
@@ -238,9 +238,9 @@ public class ArticleModerationWorker {
 
     private boolean moderationAvailable() {
         return properties.isCapabilityEnabled(AiCapability.MODERATION)
-                && StringUtils.hasText(properties.getDeepSeek().getApiKey())
-                && StringUtils.hasText(properties.getDeepSeek().getBaseUrl())
-                && StringUtils.hasText(properties.getDeepSeek().getModel());
+                && StringUtils.hasText(properties.getPlatform().getApiKey())
+                && StringUtils.hasText(properties.getPlatform().getBaseUrl())
+                && StringUtils.hasText(properties.getPlatform().getModel());
     }
 
     private static String errorCode(RuntimeException error) {

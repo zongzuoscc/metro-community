@@ -2,6 +2,9 @@ server:
   port: 8080
 
 spring:
+  config:
+    # 本地 .env 仅用于开发；生产环境请使用部署平台的 Secret 注入。
+    import: optional:file:.env[.properties]
   datasource:
     url: jdbc:mysql://127.0.0.1:3306/metro_community?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai
     username: metro
@@ -129,10 +132,11 @@ metro:
       recovery-initial-delay-ms: ${METRO_AI_MODERATION_RECOVERY_INITIAL_DELAY_MS:30000}
     embedding:
       enabled: ${METRO_AI_EMBEDDING_ENABLED:false}
-    deep-seek:
-      base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
-      api-key: ${DEEPSEEK_API_KEY:}
-      model: ${DEEPSEEK_MODEL:deepseek-v4-flash}
+    platform:
+      provider: ${METRO_AI_PLATFORM_PROVIDER:qwen}
+      base-url: ${METRO_AI_PLATFORM_BASE_URL:}
+      api-key: ${METRO_AI_PLATFORM_API_KEY:}
+      model: ${METRO_AI_PLATFORM_MODEL:qwen-plus}
     ollama:
       base-url: ${OLLAMA_BASE_URL:http://127.0.0.1:11434}
       model: "${OLLAMA_EMBEDDING_MODEL:metro-bge-m3:790764642607}"

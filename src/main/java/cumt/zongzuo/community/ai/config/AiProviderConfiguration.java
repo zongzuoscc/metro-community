@@ -3,15 +3,12 @@ package cumt.zongzuo.community.ai.config;
 import cumt.zongzuo.community.ai.provider.AiChatGateway;
 import cumt.zongzuo.community.ai.provider.AiCapability;
 import cumt.zongzuo.community.ai.provider.AiProviderErrorReason;
-import cumt.zongzuo.community.ai.provider.DeepSeekAiChatGateway;
 import cumt.zongzuo.community.ai.provider.DisabledAiChatGateway;
 import cumt.zongzuo.community.ai.provider.DisabledEmbeddingGateway;
 import cumt.zongzuo.community.ai.provider.EmbeddingGateway;
 import cumt.zongzuo.community.ai.provider.OllamaEmbeddingGateway;
+import cumt.zongzuo.community.ai.provider.OpenAiCompatibleAiChatGateway;
 import cumt.zongzuo.community.ai.provider.ProviderHttpStatusException;
-import org.springframework.ai.deepseek.DeepSeekChatModel;
-import org.springframework.ai.deepseek.DeepSeekChatOptions;
-import org.springframework.ai.deepseek.api.DeepSeekApi;
 import org.springframework.ai.ollama.OllamaEmbeddingModel;
 import org.springframework.ai.ollama.api.OllamaApi;
 import org.springframework.ai.ollama.api.OllamaEmbeddingOptions;
@@ -23,7 +20,6 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.client.ClientHttpResponse;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.http.client.reactive.JdkClientHttpConnector;
-import org.springframework.retry.support.RetryTemplate;
 import org.springframework.util.StringUtils;
 import org.springframework.web.client.ResponseErrorHandler;
 import org.springframework.web.client.RestClient;
@@ -47,21 +43,24 @@ public class AiProviderConfiguration {
             return new DisabledAiChatGateway(AiProviderErrorReason.AI_DISABLED);
         }
 
-        MetroAiProperties.DeepSeekProperties deepSeek = properties.getDeepSeek();
-        if (!StringUtils.hasText(deepSeek.getBaseUrl())
-                || !StringUtils.hasText(deepSeek.getApiKey())
-                || !StringUtils.hasText(deepSeek.getModel())) {
+        MetroAiProperties.PlatformProperties platform = properties.getPlatform();
+        if (!StringUtils.hasText(platform.getBaseUrl())
+                || !StringUtils.hasText(platform.getApiKey())
+                || !StringUtils.hasText(platform.getProvider())
+                || !StringUtils.hasText(platform.getModel())) {
             return new DisabledAiChatGateway(AiProviderErrorReason.AI_UNAVAILABLE);
         }
 
-        EnumMap<AiCapability, DeepSeekChatModel> models = new EnumMap<>(AiCapability.class);
+        EnumMap<AiCapability, OpenAiCompatibleAiChatGateway.HttpTransport> transports =
+                new EnumMap<>(AiCapability.class);
         for (AiCapability capability : enabledChatCapabilities(properties)) {
             Duration readTimeout = providerReadTimeout(capabilityTimeout(properties, capability),
                     properties.getRuntime());
-            models.put(capability, deepSeekChatModel(deepSeek,
+            transports.put(capability, OpenAiCompatibleAiChatGateway.httpTransport(
                     properties.getRuntime().getProviderConnectTimeout(), readTimeout));
         }
-        return new DeepSeekAiChatGateway(models, deepSeek.getModel(),
+        return new OpenAiCompatibleAiChatGateway(transports, platform.getBaseUrl(),
+                platform.getApiKey(), platform.getProvider(), platform.getModel(),
                 properties.getModeration().getMaxOutputTokens());
     }
 
@@ -106,22 +105,6 @@ public class AiProviderConfiguration {
                 throw new ProviderHttpStatusException(response.getStatusCode().value());
             }
         };
-    }
-
-    private static DeepSeekChatModel deepSeekChatModel(MetroAiProperties.DeepSeekProperties properties,
-                                                       Duration connectTimeout, Duration readTimeout) {
-        DeepSeekApi api = DeepSeekApi.builder()
-                .baseUrl(properties.getBaseUrl())
-                .apiKey(properties.getApiKey())
-                .restClientBuilder(jdkRestClientBuilder(connectTimeout, readTimeout))
-                .webClientBuilder(jdkWebClientBuilder(connectTimeout, readTimeout))
-                .responseErrorHandler(statusOnlyErrorHandler())
-                .build();
-        return DeepSeekChatModel.builder()
-                .deepSeekApi(api)
-                .defaultOptions(DeepSeekChatOptions.builder().model(properties.getModel()).build())
-                .retryTemplate(RetryTemplate.builder().maxAttempts(1).build())
-                .build();
     }
 
     private static WebClient.Builder jdkWebClientBuilder(Duration connectTimeout, Duration readTimeout) {

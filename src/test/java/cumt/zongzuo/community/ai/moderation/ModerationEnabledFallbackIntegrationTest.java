@@ -4,7 +4,7 @@ import com.sun.net.httpserver.HttpServer;
 import cumt.zongzuo.community.IntegrationTestSupport;
 import cumt.zongzuo.community.ai.config.MetroAiProperties;
 import cumt.zongzuo.community.ai.provider.AiChatGateway;
-import cumt.zongzuo.community.ai.provider.DeepSeekAiChatGateway;
+import cumt.zongzuo.community.ai.provider.OpenAiCompatibleAiChatGateway;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -53,8 +53,8 @@ class ModerationEnabledFallbackIntegrationTest extends IntegrationTestSupport {
         registry.add("metro.ai.enabled", () -> "true");
         registry.add("metro.ai.moderation.enabled", () -> "true");
         registry.add("metro.ai.moderation.recovery-enabled", () -> "false");
-        registry.add("metro.ai.deep-seek.api-key", () -> "test-only-key");
-        registry.add("metro.ai.deep-seek.base-url",
+        registry.add("metro.ai.platform.api-key", () -> "test-only-key");
+        registry.add("metro.ai.platform.base-url",
                 () -> "http://127.0.0.1:" + PROVIDER.getAddress().getPort());
     }
 
@@ -83,7 +83,7 @@ class ModerationEnabledFallbackIntegrationTest extends IntegrationTestSupport {
     void enabledModerationAgainst503ProviderStillRoutesManuallyWithoutProviderTraffic() {
         assertThat(properties.isEnabled()).isTrue();
         assertThat(properties.getModeration().isEnabled()).isTrue();
-        assertThat(chatGateway).isInstanceOf(DeepSeekAiChatGateway.class);
+        assertThat(chatGateway).isInstanceOf(OpenAiCompatibleAiChatGateway.class);
         jdbcTemplate.update("DELETE FROM article WHERE id = ?", ARTICLE_ID);
         jdbcTemplate.update("""
                 INSERT INTO article

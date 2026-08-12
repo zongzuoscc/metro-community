@@ -138,7 +138,7 @@ METRO_DOMAIN_EVENT_RETENTION_METRICS_INITIAL_DELAY=PT30S
 
 ## AI 安全底座（Stage A）
 
-Stage A 只交付默认关闭的 AI 安全底座：Provider 中立的网关契约与类型化 DeepSeek/Ollama 适配器、按能力隔离的输入上限/配额/截止时间/有界线程池/重试/熔断/低基数指标，以及始终存在的人工审核降级路径。内容审核在该阶段不调用模型，文章保持人工待审，不会自动通过或拒绝。
+Stage A 只交付默认关闭的 AI 安全底座：Provider 中立的网关契约、平台 OpenAI 兼容适配器与 Ollama 向量适配器、按能力隔离的输入上限/配额/截止时间/有界线程池/重试/熔断/低基数指标，以及始终存在的人工审核降级路径。内容审核在该阶段不调用模型，文章保持人工待审，不会自动通过或拒绝。
 
 下列六个业务开关的默认值均为 `false`：
 
@@ -153,15 +153,15 @@ METRO_AI_EMBEDDING_ENABLED=false
 
 它们依次映射 `metro.ai.enabled`、`metro.ai.agent.enabled`、`metro.ai.memory.enabled`、`metro.ai.writing.enabled`、`metro.ai.moderation.enabled` 和 `metro.ai.embedding.enabled`。
 
-因此未配置 Key 时应用仍可启动，不创建 DeepSeek/Ollama API 或 Model Bean，Provider 服务默认不会被访问。普通社区、私信、搜索、推荐和人工审核不依赖 AI Key。
+因此未配置 Key 时应用仍可启动，不创建平台 Chat 或 Ollama Embedding 调用对象，Provider 服务默认不会被访问。普通社区、私信、搜索、推荐和人工审核不依赖 AI Key。
 
 当前还没有生产可用的 Agent API 或前端页面，也没有 Agent 对话、桌宠、RAG、HyDE、长期记忆或写作建议实现。不可变 revision 绑定、人工审核与通用 Outbox 已由 Stage B 提供；独立运行的 Ollama/Milvus、文章分块投影与 RAG 属于 Stage C；Agent API 与 SSE 属于 Stage D。
 
-Spring AI/Ollama 依赖只是客户端与运行时基础，不表示本机已运行 Ollama 或已下载 `bge-m3`。`deepseek-v4-flash` 也只是可配置默认值，在显式验收前不代表模型可用性或质量结论。Prometheus registry 的依赖存在也不代表已公开 scrape endpoint 或交付 Dashboard；当前 Actuator 只暴露 health。
+Spring AI/Ollama 依赖只是客户端与运行时基础，不表示本机已运行 Ollama 或已下载 `bge-m3`。`qwen-plus` 也只是可配置的平台默认模型名，在显式验收前不代表模型可用性或质量结论。Prometheus registry 的依赖存在也不代表已公开 scrape endpoint 或交付 Dashboard；当前 Actuator 只暴露 health。
 
 ### 隔离环境的 Provider 验证
 
-仅在非生产、隔离的验收环境中，才可把所需的 `METRO_AI_*_ENABLED` 开关显式改为 `true`，并注入 `DEEPSEEK_BASE_URL`、`DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL`、`OLLAMA_BASE_URL` 和 `OLLAMA_EMBEDDING_MODEL`。密钥不得写入 YAML、Git 或测试报告。Stage A 没有公开调用入口，该 opt-in 只用于受控的 Provider adapter 验收。
+仅在非生产、隔离的验收环境中，才可把所需的 `METRO_AI_*_ENABLED` 开关显式改为 `true`，并注入 `METRO_AI_PLATFORM_PROVIDER`、`METRO_AI_PLATFORM_BASE_URL`、`METRO_AI_PLATFORM_API_KEY`、`METRO_AI_PLATFORM_MODEL`、`OLLAMA_BASE_URL` 和 `OLLAMA_EMBEDDING_MODEL`。本地开发可以把这些值写入已被 Git 忽略的 `.env`；生产环境必须使用部署平台的 Secret。密钥不得写入 YAML、Git 或测试报告。平台配置不会返回浏览器，用户自带 API 则走独立的加密数据库记录。
 
 真实 Provider smoke 不属于常规 CI。如果没有专用 Key，结果必须记为 `NOT RUN`，不能记为 PASS；无论是否执行，都不记录凭据、prompt、模型原始输出或 Provider 错误体。
 

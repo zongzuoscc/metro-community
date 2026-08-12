@@ -193,9 +193,9 @@ public class ArticleSubmissionService {
 
     private boolean moderationAvailable() {
         return aiProperties.isCapabilityEnabled(AiCapability.MODERATION)
-                && StringUtils.hasText(aiProperties.getDeepSeek().getApiKey())
-                && StringUtils.hasText(aiProperties.getDeepSeek().getBaseUrl())
-                && StringUtils.hasText(aiProperties.getDeepSeek().getModel());
+                && StringUtils.hasText(aiProperties.getPlatform().getApiKey())
+                && StringUtils.hasText(aiProperties.getPlatform().getBaseUrl())
+                && StringUtils.hasText(aiProperties.getPlatform().getModel());
     }
 
     private JsonNode submittedPayload(Article article, ArticleRevision revision, ArticleModerationJob job) {

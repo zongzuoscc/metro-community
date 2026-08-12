@@ -5,6 +5,7 @@ import java.net.NoRouteToHostException;
 import java.net.http.HttpTimeoutException;
 import java.net.SocketTimeoutException;
 import java.net.UnknownHostException;
+import java.io.InterruptedIOException;
 import java.util.Optional;
 import java.util.concurrent.TimeoutException;
 
@@ -72,7 +73,11 @@ public class AiProviderException extends RuntimeException {
     private static boolean hasTimeoutCause(Throwable error) {
         Throwable current = error;
         while (current != null) {
+            // OkHttp 的整次调用超时类型是 InterruptedIOException；JDK HttpClient 则使用
+            // HttpTimeoutException。两者都应进入相同的可观测 TIMEOUT 语义，不能因为替换
+            // OpenAI 兼容传输实现而被误记成“供应商响应格式错误”。
             if (current instanceof SocketTimeoutException
+                    || current instanceof InterruptedIOException
                     || current instanceof HttpTimeoutException
                     || current instanceof TimeoutException) {
                 return true;

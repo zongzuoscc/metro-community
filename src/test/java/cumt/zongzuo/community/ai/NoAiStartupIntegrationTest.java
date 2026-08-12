@@ -16,8 +16,6 @@ import cumt.zongzuo.community.article.projection.chunk.ArticleChunkElasticsearch
 import cumt.zongzuo.community.article.projection.vector.ArticleMilvusProjectionService;
 import io.milvus.v2.client.MilvusClientV2;
 import org.junit.jupiter.api.Test;
-import org.springframework.ai.deepseek.DeepSeekChatModel;
-import org.springframework.ai.deepseek.api.DeepSeekApi;
 import org.springframework.ai.ollama.OllamaEmbeddingModel;
 import org.springframework.ai.ollama.api.OllamaApi;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -51,9 +49,7 @@ class NoAiStartupIntegrationTest extends IntegrationTestSupport {
     @Test
     void startsAsServletWithoutProviderModelsWhenAiIsOffAndKeysAreEmpty() {
         assertThat(context.getBeansOfType(DispatcherServlet.class)).hasSize(1);
-        assertThat(context.getBeanNamesForType(DeepSeekChatModel.class)).isEmpty();
         assertThat(context.getBeanNamesForType(OllamaEmbeddingModel.class)).isEmpty();
-        assertThat(context.getBeanNamesForType(DeepSeekApi.class)).isEmpty();
         assertThat(context.getBeanNamesForType(OllamaApi.class)).isEmpty();
         assertThat(context.getBeanNamesForType(MilvusClientV2.class)).isEmpty();
         assertThat(context.getBeanNamesForType(ArticleChunkProjectionService.class)).isEmpty();

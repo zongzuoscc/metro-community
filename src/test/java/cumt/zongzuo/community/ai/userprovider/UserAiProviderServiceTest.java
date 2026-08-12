@@ -15,6 +15,18 @@ import static org.mockito.Mockito.when;
 class UserAiProviderServiceTest {
 
     @Test
+    void platformDefaultNeverExposesBackendProviderConfigurationFields() {
+        UserAiProviderView view = UserAiProviderView.platformDefault();
+
+        assertThat(view.configured()).isFalse();
+        assertThat(view.provider()).isNull();
+        assertThat(view.baseUrl()).isNull();
+        assertThat(view.model()).isNull();
+        assertThat(view.keyHint()).isNull();
+        assertThat(view.fundingSource()).isEqualTo(UserAiFundingSource.PLATFORM);
+    }
+
+    @Test
     void savesEncryptedCredentialAndNeverReturnsThePlaintext() throws Exception {
         UserAiProviderMapper mapper = mock(UserAiProviderMapper.class);
         UserAiCredentialCipher cipher = new UserAiCredentialCipher(Base64.getEncoder()

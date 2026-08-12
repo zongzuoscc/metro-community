@@ -28,8 +28,9 @@ public final class AiCapabilityPolicyResolver {
                     capabilityProperties.getMaxInputCharacters(),
                     quotaProperties.getPerMinute(), quotaProperties.getPerDay(),
                     quotaProperties.getQuotaWindow(), capabilityProperties.getTimeout(),
-                    capabilityProperties.getBulkhead(), embedding ? "ollama" : "deepseek",
-                    embedding ? properties.getOllama().getModel() : properties.getDeepSeek().getModel()));
+                    capabilityProperties.getBulkhead(), embedding ? "ollama"
+                            : properties.getPlatform().getProvider().strip().toLowerCase(java.util.Locale.ROOT),
+                    embedding ? properties.getOllama().getModel() : properties.getPlatform().getModel()));
         }
         this.policies = Collections.unmodifiableMap(resolved);
     }

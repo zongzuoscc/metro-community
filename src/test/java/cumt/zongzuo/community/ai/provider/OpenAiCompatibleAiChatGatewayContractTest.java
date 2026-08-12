@@ -21,12 +21,13 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import org.springframework.web.client.ResourceAccessException;
 
-class DeepSeekAiChatGatewayContractTest {
+class OpenAiCompatibleAiChatGatewayContractTest {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
     private HttpServer server;
@@ -61,7 +62,7 @@ class DeepSeekAiChatGatewayContractTest {
                     new AiPromptMessage(AiPromptRole.ASSISTANT, "earlier answer")), AiResponseMode.TEXT));
 
             assertThat(result).isEqualTo(new AiChatResult(
-                    "answer", "stop", 12, 4, "deepseek", "contract-chat"));
+                    "answer", "stop", 12, 4, "qwen", "contract-chat"));
             assertThat(requests).hasValue(1);
             assertThat(method).hasValue("POST");
             assertThat(path).hasValue("/chat/completions");
@@ -80,7 +81,7 @@ class DeepSeekAiChatGatewayContractTest {
     }
 
     @Test
-    void mapsJsonObjectModeToDeepSeekResponseFormatWithoutTools() throws Exception {
+    void mapsJsonObjectModeToOpenAiCompatibleResponseFormatWithoutTools() throws Exception {
         AtomicReference<String> body = new AtomicReference<>();
         start(exchange -> {
             body.set(readBody(exchange));
@@ -255,6 +256,18 @@ class DeepSeekAiChatGatewayContractTest {
     }
 
     @Test
+    void rejectsPlainHttpForNonLoopbackPlatformEndpoints() {
+        OpenAiCompatibleAiChatGateway.HttpTransport transport = (uri, headers, body) ->
+                new OpenAiCompatibleAiChatGateway.HttpResponse(200, "{}");
+
+        assertThatThrownBy(() -> new OpenAiCompatibleAiChatGateway(
+                Map.of(AiCapability.AGENT, transport), "http://example.com/v1",
+                "secret", "qwen", "qwen-plus", 800))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("HTTPS");
+    }
+
+    @Test
     void rejectsMalformedEmptyAndMissingChoicesResponses() throws Exception {
         assertResponseFailure("{not-json", AiProviderErrorReason.MALFORMED_RESPONSE);
         restart();
@@ -309,9 +322,10 @@ class DeepSeekAiChatGatewayContractTest {
                 "metro.ai.enabled=true",
                 "metro.ai.agent.enabled=true",
                 "metro.ai.moderation.enabled=true",
-                "metro.ai.deep-seek.base-url=" + baseUrl,
-                "metro.ai.deep-seek.api-key=contract-key",
-                "metro.ai.deep-seek.model=contract-chat"));
+                "metro.ai.platform.provider=qwen",
+                "metro.ai.platform.base-url=" + baseUrl,
+                "metro.ai.platform.api-key=contract-key",
+                "metro.ai.platform.model=contract-chat"));
         properties.addAll(Arrays.asList(additionalProperties));
         new ApplicationContextRunner().withUserConfiguration(AiProviderConfiguration.class)
                 .withPropertyValues(properties.toArray(String[]::new))

@@ -106,7 +106,7 @@ class ModerationFallbackIntegrationTest extends IntegrationTestSupport {
     void allAiFlagsOffStillRoutesSubmittedArticleToTheExistingHumanPendingState() {
         assertThat(aiProperties.isEnabled()).isFalse();
         assertThat(aiProperties.getModeration().isEnabled()).isFalse();
-        assertThat(aiProperties.getDeepSeek().getApiKey()).isBlank();
+        assertThat(aiProperties.getPlatform().getApiKey()).isBlank();
         assertThat(aiChatGateway).isInstanceOf(DisabledAiChatGateway.class);
         insertArticle(ARTICLE_ID, 2, 0, "2026-08-10 01:00:00");
 

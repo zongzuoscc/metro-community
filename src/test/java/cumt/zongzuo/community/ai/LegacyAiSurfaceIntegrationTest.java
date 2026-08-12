@@ -120,7 +120,6 @@ class LegacyAiSurfaceIntegrationTest extends IntegrationTestSupport {
                 "<artifactId>mybatis-plus-spring-boot3-starter</artifactId>",
                 "<artifactId>mybatis-plus-jsqlparser-4.9</artifactId>",
                 "<version>3.5.17</version>",
-                "<artifactId>spring-ai-starter-model-deepseek</artifactId>",
                 "<artifactId>spring-ai-starter-model-ollama</artifactId>",
                 "<artifactId>spring-boot-starter-webflux</artifactId>",
                 "<artifactId>spring-boot-starter-actuator</artifactId>",
@@ -136,7 +135,7 @@ class LegacyAiSurfaceIntegrationTest extends IntegrationTestSupport {
                 "chat: none",
                 "embedding: none",
                 "max-attempts: 1",
-                "api-key: ${DEEPSEEK_API_KEY:}")
+                "api-key: ${METRO_AI_PLATFORM_API_KEY:}")
                 .doesNotContain("  " + "openai:", "spring.ai." + "openai", "AI_" + "CHAT_ENABLED");
         assertThat(integrationSupport).contains(
                 "spring.ai.model.chat",

@@ -41,7 +41,7 @@ import java.util.stream.Stream;
                 "metro.ai.writing.enabled=false",
                 "metro.ai.moderation.enabled=false",
                 "metro.ai.embedding.enabled=false",
-                "DEEPSEEK_API_KEY="
+                "METRO_AI_PLATFORM_API_KEY="
         })
 @Import(IntegrationTestSupport.RolloutTestConfiguration.class)
 public abstract class IntegrationTestSupport {

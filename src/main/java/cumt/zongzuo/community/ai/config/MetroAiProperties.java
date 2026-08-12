@@ -24,7 +24,7 @@ public class MetroAiProperties {
     private CapabilityProperties embedding = capability(false, 100_000, 0, 0, 0,
             Duration.ofMinutes(1), Duration.ofSeconds(45), Duration.ofSeconds(45), 4);
     private RuntimeProperties runtime = new RuntimeProperties();
-    private DeepSeekProperties deepSeek = new DeepSeekProperties();
+    private PlatformProperties platform = new PlatformProperties();
     private OllamaProperties ollama = new OllamaProperties();
 
     public boolean isEnabled() {
@@ -99,12 +99,12 @@ public class MetroAiProperties {
         this.runtime = runtime;
     }
 
-    public DeepSeekProperties getDeepSeek() {
-        return deepSeek;
+    public PlatformProperties getPlatform() {
+        return platform;
     }
 
-    public void setDeepSeek(DeepSeekProperties deepSeek) {
-        this.deepSeek = deepSeek;
+    public void setPlatform(PlatformProperties platform) {
+        this.platform = platform;
     }
 
     public OllamaProperties getOllama() {
@@ -297,11 +297,26 @@ public class MetroAiProperties {
         }
     }
 
-    public static class DeepSeekProperties {
+    /**
+     * 站点为普通用户提供的默认大模型配置。
+     *
+     * <p>这一组值只能由后端环境变量或本地 {@code .env} 注入，绝不能通过用户设置接口
+     * 返回给浏览器。用户自带 API 使用独立的加密凭据表，不会覆盖这里的平台兜底配置。</p>
+     */
+    public static class PlatformProperties {
 
-        private String baseUrl = "https://api.deepseek.com";
+        private String provider = "qwen";
+        private String baseUrl = "";
         private String apiKey = "";
-        private String model = "deepseek-v4-flash";
+        private String model = "qwen-plus";
+
+        public String getProvider() {
+            return provider;
+        }
+
+        public void setProvider(String provider) {
+            this.provider = provider;
+        }
 
         public String getBaseUrl() {
             return baseUrl;

@@ -62,7 +62,7 @@ class ArticleAgentRetrievalConfiguration {
                                                 Clock clock,
                                                 ObjectProvider<AgentMemoryRecallService> memories,
                                                 ObjectProvider<AgentConversationHistorySearchService> history) {
-        String model = properties.getDeepSeek().getModel();
+        String model = properties.getPlatform().getModel();
         if (model == null || model.isBlank()) {
             throw new IllegalStateException("Agent model must not be blank");
         }

@@ -107,9 +107,10 @@ class CommunityApplicationTests {
                 "METRO_AI_WRITING_ENABLED=false",
                 "METRO_AI_MODERATION_ENABLED=false",
                 "METRO_AI_EMBEDDING_ENABLED=false",
-                "DEEPSEEK_BASE_URL=https://api.deepseek.com",
-                "DEEPSEEK_API_KEY=",
-                "DEEPSEEK_MODEL=deepseek-v4-flash",
+                "METRO_AI_PLATFORM_PROVIDER=qwen",
+                "METRO_AI_PLATFORM_BASE_URL=",
+                "METRO_AI_PLATFORM_API_KEY=",
+                "METRO_AI_PLATFORM_MODEL=qwen-plus",
                 "OLLAMA_BASE_URL=http://127.0.0.1:21434",
                 "OLLAMA_EMBEDDING_MODEL=metro-bge-m3:790764642607");
         assertThat(exampleConfig).contains(
@@ -124,6 +125,7 @@ class CommunityApplicationTests {
                 "enabled: ${METRO_AI_EMBEDDING_ENABLED:false}");
         assertThat(exampleConfig.lines().filter("spring:"::equals).count()).isEqualTo(1);
         assertThat(productionConfig).contains(
+                "import: optional:file:.env[.properties]",
                 "enabled: ${METRO_AI_ENABLED:false}",
                 "enabled: ${METRO_AI_AGENT_ENABLED:false}",
                 "enabled: ${METRO_AI_MEMORY_ENABLED:false}",
@@ -141,7 +143,7 @@ class CommunityApplicationTests {
                 "\"metro.ai.writing.enabled=false\"",
                 "\"metro.ai.moderation.enabled=false\"",
                 "\"metro.ai.embedding.enabled=false\"",
-                "\"DEEPSEEK_API_KEY=\"");
+                "\"METRO_AI_PLATFORM_API_KEY=\"");
         assertThat(readme + environment + exampleConfig)
                 .doesNotContain("AI_CHAT_ENABLED")
                 .doesNotContain("/api/ai/")
