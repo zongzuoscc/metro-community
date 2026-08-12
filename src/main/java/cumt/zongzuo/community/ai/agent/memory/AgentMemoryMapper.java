@@ -27,6 +27,19 @@ public interface AgentMemoryMapper {
     @Select("SELECT enabled FROM agent_memory_setting WHERE user_id=#{userId}")
     Boolean enabled(long userId);
 
+    @Select("SELECT lock_version FROM agent_memory_setting WHERE user_id=#{userId}")
+    Long settingVersion(long userId);
+
+    @Select("""
+            SELECT m.id,m.category,v.content,v.version_no AS version,m.state
+            FROM agent_memory_item m JOIN agent_memory_version v
+              ON v.id=m.current_version_id AND v.user_id=m.user_id
+            WHERE m.user_id=#{userId} AND m.state IN ('ACTIVE','PAUSED')
+              AND (m.expires_at IS NULL OR m.expires_at>CURRENT_TIMESTAMP(6))
+            ORDER BY m.updated_at DESC,m.id DESC LIMIT #{limit}
+            """)
+    List<AgentMemoryView> listManaged(@Param("userId") long userId, @Param("limit") int limit);
+
     @Select("""
             SELECT m.id,m.category,v.content,v.version_no AS version,m.state
             FROM agent_memory_item m JOIN agent_memory_version v
@@ -130,6 +143,17 @@ public interface AgentMemoryMapper {
 
     @Select("SELECT lock_version FROM agent_memory_item WHERE id=#{memoryId} AND user_id=#{userId} FOR UPDATE")
     Long itemLockVersion(@Param("memoryId") long memoryId, @Param("userId") long userId);
+
+    @Update("""
+            UPDATE agent_memory_item SET state=#{targetState},updated_at=CURRENT_TIMESTAMP(6),
+              lock_version=lock_version+1
+            WHERE id=#{memoryId} AND user_id=#{userId} AND state=#{expectedState}
+              AND lock_version=#{expectedLockVersion}
+            """)
+    int updateState(@Param("memoryId") long memoryId, @Param("userId") long userId,
+                    @Param("expectedState") String expectedState,
+                    @Param("targetState") String targetState,
+                    @Param("expectedLockVersion") long expectedLockVersion);
 
     @Update("""
             UPDATE agent_memory_item SET state='DELETED',deleted_at=CURRENT_TIMESTAMP(6),

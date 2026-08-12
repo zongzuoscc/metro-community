@@ -29,7 +29,8 @@ public class AgentMemoryManagementService {
     }
 
     public List<AgentMemoryView> list(long userId) {
-        return recall.list(userId);
+        // 管理界面需要同时展示正在使用和已暂停的记忆；召回服务仍只读取 ACTIVE，二者不能混用。
+        return mapper.listManaged(userId, 64);
     }
 
     public AgentMemoryView get(long userId, long memoryId) {
@@ -87,6 +88,42 @@ public class AgentMemoryManagementService {
             mapper.deleteVersions(memoryId, userId);
             mapper.deleteAllProjections(memoryId, userId);
             mapper.incrementEpoch(userId);
+        });
+    }
+
+    /**
+     * 暂停只切断后续召回，不删除内容或来源；恢复则重新允许召回。
+     * 事务先锁定所有者自己的记忆，再校验用户看到的内容版本，避免旧页面覆盖并发编辑结果。
+     */
+    public AgentMemoryView updateState(long userId, long memoryId, boolean paused,
+                                       long expectedVersion) {
+        return transactions.execute(status -> {
+            Long lockVersion = mapper.itemLockVersion(memoryId, userId);
+            if (lockVersion == null) throw AiApiException.resourceNotFound();
+            AgentMemoryView current = mapper.find(memoryId, userId);
+            if (current == null) throw AiApiException.resourceNotFound();
+            if (current.version() != expectedVersion) throw AiApiException.optimisticLockConflict();
+
+            String targetState = paused ? "PAUSED" : "ACTIVE";
+            if (targetState.equals(current.state())) return current;
+            String expectedState = paused ? "ACTIVE" : "PAUSED";
+            if (!expectedState.equals(current.state())
+                    || mapper.updateState(memoryId, userId, expectedState, targetState, lockVersion) != 1) {
+                throw AiApiException.optimisticLockConflict();
+            }
+            // 已在运行的 Agent 会在 Provider 调用前重验 epoch，因此暂停后不会继续使用旧召回结果。
+            mapper.incrementEpoch(userId);
+            return mapper.find(memoryId, userId);
+        });
+    }
+
+    /** 首次读取也创建默认设置行，使前端总能获得可用于后续更新的确定版本。 */
+    public MemorySettingView setting(long userId) {
+        return transactions.execute(status -> {
+            mapper.ensureSetting(userId);
+            Boolean enabled = mapper.enabled(userId);
+            Long version = mapper.settingVersion(userId);
+            return new MemorySettingView(Boolean.TRUE.equals(enabled), version == null ? 0 : version);
         });
     }
 

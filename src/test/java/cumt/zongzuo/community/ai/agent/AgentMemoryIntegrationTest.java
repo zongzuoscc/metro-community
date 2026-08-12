@@ -142,6 +142,36 @@ class AgentMemoryIntegrationTest extends IntegrationTestSupport {
     }
 
     @Test
+    void ownerCanReadSettingsAndPauseThenResumeAMemoryWithoutLosingItsContent() {
+        AgentTurnAdmission turn = admit(OWNER, "我喜欢先给结论再解释");
+        capture.captureUserMessage(OWNER, turn.turnId());
+        long memoryId = jdbcTemplate.queryForObject(
+                "SELECT id FROM agent_memory_item WHERE user_id=?", Long.class, OWNER);
+
+        ResponseEntity<String> initialSettings = exchange(
+                HttpMethod.GET, "/api/agent/memory-settings", null, OWNER);
+        assertThat(initialSettings.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(initialSettings.getBody()).contains("\"enabled\":true", "\"version\":\"0\"");
+
+        ResponseEntity<String> paused = exchange(HttpMethod.PUT,
+                "/api/agent/memories/" + memoryId + "/state",
+                "{\"paused\":true,\"expectedVersion\":1}", OWNER);
+        assertThat(paused.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(paused.getBody()).contains("\"state\":\"PAUSED\"", "先给结论再解释");
+        assertThat(recall.recall(OWNER, "回答风格", 8)).isEmpty();
+        assertThat(exchange(HttpMethod.GET, "/api/agent/memories", null, OWNER).getBody())
+                .contains("\"state\":\"PAUSED\"", "先给结论再解释");
+
+        ResponseEntity<String> resumed = exchange(HttpMethod.PUT,
+                "/api/agent/memories/" + memoryId + "/state",
+                "{\"paused\":false,\"expectedVersion\":1}", OWNER);
+        assertThat(resumed.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(resumed.getBody()).contains("\"state\":\"ACTIVE\"");
+        assertThat(recall.recall(OWNER, "你还记得我的偏好吗", 8)).singleElement()
+                .satisfies(memory -> assertThat(memory.content()).isEqualTo("我喜欢先给结论再解释"));
+    }
+
+    @Test
     void manualEditCannotTurnALowRiskMemoryIntoSensitiveData() {
         AgentTurnAdmission turn = admit(OWNER, "我喜欢简洁的回答");
         capture.captureUserMessage(OWNER, turn.turnId());

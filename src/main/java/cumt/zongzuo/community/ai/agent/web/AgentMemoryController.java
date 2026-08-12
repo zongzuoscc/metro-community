@@ -51,6 +51,17 @@ public class AgentMemoryController {
         return ResponseEntity.noContent().build();
     }
 
+    @PutMapping("/memories/{memoryId}/state")
+    public AgentMemoryView updateState(@PathVariable long memoryId,
+                                       @Valid @RequestBody AgentMemoryStateRequest request) {
+        return memories.updateState(CurrentUser.id(), memoryId, request.paused(), request.expectedVersion());
+    }
+
+    @GetMapping("/memory-settings")
+    public AgentMemoryManagementService.MemorySettingView settings() {
+        return memories.setting(CurrentUser.id());
+    }
+
     @PutMapping("/memory-settings")
     public AgentMemoryManagementService.MemorySettingView settings(
             @Valid @RequestBody AgentMemorySettingRequest request) {

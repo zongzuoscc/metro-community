@@ -194,7 +194,10 @@ class ArticleModerationIntegrationTest extends IntegrationTestSupport {
     void absoluteTaskDeadlineRejectsLateProviderResponseWithoutPersistingLateEvidence()
             throws Exception {
         Fixture fixture = insertPendingFixture("A response arrives after the whole-task deadline.");
-        aiProperties.getModeration().setTaskTimeout(Duration.ofMillis(150));
+        // 任务截止时间从领取审核任务时开始计算，还覆盖数据库绑定校验和正文分块。
+        // 这里给请求进入 Provider 留出稳定余量，同时仍早于 Stub 的 2 秒阻塞结束，
+        // 因此测试的核心仍然是：绝对截止后的迟到模型证据不能持久化。
+        aiProperties.getModeration().setTaskTimeout(Duration.ofMillis(750));
         CountDownLatch neverReleasedDuringCall = new CountDownLatch(1);
         RESPONSES.add(new StubResponse(200, successBody("PASS"), null, neverReleasedDuringCall));
         try {
