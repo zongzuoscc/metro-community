@@ -28,7 +28,8 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 })
 @MapperScan(value = {"cumt.zongzuo.community.mapper", "cumt.zongzuo.community.recommendation.mapper",
         "cumt.zongzuo.community.event", "cumt.zongzuo.community.article.persistence",
-        "cumt.zongzuo.community.ai.moderation.revision"}, annotationClass = Mapper.class)
+        "cumt.zongzuo.community.ai.moderation.revision",
+        "cumt.zongzuo.community.ai.agent.turn"}, annotationClass = Mapper.class)
 @EnableScheduling
 @EnableConfigurationProperties({SecurityProperties.class, WebSocketProperties.class,
         RecommendationProperties.class, ArticleRevisionProperties.class,

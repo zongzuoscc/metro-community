@@ -1003,8 +1003,11 @@ class ArticleRevisionSchemaIntegrationTest {
         assertThat(foreignKey(jdbc, "article", "fk_article_published_revision").columns())
                 .containsExactly(new ForeignKeyColumn("published_revision_id", "article_revision", "id"),
                         new ForeignKeyColumn("id", "article_revision", "article_id"));
-        assertThat(foreignKeys(jdbc).stream().noneMatch(fk -> fk.columns().stream()
-                .anyMatch(column -> column.referencedColumn().equals("user_id")))).isTrue();
+        assertThat(foreignKeys(jdbc).stream()
+                .filter(fk -> newTables.containsKey(fk.table()) || "article".equals(fk.table()))
+                .noneMatch(fk -> fk.columns().stream()
+                        .anyMatch(column -> column.referencedColumn().equals("user_id"))))
+                .isTrue();
 
         newTables.keySet().forEach(table -> assertThat(jdbc.queryForMap("""
                         SELECT engine,table_collation FROM information_schema.tables

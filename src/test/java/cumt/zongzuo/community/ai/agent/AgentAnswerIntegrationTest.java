@@ -15,6 +15,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.test.context.TestPropertySource;
@@ -60,6 +61,7 @@ class AgentAnswerIntegrationTest extends IntegrationTestSupport {
 
     @BeforeEach
     void seedCurrentPublishedKnowledge() {
+        cleanupAgentTimeline();
         previousParserGeneration = jdbcTemplate.query("""
                 SELECT active_generation FROM article_chunk_parser_checkpoint WHERE checkpoint_id=1
                 """, rs -> rs.next() ? rs.getLong(1) : null);
@@ -119,6 +121,7 @@ class AgentAnswerIntegrationTest extends IntegrationTestSupport {
 
     @AfterEach
     void removeAgentKnowledgeFixture() {
+        cleanupAgentTimeline();
         jdbcTemplate.update("DELETE FROM consumer_inbox WHERE consumer_name='article-chunk-elasticsearch'");
         jdbcTemplate.update("DELETE FROM projection_watermark WHERE consumer_name='article-chunk-elasticsearch' AND aggregate_id=?", ARTICLE_ID);
         jdbcTemplate.update("DELETE FROM domain_event_outbox WHERE aggregate_type='ARTICLE_CHUNK_SET' AND aggregate_id=?", ARTICLE_ID);
@@ -183,5 +186,78 @@ class AgentAnswerIntegrationTest extends IntegrationTestSupport {
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getBody()).contains("现有社区资料不足", "\"citations\":[]");
         verify(gateway, never()).generate(any());
+    }
+
+    @Test
+    void persistentTurnRunsInBackgroundAndPublishesOnlyTheCommittedGroundedResult() throws Exception {
+        String sourceId = "A" + ARTICLE_ID + ":R" + REVISION_ID + ":C" + chunkId;
+        when(gateway.generate(any())).thenReturn(new AiChatResult("""
+                {"answer":"Use a row lock around the writer transaction.[1]","citations":[
+                  {"marker":1,"sourceId":"%s",
+                   "quote":"Use SELECT FOR UPDATE to serialize writers"}]}
+                """.formatted(sourceId), "stop", 120, 30, "test", "deepseek-v4-flash"));
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(jwtService.generate(USER_ID));
+        headers.setContentType(MediaType.APPLICATION_JSON);
+
+        ResponseEntity<String> created = restTemplate.postForEntity(url("/api/agent/turns"),
+                new HttpEntity<>("""
+                        {"clientRequestId":"00000000-0000-0000-0000-000000000099",
+                         "message":"How should writers be serialized with a MySQL row lock?",
+                         "temporary":false,"context":{"route":"COMMUNITY_HOME"}}
+                        """, headers), String.class);
+
+        assertThat(created.getStatusCode()).isEqualTo(HttpStatus.ACCEPTED);
+        long turnId = Long.parseLong(new com.fasterxml.jackson.databind.ObjectMapper()
+                .readTree(created.getBody()).path("turnId").asText());
+        String snapshot = awaitTerminal(turnId, headers);
+        assertThat(snapshot).contains("\"state\":\"SUCCEEDED\"", "Use a row lock",
+                "\"citationCount\":1");
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM agent_message WHERE turn_id=? AND role='ASSISTANT'
+                """, Integer.class, turnId)).isOne();
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM agent_answer_citation c
+                JOIN agent_message m ON m.id=c.assistant_message_id
+                WHERE m.turn_id=? AND c.article_id=? AND c.revision_id=? AND c.chunk_id=?
+                """, Integer.class, turnId, ARTICLE_ID, REVISION_ID, chunkId)).isOne();
+        ResponseEntity<String> stream = restTemplate.exchange(
+                url("/api/agent/turns/" + turnId + "/events"), HttpMethod.GET,
+                new HttpEntity<>(headers), String.class);
+        assertThat(stream.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(stream.getHeaders().getContentType()).isEqualTo(MediaType.TEXT_EVENT_STREAM);
+        assertThat(stream.getBody()).contains("event: accepted", "event: retrieving",
+                "event: generating", "event: done");
+    }
+
+    private String awaitTerminal(long turnId, HttpHeaders headers) {
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(15);
+        String body = null;
+        while (System.nanoTime() < deadline) {
+            ResponseEntity<String> response = restTemplate.exchange(
+                    url("/api/agent/turns/" + turnId), HttpMethod.GET,
+                    new HttpEntity<>(headers), String.class);
+            body = response.getBody();
+            if (body != null && (body.contains("\"state\":\"SUCCEEDED\"")
+                    || body.contains("\"state\":\"FAILED\""))) {
+                return body;
+            }
+            java.util.concurrent.locks.LockSupport.parkNanos(
+                    java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(50));
+        }
+        throw new AssertionError("Agent turn did not finish: " + body);
+    }
+
+    private void cleanupAgentTimeline() {
+        jdbcTemplate.update("DELETE FROM agent_answer_citation WHERE user_id=?", USER_ID);
+        jdbcTemplate.update("DELETE FROM agent_retrieval_hit WHERE user_id=?", USER_ID);
+        jdbcTemplate.update("DELETE FROM agent_tool_call WHERE user_id=?", USER_ID);
+        jdbcTemplate.update("UPDATE agent_conversation SET last_message_id=NULL WHERE user_id=?", USER_ID);
+        jdbcTemplate.update("DELETE FROM agent_message WHERE user_id=?", USER_ID);
+        jdbcTemplate.update("DELETE FROM agent_turn WHERE user_id=?", USER_ID);
+        jdbcTemplate.update("DELETE FROM agent_episode WHERE user_id=?", USER_ID);
+        jdbcTemplate.update("DELETE FROM agent_conversation WHERE user_id=?", USER_ID);
+        jdbcTemplate.update("DELETE FROM agent_profile WHERE user_id=?", USER_ID);
+        jdbcTemplate.update("DELETE FROM agent_run_guard WHERE user_id=?", USER_ID);
     }
 }
