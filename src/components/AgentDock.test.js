@@ -154,6 +154,36 @@ describe('全局 Agent 桌宠小窗', () => {
     expect(dock.find('[data-test="agent-window"]').exists()).toBe(true)
   })
 
+  it('小窗关闭时可直接拖动桌宠，且拖动结束不会误打开小窗', async () => {
+    const wrapper = mountDock()
+    const dock = wrapper.get('[data-test="agent-dock"]')
+    const pet = wrapper.get('[data-test="agent-pet"]')
+    const before = dock.attributes('style')
+
+    await pet.trigger('pointerdown', {
+      pointerId: 11,
+      clientX: 960,
+      clientY: 620,
+      button: 0,
+    })
+    window.dispatchEvent(pointerEvent('pointermove', {
+      pointerId: 11,
+      clientX: 700,
+      clientY: 360,
+    }))
+    window.dispatchEvent(pointerEvent('pointerup', {
+      pointerId: 11,
+      clientX: 700,
+      clientY: 360,
+    }))
+    // 真实浏览器会在 pointerup 后继续派发 click，这个 click 必须被识别为拖动尾声。
+    await pet.trigger('click')
+    await wrapper.vm.$nextTick()
+
+    expect(dock.attributes('style')).not.toBe(before)
+    expect(wrapper.find('[data-test="agent-window"]').exists()).toBe(false)
+  })
+
   it('在文章页展示总结动作，结果仍显示在小窗中', async () => {
     setAgentPageContext({ kind: 'article', articleId: 42, title: '只读文章' })
     mocks.summarizeArticle.mockResolvedValue({

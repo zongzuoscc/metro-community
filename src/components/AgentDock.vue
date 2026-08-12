@@ -125,7 +125,8 @@
       type="button"
       class="agent-pet"
       :aria-label="open ? '收起 Metro Agent' : '打开 Metro Agent'"
-      @click="open = !open"
+      @pointerdown="startDrag($event, true)"
+      @click="toggleDock"
     >
       <img class="agent-pet__figure" :src="metroPet" alt="" aria-hidden="true" />
       <span class="agent-pet__name">Metro</span>
@@ -166,6 +167,7 @@ const funding = ref({ fundingSource: 'PLATFORM', provider: null, model: null })
 const conversation = ref(null)
 const position = ref({ right: 24, bottom: 18 })
 let drag = null
+let suppressPetClickUntil = 0
 let streamController = null
 let authenticationEpoch = 0
 
@@ -386,39 +388,67 @@ async function toggleTemporaryMode() {
   }
 }
 
-/** 桌面窗口使用指针差值拖动，移动的是包含桌宠与小窗的整体容器。 */
-function startDrag(event) {
+/**
+ * 桌宠本体和小窗标题栏共用同一套指针拖动。
+ * 只有超过小幅移动阈值才认定为拖动，轻点桌宠仍然保留打开小窗的行为。
+ */
+function startDrag(event, fromPet = false) {
   if (fullscreen.value || event.button !== 0) return
+  event.preventDefault()
   drag = {
     pointerId: event.pointerId,
     startX: event.clientX,
     startY: event.clientY,
     right: position.value.right,
     bottom: position.value.bottom,
+    fromPet,
+    moved: false,
   }
+  // 指针移出桌宠或标题栏后仍需继续接收事件，否则快速拖动会中途丢失。
+  event.currentTarget?.setPointerCapture?.(event.pointerId)
   window.addEventListener('pointermove', moveDock)
   window.addEventListener('pointerup', stopDrag, { once: true })
+  window.addEventListener('pointercancel', stopDrag, { once: true })
 }
 
 function moveDock(event) {
   if (!drag || event.pointerId !== drag.pointerId) return
+  const deltaX = drag.startX - event.clientX
+  const deltaY = drag.startY - event.clientY
+  // 屏蔽触摸屏和鼠标的微小抖动，防止普通点击被错判为拖动。
+  if (!drag.moved && Math.hypot(deltaX, deltaY) < 5) return
+  drag.moved = true
   const maxRight = Math.max(8, window.innerWidth - 110)
   const maxBottom = Math.max(8, window.innerHeight - 120)
   position.value = {
-    right: Math.min(maxRight, Math.max(8, drag.right + drag.startX - event.clientX)),
-    bottom: Math.min(maxBottom, Math.max(8, drag.bottom + drag.startY - event.clientY)),
+    right: Math.min(maxRight, Math.max(8, drag.right + deltaX)),
+    bottom: Math.min(maxBottom, Math.max(8, drag.bottom + deltaY)),
   }
 }
 
 function stopDrag(event) {
-  if (drag && event.pointerId === drag.pointerId) drag = null
+  if (drag && event.pointerId === drag.pointerId) {
+    // 浏览器会在 pointerup 之后再派发 click；短时间屏蔽该 click，避免拖完又打开小窗。
+    if (drag.fromPet && drag.moved) suppressPetClickUntil = performance.now() + 400
+    drag = null
+  }
   window.removeEventListener('pointermove', moveDock)
+  // pointercancel 也会走到这里，此时要主动清掉尚未触发的 pointerup 监听。
+  window.removeEventListener('pointerup', stopDrag)
+  window.removeEventListener('pointercancel', stopDrag)
+}
+
+/** 拖动尾声不触发展开，真正的轻点则正常切换小窗。 */
+function toggleDock() {
+  if (performance.now() < suppressPetClickUntil) return
+  open.value = !open.value
 }
 
 onBeforeUnmount(() => {
   streamController?.abort()
   window.removeEventListener('pointermove', moveDock)
   window.removeEventListener('pointerup', stopDrag)
+  window.removeEventListener('pointercancel', stopDrag)
   window.removeEventListener('metro-auth-changed', syncAuthentication)
   window.removeEventListener('storage', handleAuthenticationStorage)
 })
@@ -521,7 +551,8 @@ onMounted(() => {
 .agent-composer__box > button:disabled { opacity: .45; cursor: not-allowed; }
 .agent-funding { margin: 6px 1px 0; color: #847970; font-size: 9px; }
 
-.agent-pet { position: relative; width: 96px; min-height: 116px; padding: 4px 6px 8px; border: 0; background: transparent; cursor: pointer; filter: drop-shadow(0 9px 8px rgba(47, 32, 21, .18)); }
+.agent-pet { position: relative; width: 96px; min-height: 116px; padding: 4px 6px 8px; border: 0; background: transparent; cursor: grab; touch-action: none; user-select: none; filter: drop-shadow(0 9px 8px rgba(47, 32, 21, .18)); }
+.agent-pet:active { cursor: grabbing; }
 .agent-pet__figure { display: block; width: 92px; height: 112px; object-fit: contain; image-rendering: pixelated; }
 .agent-pet__name { position: absolute; right: 4px; bottom: 0; padding: 3px 7px; border: 1px solid #d8cabc; border-radius: 999px; background: #fffdf9; color: #766d64; font-size: 9px; }
 .agent-pet:hover { transform: translateY(-3px); }
@@ -533,7 +564,7 @@ onMounted(() => {
 @keyframes agent-pulse { to { transform: translateY(-3px); opacity: .45; } }
 
 @media (max-width: 720px) {
-  .agent-dock { right: 10px !important; bottom: 10px !important; }
+  /* 小屏关闭状态仍允许桌宠拖动；位置边界由同一套指针逻辑统一限制。 */
   .agent-window { position: fixed; inset: 10px; width: auto; height: auto; }
   .agent-dock.is-open .agent-pet { display: none; }
 }
