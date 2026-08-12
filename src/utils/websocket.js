@@ -56,6 +56,7 @@ const scheduleReconnect = (token, generation) => {
 const expireAuthentication = () => {
     localStorage.removeItem('token')
     localStorage.removeItem('user')
+    window.dispatchEvent(new Event('metro-auth-changed'))
     closeWebSocket()
     import('../router').then(({ default: router }) => {
         if (router.currentRoute.value.path !== '/login') return router.push('/login')

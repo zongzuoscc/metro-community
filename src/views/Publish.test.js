@@ -63,6 +63,7 @@ vi.mock('../components/RichArticleEditor.vue', () => ({
 }))
 
 const { default: Publish } = await import('./Publish.vue')
+const { useAgentPageContext } = await import('../composables/useAgentPageContext')
 
 const slotStub = { template: '<div><slot /></div>' }
 let wrapper
@@ -157,5 +158,20 @@ describe('Publish edit hydration', () => {
 
     draftGate.resolve({ data: 1 })
     await flushPromises()
+  })
+
+  it('路由切换时立即更新 Agent 文档身份，即使两篇文章字段完全相同', async () => {
+    const articleB = deferred()
+    mocks.getArticleForEdit.mockImplementation(id => String(id) === '1'
+      ? Promise.resolve({ data: { id: 1, title: '相同', content: '相同正文', cover: '', tagList: [], status: 0 } })
+      : articleB.promise)
+    mountPublish()
+    await flushPromises()
+    expect(useAgentPageContext().value.documentKey).toBe('article:1')
+
+    mocks.route.query = { id: '2' }
+    await nextTick()
+
+    expect(useAgentPageContext().value.documentKey).toBe('article:2')
   })
 })

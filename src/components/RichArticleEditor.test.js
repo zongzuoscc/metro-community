@@ -41,6 +41,49 @@ afterEach(() => {
 })
 
 describe('RichArticleEditor Markdown image sanitization', () => {
+  it('只在文档版本与选区仍匹配时应用 Agent 建议', async () => {
+    wrapper = mount(RichArticleEditor, {
+      props: { modelValue: '这是一段原始文字' },
+    })
+    await waitForEditor()
+
+    const snapshot = wrapper.vm.getAgentWritingSnapshot()
+    const rejected = wrapper.vm.applyAgentSuggestion({
+      suggestedText: '不应用的文字',
+      selectionFrom: snapshot.selectionFrom,
+      selectionTo: snapshot.selectionTo,
+      documentVersion: snapshot.documentVersion + 1,
+    })
+    expect(rejected).toBe(false)
+
+    const applied = wrapper.vm.applyAgentSuggestion({
+      suggestedText: '这是经过润色的文字',
+      selectionFrom: snapshot.selectionFrom,
+      selectionTo: snapshot.selectionTo,
+      documentVersion: snapshot.documentVersion,
+    })
+    expect(applied).toBe(true)
+    expect(wrapper.emitted('update:modelValue').at(-1)[0]).toContain('这是经过润色的文字')
+  })
+
+  it('外部切换文章正文时推进版本并拒绝上一篇文章的建议', async () => {
+    wrapper = mount(RichArticleEditor, {
+      props: { modelValue: '两篇文章恰好相同的正文', documentKey: 'article:101' },
+    })
+    await waitForEditor()
+    const articleASnapshot = wrapper.vm.getAgentWritingSnapshot()
+
+    await wrapper.setProps({ modelValue: '两篇文章恰好相同的正文', documentKey: 'article:202' })
+    await nextTick()
+
+    expect(wrapper.vm.getAgentWritingSnapshot().documentVersion)
+      .toBeGreaterThan(articleASnapshot.documentVersion)
+    expect(wrapper.vm.applyAgentSuggestion({
+      suggestedText: '不应写入文章 B', selectionFrom: 0, selectionTo: 1,
+      documentVersion: articleASnapshot.documentVersion,
+    })).toBe(false)
+  })
+
   it('sanitizes unsafe direct, angle-bracket, and reference images while parsing the initial modelValue', async () => {
     wrapper = mount(RichArticleEditor, {
       props: {

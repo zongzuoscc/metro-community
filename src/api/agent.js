@@ -32,6 +32,38 @@ export const getAgentTurn = turnId =>
 export const cancelAgentTurn = turnId =>
   request.post(`/api/agent/turns/${turnId}/cancel`, undefined, raw)
 
+/** 按服务端发布指针总结文章，避免把页面 DOM 中可被篡改的文本当成事实源。 */
+export const summarizeArticle = articleId =>
+  request.post(`/api/agent/articles/${articleId}/summary`, undefined, raw)
+
+/** 文章核心观点与争议点仍由后端读取权威发布正文，不能用没有上下文的普通问答代替。 */
+export const analyzeArticle = (articleId, operation) =>
+  request.post(`/api/agent/articles/${articleId}/analysis/${operation}`, undefined, raw)
+
+/** 生成可审核的写作建议；后端只返回提案，不直接修改或发布草稿。 */
+export const createWritingSuggestion = payload =>
+  request.post('/api/agent/writing/suggestions', payload, raw)
+
+/** 读取脱敏后的用户模型配置；接口永远不会返回 API Key 或密文。 */
+export const getAiProviderSetting = () =>
+  request.get('/api/agent/provider-settings', raw)
+
+/** 保存或替换用户模型配置；空 apiKey 表示沿用后端现有密钥。 */
+export const saveAiProviderSetting = payload =>
+  request.put('/api/agent/provider-settings', payload, raw)
+
+/** 临时停用或重新启用用户模型，停用后请求自动使用平台基础额度。 */
+export const setAiProviderEnabled = enabled =>
+  request.patch('/api/agent/provider-settings/enabled', { enabled }, raw)
+
+/** 测试时只调用用户配置，后端不会静默回退平台模型。 */
+export const testAiProviderConnection = () =>
+  request.post('/api/agent/provider-settings/test', undefined, raw)
+
+/** 永久删除当前用户保存的密文与模型设置。 */
+export const deleteAiProviderSetting = () =>
+  request.delete('/api/agent/provider-settings', raw)
+
 /**
  * 通过 fetch 读取 Agent 的 SSE 流。
  * axios 在当前项目中用于 JSON 请求；流式正文改用 ReadableStream，才能在完整响应结束前逐帧更新界面。

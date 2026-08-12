@@ -92,7 +92,9 @@
           aria-label="文章标题"
         />
         <RichArticleEditor
+          ref="articleEditor"
           v-model="form.content"
+          :document-key="currentDocumentKey"
           @upload-image="uploadInlineImage"
           @word-count="wordCount = $event"
           @legacy-protection="legacyContentProtected = $event"
@@ -139,6 +141,7 @@ import { getHotTags } from '../api/tag'
 import { nextDraftState } from '../utils/draftState'
 import { createArticleSaveCoordinator } from '../utils/articleSaveCoordinator'
 import { canAutosaveArticleDraft, isArticleEditReady, shouldConfirmArticleLeave } from '../utils/articleEditPolicy'
+import { clearAgentPageContext, setAgentPageContext } from '../composables/useAgentPageContext'
 
 const AUTO_SAVE_DELAY = 1500
 
@@ -150,7 +153,27 @@ const hotTags = ref([])
 const legacyContentProtected = ref(false)
 const loadedArticleStatus = ref(null)
 const articleLoadState = ref(isEdit.value ? 'loading' : 'ready')
+const articleEditor = ref(null)
 let articleLoadRequestVersion = 0
+// 新文章没有服务端 ID，仍需用本次编辑页实例标识隔离迟到的 Agent 建议。
+const writingSessionKey = crypto.randomUUID()
+const currentDocumentKey = computed(() => route.query.id
+  ? `article:${route.query.id}`
+  : `draft:${writingSessionKey}`)
+
+/** 将当前编辑器快照暴露给全局桌宠，正文仍由编辑器实例按需读取。 */
+function registerWritingContext() {
+  setAgentPageContext({
+    kind: 'writing',
+    documentKey: currentDocumentKey.value,
+    title: form.title,
+    getWritingSnapshot: () => ({
+      title: form.title,
+      ...articleEditor.value?.getAgentWritingSnapshot(),
+    }),
+    applyWritingSuggestion: candidate => articleEditor.value?.applyAgentSuggestion(candidate) === true,
+  })
+}
 
 const form = reactive({
   id: null,
@@ -359,6 +382,8 @@ watch(
   [() => form.title, () => form.content, () => form.cover, () => form.tags],
   () => {
     saveCoordinator.markChanged()
+    // 标题可能在打开 Agent 后继续编辑，重新注册只更新轻量元数据与回调闭包。
+    registerWritingContext()
   },
   { deep: true },
 )
@@ -366,6 +391,8 @@ watch(
 watch(
   () => route.query.id,
   id => {
+    // 路由身份先于网络水合结果更新，避免相同内容不触发表单 watcher 时沿用旧文章 key。
+    registerWritingContext()
     if (id) {
       isEdit.value = true
       loadArticle(id)
@@ -377,6 +404,7 @@ watch(
 )
 
 onMounted(() => {
+  registerWritingContext()
   loadHotTags()
   window.addEventListener('beforeunload', handleBeforeUnload)
 })
@@ -411,6 +439,7 @@ onBeforeRouteUpdate((to, from) => {
 })
 
 onBeforeUnmount(() => {
+  clearAgentPageContext()
   window.removeEventListener('beforeunload', handleBeforeUnload)
   saveCoordinator.dispose()
 })

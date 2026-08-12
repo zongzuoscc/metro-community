@@ -90,6 +90,12 @@
             </div>
           </el-tab-pane>
 
+          <el-tab-pane label="AI 模型">
+            <div class="pane-content pane-content--wide">
+              <AiProviderSettings />
+            </div>
+          </el-tab-pane>
+
         </el-tabs>
       </div>
     </div>
@@ -102,6 +108,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '../utils/request'
 import { closeWebSocket } from '../utils/websocket'
+import AiProviderSettings from '../components/AiProviderSettings.vue'
 
 const router = useRouter()
 const loading = ref(false)
@@ -201,6 +208,7 @@ const changePassword = () => {
           // 强制退出
           closeWebSocket()
           localStorage.clear()
+          window.dispatchEvent(new Event('metro-auth-changed'))
           setTimeout(() => router.push('/login'), 1500)
         } else {
           ElMessage.error(res.msg || '修改失败')
@@ -227,6 +235,7 @@ const handleForget = () => {
   ).then(() => {
     closeWebSocket()
     localStorage.clear()
+    window.dispatchEvent(new Event('metro-auth-changed'))
     ElMessage.success('已退出登录，正在前往重置页面...')
     setTimeout(() => {
       router.push('/reset-password')
@@ -280,6 +289,7 @@ onMounted(() => {
   padding: 30px 50px; max-width: 500px;
   .pane-title { font-size: 20px; font-weight: 600; margin-bottom: 30px; color: #333; }
 }
+.pane-content--wide { max-width: 700px; }
 
 .avatar-uploader {
   .avatar { width: 100px; height: 100px; border-radius: 4px; display: block; object-fit: cover; }

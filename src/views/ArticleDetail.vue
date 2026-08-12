@@ -52,28 +52,6 @@
             </span>
           </div>
 
-          <div class="ai-summary-box">
-            <div class="ai-header">
-              <span class="ai-title"><el-icon><MagicStick /></el-icon> Metro AI 智能伴读</span>
-              <el-button
-                  v-if="!aiSummary && !aiLoading"
-                  size="small"
-                  round
-                  type="primary"
-                  plain
-                  @click="generateSummary"
-              >
-                一键生成总结
-              </el-button>
-            </div>
-            <div class="ai-content" v-if="aiSummary || aiLoading">
-              <div v-if="aiLoading" class="typing-indicator">
-                <el-icon class="is-loading"><Loading /></el-icon> 小 M 正在飞速阅读并提炼核心内容...
-              </div>
-              <v-md-preview v-else :text="aiSummary" class="ai-md-text"></v-md-preview>
-            </div>
-          </div>
-
           <div class="article-cover" v-if="article.cover">
             <img :src="article.cover" alt="封面图" />
           </div>
@@ -361,13 +339,13 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '../utils/request'
 
-// 【修改】引入所有需要的 API，加入 getAiSummary
-import { getArticleDetail, deleteArticle, getSimilarArticles, getAiSummary } from '../api/article'
+import { getArticleDetail, deleteArticle, getSimilarArticles } from '../api/article'
 import { reportQualifiedView } from '../api/recommendation'
 import { getCommentList, publishComment, deleteComment } from '../api/comment'
 import { submitReport } from '../api/report'
 import { createQualifiedArticleView } from '../utils/qualifiedArticleView'
 import { createLatestRequestGuard } from '../utils/latestRequestGuard'
+import { clearAgentPageContext, setAgentPageContext } from '../composables/useAgentPageContext'
 
 const route = useRoute()
 const router = useRouter()
@@ -383,10 +361,6 @@ const isFollowed = ref(false)
 
 // 相似文章数据
 const similarArticles = ref([])
-
-// 【新增】AI 总结相关数据
-const aiSummary = ref('')
-const aiLoading = ref(false)
 
 // 收藏相关
 const isCollected = ref(false)
@@ -451,14 +425,15 @@ const loadDetail = async () => {
   qualifiedViewTracker?.reset(null, undefined)
   loading.value = true
 
-  // 【新增】重置 AI 总结状态，防止从相似文章跳过来时显示旧的总结
-  aiSummary.value = ''
-  aiLoading.value = false
-
   try {
     const res = await getArticleDetail(id)
     if (!requestToken.isCurrent() || String(route.params.id) !== String(id)) return
     article.value = res.data || {}
+    setAgentPageContext({
+      kind: 'article',
+      articleId: article.value.id,
+      title: article.value.title,
+    })
     if (article.value.id) resetQualifiedView(article.value.id)
 
     // 并行检查状态
@@ -481,26 +456,6 @@ const loadDetail = async () => {
     }
   } finally {
     if (requestToken.isCurrent() && String(route.params.id) === String(id)) loading.value = false
-  }
-}
-
-// 【新增】一键生成 AI 总结逻辑
-const generateSummary = async () => {
-  const articleId = article.value.id
-  const requestToken = detailRequestGuard.capture()
-  aiLoading.value = true
-  try {
-    const res = await getAiSummary(articleId)
-    if (!isCurrentArticleRequest(requestToken, articleId)) return
-    if (res.code === 200) {
-      aiSummary.value = res.data
-    } else {
-      ElMessage.warning(res.msg || '生成失败')
-    }
-  } catch(e) {
-    if (isCurrentArticleRequest(requestToken, articleId)) ElMessage.error('AI 网络拥挤，请稍后再试')
-  } finally {
-    if (isCurrentArticleRequest(requestToken, articleId)) aiLoading.value = false
   }
 }
 
@@ -798,6 +753,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  clearAgentPageContext()
   detailRequestGuard.invalidate()
   qualifiedViewTracker?.dispose()
   qualifiedViewTracker = null
@@ -852,57 +808,6 @@ onUnmounted(() => {
     img { width: 100%; max-height: 400px; object-fit: cover; display: block; }
   }
   .article-actions { margin-top: 50px; display: flex; gap: 20px; justify-content: center; }
-}
-
-/* 【新增】AI 伴读卡片样式 */
-.ai-summary-box {
-  background: linear-gradient(145deg, #f2f7ff 0%, #fafcff 100%);
-  border: 1px solid #d9e6ff;
-  border-radius: 8px;
-  padding: 16px 20px;
-  margin-bottom: 25px;
-  box-shadow: 0 2px 8px rgba(0, 102, 255, 0.05);
-
-  .ai-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    .ai-title {
-      font-weight: 600;
-      color: #0066ff;
-      font-size: 15px;
-      display: flex;
-      align-items: center;
-      gap: 5px;
-    }
-  }
-
-  .ai-content {
-    margin-top: 15px;
-    padding-top: 15px;
-    border-top: 1px dashed #b3d1ff;
-    color: #444;
-    font-size: 14px;
-    line-height: 1.6;
-
-    .typing-indicator {
-      color: #0066ff;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
-    /* 压扁 Markdown 默认的边距 */
-    :deep(.ai-md-text) {
-      .vuepress-markdown-body {
-        padding: 0 !important;
-        background: transparent !important;
-        color: inherit;
-        font-size: 14px;
-        p { margin: 0; line-height: 1.6; }
-      }
-    }
-  }
 }
 
 /* 评论卡片 */
@@ -1044,10 +949,6 @@ onUnmounted(() => {
 .article-card .tags-row .tag-item:hover { color: var(--accent); background: #f4e1dc; }
 .article-card .article-meta { color: var(--ink-muted); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: var(--space-3) 0; margin-bottom: var(--space-5); }
 .article-card .article-meta .author { color: var(--ink); }
-.ai-summary-box { background: #f8eee8; border-color: #dfbbb3; border-radius: var(--radius-sm); box-shadow: none; }
-.ai-summary-box .ai-header .ai-title,
-.ai-summary-box .ai-content .typing-indicator { color: var(--accent); }
-.ai-summary-box .ai-content { border-top-color: #dfbbb3; color: var(--ink); }
 .article-card .article-cover { border-radius: var(--radius-sm); border: 1px solid var(--line); }
 .article-card .article-actions { justify-content: flex-start; margin-top: 42px; padding-top: var(--space-5); border-top: 1px solid var(--line); }
 .comment-card { padding: var(--space-5) min(6vw, 64px); }

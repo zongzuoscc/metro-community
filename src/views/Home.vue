@@ -475,6 +475,8 @@ const handleCommand = (command) => {
     ElMessageBox.confirm('确定退出?', '提示').then(() => {
       closeWebSocket()
       localStorage.clear()
+      // 同标签页清理存储不会触发 storage 事件，主动通知全局桌宠立即隐藏并销毁小窗。
+      window.dispatchEvent(new Event('metro-auth-changed'))
       router.push('/login')
     }).catch(()=>{})
   }

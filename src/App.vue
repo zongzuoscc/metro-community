@@ -1,9 +1,11 @@
 <template>
   <router-view></router-view>
+  <AgentDock />
 </template>
 <script setup>
 import { onMounted } from 'vue'
 import { initWebSocket } from './utils/websocket'
+import AgentDock from './components/AgentDock.vue'
 
 onMounted(() => {
   // 页面刷新时，如果已登录，尝试连接 WebSocket

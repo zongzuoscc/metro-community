@@ -115,6 +115,8 @@ const handleLogin = async () => {
           // 存储 Token 和 用户信息
           localStorage.setItem('token', userData.token)
           localStorage.setItem('user', JSON.stringify(userData))
+          // 同标签页修改 localStorage 不会触发 storage 事件，主动通知全局桌宠刷新登录状态。
+          window.dispatchEvent(new Event('metro-auth-changed'))
           initWebSocket(userData.token)
 
           ElMessage.success('登录成功，欢迎回来！')

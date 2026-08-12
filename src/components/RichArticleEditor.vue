@@ -247,6 +247,11 @@ const props = defineProps({
     type: String,
     default: '',
   },
+  // 文档身份由页面层提供；正文相同但文章 ID 不同时仍必须使旧建议失效。
+  documentKey: {
+    type: String,
+    default: '',
+  },
 })
 
 const emit = defineEmits(['update:modelValue', 'upload-image', 'word-count', 'legacy-protection'])
@@ -257,6 +262,9 @@ const legacySource = ref(initialRawMarkdown)
 const legacyProtected = ref(
   initialMarkdown !== initialRawMarkdown || hasUnsupportedRawHtml(initialRawMarkdown),
 )
+// 这个本地版本只表示当前编辑器会话中的内容变化次数。
+// Agent 建议必须与生成时的版本一致，否则用户后续输入可能被迟到结果覆盖。
+const documentVersion = ref(0)
 
 function countWords(editorInstance) {
   const text = editorInstance.getText().trim()
@@ -272,9 +280,49 @@ function countWords(editorInstance) {
 }
 
 function emitEditorValue(editorInstance) {
+  documentVersion.value += 1
   emit('word-count', countWords(editorInstance))
   if (!legacyProtected.value) emit('update:modelValue', editorInstance.getMarkdown())
 }
+
+/**
+ * 捕获 Agent 写作请求的不可变快照。
+ * 当用户没有选区时，快照覆盖整篇正文；有选区时则只建议替换被选中的文字。
+ */
+function getAgentWritingSnapshot() {
+  if (!editor.value) {
+    return { content: '', selectedText: '', selectionFrom: 0, selectionTo: 0, documentVersion: documentVersion.value }
+  }
+  const { from, to } = editor.value.state.selection
+  const hasSelection = from !== to
+  return {
+    content: editor.value.getMarkdown(),
+    selectedText: hasSelection
+      ? editor.value.state.doc.textBetween(from, to, '\n')
+      : editor.value.getMarkdown(),
+    selectionFrom: hasSelection ? from : 0,
+    selectionTo: hasSelection ? to : editor.value.state.doc.content.size,
+    documentVersion: documentVersion.value,
+  }
+}
+
+/**
+ * 在编辑器内执行最后一道乐观锁校验。
+ * 只有版本仍一致、范围合法时才替换，返回 false 时调用方必须要求重新生成。
+ */
+function applyAgentSuggestion(candidate) {
+  if (!editor.value || !candidate || candidate.documentVersion !== documentVersion.value) return false
+  const from = Number(candidate.selectionFrom)
+  const to = Number(candidate.selectionTo)
+  if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < from
+    || to > editor.value.state.doc.content.size || typeof candidate.suggestedText !== 'string') return false
+
+  return editor.value.chain().focus().insertContentAt({ from, to }, candidate.suggestedText, {
+    updateSelection: true,
+  }).run()
+}
+
+defineExpose({ getAgentWritingSnapshot, applyAgentSuggestion })
 
 const editor = useEditor({
   content: initialMarkdown,
@@ -339,7 +387,19 @@ watch(
       contentType: 'markdown',
       emitUpdate: false,
     })
+    // 外部水合通常意味着切换文章或重新加载服务端版本。即使没有触发编辑器 update，
+    // 也必须推进本地版本，使上一篇文章尚未返回的 Agent 建议失效。
+    documentVersion.value += 1
     emit('word-count', countWords(editor.value))
+  },
+)
+
+watch(
+  () => props.documentKey,
+  (nextKey, previousKey) => {
+    if (nextKey === previousKey) return
+    // 身份变化独立于正文变化推进版本，覆盖“两篇文章内容完全相同”的边界。
+    documentVersion.value += 1
   },
 )
 

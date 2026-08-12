@@ -47,6 +47,8 @@ service.interceptors.response.use(
             ElMessage.error('登录已过期，请重新登录')
             localStorage.removeItem('token') // 清除脏数据
             localStorage.removeItem('user')
+            // 让同标签页的全局桌宠立即响应鉴权失效，避免已打开小窗继续残留。
+            window.dispatchEvent(new Event('metro-auth-changed'))
             closeWebSocket()
             router.push('/login') // 强制跳转
         } else if (!error.config?.silent) {
