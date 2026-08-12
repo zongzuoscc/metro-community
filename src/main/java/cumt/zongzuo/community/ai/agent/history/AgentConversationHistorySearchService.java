@@ -9,6 +9,10 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
+/**
+ * 按需检索当前用户的旧消息，与精简的长期画像记忆完全分离。
+ * 该分离使“你记得我的偏好吗”和“我很久前说过什么”可以使用不同的权限、排序和审计证据。
+ */
 @Service
 public class AgentConversationHistorySearchService {
 
@@ -26,6 +30,10 @@ public class AgentConversationHistorySearchService {
         this.safety = safety;
     }
 
+    /**
+     * 对有界词法候选进行确定性排序。
+     * 当问题明确询问“我说过什么”时，只保留 USER 角色消息，防止把助手自己的旧回答误当成用户原话。
+     */
     public List<AgentConversationHistoryHit> search(long userId, String query, int limit) {
         if (limit < 1 || limit > 20) throw new IllegalArgumentException("Invalid history limit");
         List<String> terms = terms(query);

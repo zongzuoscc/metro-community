@@ -2,6 +2,7 @@ package cumt.zongzuo.community.ai.agent.memory;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.nio.charset.StandardCharsets;
@@ -10,6 +11,12 @@ import java.util.HexFormat;
 import java.util.Locale;
 import java.util.regex.Pattern;
 
+/**
+ * 持久 turn 成功完成后，使用确定性规则提取低风险用户事实。
+ *
+ * <p>捕获只发生在持久路径；临时 turn 不会创建 agent_message，也不会调用本服务。
+ * 分类器仅接受明确的偏好、目标和基础资料，敏感内容由安全策略先行拒绝。</p>
+ */
 @Service
 public class AgentMemoryCaptureService {
 
@@ -29,9 +36,16 @@ public class AgentMemoryCaptureService {
                                      AgentMemorySafetyPolicy safety) {
         this.mapper = mapper;
         this.transactions = new TransactionTemplate(transactionManager);
+        // 当回答完成事务已存在时，记忆捕获使用数据库保存点。捕获失败可以单独回滚，
+        // 而成功捕获会与 turn 的 SUCCEEDED 状态在同一外层事务中一起对外可见。
+        this.transactions.setPropagationBehavior(TransactionDefinition.PROPAGATION_NESTED);
         this.safety = safety;
     }
 
+    /**
+     * 从指定 turn 的 USER 消息中最多捕获一条当前用户记忆。
+     * 同时使用 source_message_id 和归一化 content_hash 去重，保证异步重试不会创建重复记忆。
+     */
     public int captureUserMessage(long userId, long turnId) {
         Integer captured = transactions.execute(status -> captureInTransaction(userId, turnId));
         return captured == null ? 0 : captured;

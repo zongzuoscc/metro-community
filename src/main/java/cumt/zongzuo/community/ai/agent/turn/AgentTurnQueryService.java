@@ -1,18 +1,31 @@
 package cumt.zongzuo.community.ai.agent.turn;
 
 import cumt.zongzuo.community.ai.web.AiApiException;
+import cumt.zongzuo.community.ai.agent.temporary.TemporaryTurnRecord;
+import cumt.zongzuo.community.ai.agent.temporary.TemporaryTurnStore;
 import org.springframework.stereotype.Service;
 
+/**
+ * 统一构建当前用户可见的 turn 快照。
+ * 持久 turn 从 MySQL 聚合消息与引用，临时 turn 只从 Redis 读取，两者对外共用同一响应结构。
+ */
 @Service
 public class AgentTurnQueryService {
 
     private final AgentTurnMapper mapper;
+    private final TemporaryTurnStore temporaryTurns;
 
-    public AgentTurnQueryService(AgentTurnMapper mapper) {
+    public AgentTurnQueryService(AgentTurnMapper mapper, TemporaryTurnStore temporaryTurns) {
         this.mapper = mapper;
+        this.temporaryTurns = temporaryTurns;
     }
 
+    /**
+     * 返回当前用户可见的 turn 快照。负 ID 只查 Redis 临时内容，正 ID 只查 MySQL 持久内容，
+     * 从入口处避免两种隐私边界被错误合并。
+     */
     public AgentTurnSnapshot snapshot(long turnId, long userId) {
+        if (turnId < 0) return temporarySnapshot(turnId, userId);
         AgentTurnRecord turn = mapper.selectById(turnId, userId);
         if (turn == null) {
             throw AiApiException.resourceNotFound();
@@ -24,5 +37,21 @@ public class AgentTurnQueryService {
                 turn.getCreatedAt(), turn.getStartedAt(), turn.getCompletedAt(),
                 mapper.selectMessageContent(turnId, userId, "USER"), null, assistant,
                 messageId, citationCount, turn.getErrorCode());
+    }
+
+    /**
+     * 将可丢弃的 Redis turn 映射为公共快照。
+     * 临时回答没有持久 messageId，所以该字段固定为 null，temporary 固定为 true。
+     */
+    private AgentTurnSnapshot temporarySnapshot(long turnId, long userId) {
+        TemporaryTurnRecord turn = temporaryTurns.find(turnId, userId);
+        if (turn == null) throw AiApiException.resourceNotFound();
+        java.time.ZoneId zone = java.time.ZoneId.systemDefault();
+        return new AgentTurnSnapshot(turnId, turn.state(), "COMMUNITY_QA", true,
+                java.time.LocalDateTime.ofInstant(turn.createdAt(), zone),
+                java.time.LocalDateTime.ofInstant(turn.createdAt(), zone),
+                turn.completedAt() == null ? null
+                        : java.time.LocalDateTime.ofInstant(turn.completedAt(), zone),
+                turn.question(), null, turn.answer(), null, turn.citationCount(), turn.errorCode());
     }
 }

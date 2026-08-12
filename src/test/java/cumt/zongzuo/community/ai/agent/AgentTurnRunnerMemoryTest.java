@@ -1,6 +1,5 @@
 package cumt.zongzuo.community.ai.agent;
 
-import cumt.zongzuo.community.ai.agent.memory.AgentMemoryCaptureService;
 import cumt.zongzuo.community.ai.agent.turn.AgentTurnAdmission;
 import cumt.zongzuo.community.ai.agent.turn.AgentTurnEventStore;
 import cumt.zongzuo.community.ai.agent.turn.AgentTurnFailureService;
@@ -37,7 +36,6 @@ class AgentTurnRunnerMemoryTest {
         AgentTurnFailureService failures = mock(AgentTurnFailureService.class);
         AgentTurnEventStore events = mock(AgentTurnEventStore.class);
         AgentTurnLeaseService leases = mock(AgentTurnLeaseService.class);
-        AgentMemoryCaptureService memories = mock(AgentMemoryCaptureService.class);
         ExecutorService executor = mock(ExecutorService.class);
         ScheduledExecutorService heartbeat = mock(ScheduledExecutorService.class);
         ScheduledFuture<?> heartbeatFuture = mock(ScheduledFuture.class);
@@ -56,22 +54,20 @@ class AgentTurnRunnerMemoryTest {
         when(finalizer.complete(41L, runId, 7L, answer)).thenReturn(true);
 
         new AgentTurnRunner(answers, finalizer, failures, events, executor, heartbeat, leases,
-                Clock.fixed(Instant.parse("2026-08-12T00:00:00Z"), ZoneOffset.UTC), memories, true)
+                Clock.fixed(Instant.parse("2026-08-12T00:00:00Z"), ZoneOffset.UTC))
                 .submit(admission, 9L, "我喜欢简洁回答");
 
-        verify(memories).captureUserMessage(9L, 41L);
         verify(events).append(41L, 9L, runId, 7L, "done", java.util.Map.of(
                 "finalMessage", "answer", "finishReason", "stop", "citationCount", 0));
     }
 
     @Test
-    void memoryCaptureFailureCannotTurnAnAlreadyCompletedAnswerIntoAFailedTurn() {
+    void committedAnswerPublishesDoneWithoutEnteringTheFailurePath() {
         GroundedAnswerService answers = mock(GroundedAnswerService.class);
         AgentTurnFinalizer finalizer = mock(AgentTurnFinalizer.class);
         AgentTurnFailureService failures = mock(AgentTurnFailureService.class);
         AgentTurnEventStore events = mock(AgentTurnEventStore.class);
         AgentTurnLeaseService leases = mock(AgentTurnLeaseService.class);
-        AgentMemoryCaptureService memories = mock(AgentMemoryCaptureService.class);
         ExecutorService executor = mock(ExecutorService.class);
         ScheduledExecutorService heartbeat = mock(ScheduledExecutorService.class);
         ScheduledFuture<?> heartbeatFuture = mock(ScheduledFuture.class);
@@ -88,11 +84,8 @@ class AgentTurnRunnerMemoryTest {
         when(answers.answer(eq(9L), eq(runId.toString()), eq("question"), any()))
                 .thenReturn(answer);
         when(finalizer.complete(42L, runId, 8L, answer)).thenReturn(true);
-        doThrow(new IllegalStateException("memory unavailable"))
-                .when(memories).captureUserMessage(9L, 42L);
-
         new AgentTurnRunner(answers, finalizer, failures, events, executor, heartbeat, leases,
-                Clock.fixed(Instant.parse("2026-08-12T00:00:00Z"), ZoneOffset.UTC), memories, true)
+                Clock.fixed(Instant.parse("2026-08-12T00:00:00Z"), ZoneOffset.UTC))
                 .submit(admission, 9L, "question");
 
         verify(events).append(42L, 9L, runId, 8L, "done", java.util.Map.of(

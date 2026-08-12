@@ -27,6 +27,12 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 
+/**
+ * 组装有资料依据的 Agent 回答，并严格隔离持久个人上下文与临时会话上下文。
+ *
+ * <p>普通对话可以召回用户授权的长期记忆和历史消息；临时对话只能使用调用方显式传入的
+ * Redis 会话片段。两条路径都可以检索公开社区资料，但不能相互泄漏个人上下文。</p>
+ */
 public class GroundedAnswerService {
 
     private static final String INSUFFICIENT = "现有社区资料不足，暂时无法给出有引用的回答。";
@@ -86,7 +92,34 @@ public class GroundedAnswerService {
         if (result.authorizedChunks().isEmpty() && recalled.isEmpty() && historical.isEmpty()) {
             return new GroundedAgentAnswer(INSUFFICIENT, List.of(), "insufficient_evidence");
         }
-        List<AiPromptMessage> prompt = prompt(question, result.authorizedChunks(), recalled, historical);
+        return generate(userId, requestId, question, deadline, result, recalled, historical,
+                List.of());
+    }
+
+    /**
+     * 使用当前临时 session 中显式传入的 Redis 历史生成回答。
+     *
+     * <p>这条路径故意不调用长期记忆和持久历史检索服务，因此不会因为提示词相似而把旧对话
+     * 或用户画像混入临时会话。返回值中的 memoryUses/historyUses 也始终为空。</p>
+     */
+    public GroundedAgentAnswer answerTemporary(long userId, String requestId, String question,
+                                               List<String> temporaryContext, Instant deadline) {
+        ArticleRetrievalResult result = retrieval.retrieve(
+                new ArticleRetrievalQuery(userId, requestId, question, deadline));
+        if (result.authorizedChunks().isEmpty() && temporaryContext.isEmpty()) {
+            return new GroundedAgentAnswer(INSUFFICIENT, List.of(), "insufficient_evidence");
+        }
+        return generate(userId, requestId, question, deadline, result, List.of(), List.of(),
+                temporaryContext);
+    }
+
+    private GroundedAgentAnswer generate(long userId, String requestId, String question,
+                                         Instant deadline, ArticleRetrievalResult result,
+                                         List<AgentMemoryView> recalled,
+                                         List<AgentConversationHistoryHit> historical,
+                                         List<String> temporaryContext) {
+        List<AiPromptMessage> prompt = prompt(question, result.authorizedChunks(), recalled,
+                historical, temporaryContext);
         int characters = prompt.stream().mapToInt(message -> message.text().length()).sum();
         Instant generationDeadline = min(deadline, clock.instant().plus(generationTimeout));
         AiChatResult generated = executor.execute(new AiInvocationContext(AiCapability.AGENT,
@@ -94,7 +127,7 @@ public class GroundedAnswerService {
                 () -> gateway.generate(new AiChatCommand(AiCapability.AGENT, prompt,
                         AiResponseMode.JSON_OBJECT)));
         GroundedAgentAnswer parsed = parser.parse(generated, expectedModel, result.authorizedChunks(),
-                !recalled.isEmpty() || !historical.isEmpty());
+                !recalled.isEmpty() || !historical.isEmpty() || !temporaryContext.isEmpty());
         return new GroundedAgentAnswer(parsed.answer(), parsed.citations(), parsed.finishReason(),
                 recalled.stream().map(memory -> new AgentMemoryUse(memory.id(), memory.version(),
                         memory.category(), memory.content())).toList(),
@@ -104,7 +137,8 @@ public class GroundedAnswerService {
 
     private List<AiPromptMessage> prompt(String question, List<ResolvedArticleChunk> sources,
                                          List<AgentMemoryView> memories,
-                                         List<AgentConversationHistoryHit> history) {
+                                         List<AgentConversationHistoryHit> history,
+                                         List<String> temporaryContext) {
         ObjectNode user = objectMapper.createObjectNode().put("question", question);
         ArrayNode array = user.putArray("sources");
         for (ResolvedArticleChunk source : sources) {
@@ -124,6 +158,8 @@ public class GroundedAnswerService {
                     .put("role", hit.role()).put("content", hit.content())
                     .put("createdAt", hit.createdAt().toString());
         }
+        ArrayNode temporary = user.putArray("temporaryConversation");
+        temporaryContext.forEach(temporary::add);
         try {
             return List.of(new AiPromptMessage(AiPromptRole.SYSTEM, SYSTEM),
                     new AiPromptMessage(AiPromptRole.USER,

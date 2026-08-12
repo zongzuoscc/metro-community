@@ -7,6 +7,10 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.List;
 
+/**
+ * 长期记忆的用户所有者 CRUD 边界，并管理“是否允许记忆”开关。
+ * 所有查询与更新 SQL 都同时绑定 userId，避免仅凭 memoryId 跨用户访问。
+ */
 @Service
 public class AgentMemoryManagementService {
 
@@ -34,6 +38,10 @@ public class AgentMemoryManagementService {
         return memory;
     }
 
+    /**
+     * 在乐观锁保护下追加新的不可变版本，而不是覆盖旧内容。
+     * 旧版本转为 SUPERSEDED，对应向量投影进入删除流程，新版本使用 expectedVersion 防止丢失更新。
+     */
     public AgentMemoryView edit(long userId, long memoryId, String content, long expectedVersion) {
         String normalized = AgentMemoryCaptureService.normalize(content);
         if (!safety.canStore(content) || normalized.isBlank()) {
@@ -67,6 +75,7 @@ public class AgentMemoryManagementService {
         });
     }
 
+    /** 删除用户可见记忆内容，并将所有派生投影置为待删除，防止向量索引继续召回已删除数据。 */
     public void delete(long userId, long memoryId) {
         transactions.executeWithoutResult(status -> {
             if (mapper.itemLockVersion(memoryId, userId) == null) {

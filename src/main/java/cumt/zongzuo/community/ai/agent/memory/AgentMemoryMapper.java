@@ -9,6 +9,10 @@ import org.apache.ibatis.annotations.Update;
 
 import java.util.List;
 
+/**
+ * 长期记忆事项、不可变版本、来源证据与派生投影的 SQL 合约。
+ * 需要所有者隔离的操作都在 SQL WHERE/JOIN 中绑定 user_id，不依赖 Controller 层的二次过滤。
+ */
 @Mapper
 public interface AgentMemoryMapper {
 

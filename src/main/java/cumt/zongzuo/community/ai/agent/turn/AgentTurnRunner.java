@@ -2,10 +2,8 @@ package cumt.zongzuo.community.ai.agent.turn;
 
 import cumt.zongzuo.community.ai.agent.GroundedAgentAnswer;
 import cumt.zongzuo.community.ai.agent.GroundedAnswerService;
-import cumt.zongzuo.community.ai.agent.memory.AgentMemoryCaptureService;
 import org.springframework.stereotype.Service;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.beans.factory.annotation.Value;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -14,14 +12,16 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
+/**
+ * 在共享有界线程池中执行持久 Agent turn。
+ *
+ * <p>本类只负责心跳、检索/生成阶段和 SSE 进度。回答、引用、记忆捕获与 SUCCEEDED
+ * 状态由 AgentTurnFinalizer 统一事务提交，避免查询线程看到半完成结果。</p>
+ */
 @Service
 @ConditionalOnProperty(name = {"metro.ai.enabled", "metro.ai.agent.enabled"}, havingValue = "true")
 public class AgentTurnRunner {
-
-    private static final Logger log = LoggerFactory.getLogger(AgentTurnRunner.class);
 
     private final GroundedAnswerService answers;
     private final AgentTurnFinalizer finalizer;
@@ -31,16 +31,12 @@ public class AgentTurnRunner {
     private final ScheduledExecutorService heartbeatExecutor;
     private final AgentTurnLeaseService turnLeases;
     private final Clock clock;
-    private final AgentMemoryCaptureService memories;
-    private final boolean memoryEnabled;
 
     public AgentTurnRunner(GroundedAnswerService answers, AgentTurnFinalizer finalizer,
                            AgentTurnFailureService failures, AgentTurnEventStore events,
                            ExecutorService agentTurnExecutor,
                            ScheduledExecutorService agentTurnHeartbeatExecutor,
-                           AgentTurnLeaseService turnLeases, Clock clock,
-                           AgentMemoryCaptureService memories,
-                           @Value("${metro.ai.memory.enabled:false}") boolean memoryEnabled) {
+                           AgentTurnLeaseService turnLeases, Clock clock) {
         this.answers = answers;
         this.finalizer = finalizer;
         this.failures = failures;
@@ -49,11 +45,10 @@ public class AgentTurnRunner {
         this.heartbeatExecutor = agentTurnHeartbeatExecutor;
         this.turnLeases = turnLeases;
         this.clock = clock;
-        this.memories = memories;
-        this.memoryEnabled = memoryEnabled;
     }
 
     public void submit(AgentTurnAdmission admission, long userId, String question) {
+        // 持久与临时模式复用同一容量上限，任何一方都不能绕过全局背压。
         executor.execute(() -> execute(admission, userId, question));
     }
 
@@ -79,14 +74,6 @@ public class AgentTurnRunner {
             }
             if (!finalizer.complete(admission.turnId(), admission.runId(), admission.runFence(), answer)) {
                 return;
-            }
-            if (memoryEnabled) {
-                try {
-                    memories.captureUserMessage(userId, admission.turnId());
-                } catch (RuntimeException error) {
-                    log.warn("Agent memory capture failed after completed turn: turnId={}",
-                            admission.turnId(), error);
-                }
             }
             events.append(admission.turnId(), userId, admission.runId(), admission.runFence(),
                     "done", Map.of("finalMessage", answer.answer(),

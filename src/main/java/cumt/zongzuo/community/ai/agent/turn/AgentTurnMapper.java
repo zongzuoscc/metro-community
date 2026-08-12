@@ -13,6 +13,12 @@ import org.apache.ibatis.annotations.Update;
 
 import java.util.UUID;
 
+/**
+ * 持久 turn 与用户级共享运行栅栏的 MyBatis 边界。
+ *
+ * <p>临时模式不会调用 turn/message 写入 SQL，但会复用 agent_run_guard，以确保同一用户最多只有一个
+ * PERSISTENT 或 TEMPORARY 生成任务。</p>
+ */
 @Mapper
 public interface AgentTurnMapper {
 
@@ -30,15 +36,35 @@ public interface AgentTurnMapper {
     })
     AgentRunGuardRecord selectGuardForUpdate(@Param("userId") long userId);
 
+    /**
+     * 在行锁下回收已过期的临时 guard。
+     * 持久 turn 有独立 recovery 可以重放，临时内容不可恢复，因此租约过期后只能释放运行权。
+     */
+    @Update("""
+            UPDATE agent_run_guard
+            SET active_run_id=NULL,active_run_type=NULL,lease_until=NULL,
+                lock_version=lock_version+1,updated_at=CURRENT_TIMESTAMP(6)
+            WHERE user_id=#{userId} AND active_run_type='TEMPORARY'
+              AND active_run_id IS NOT NULL AND lease_until<CURRENT_TIMESTAMP(6)
+              AND lock_version=#{lockVersion}
+            """)
+    int releaseExpiredTemporaryGuard(@Param("userId") long userId,
+                                     @Param("lockVersion") long lockVersion);
+
+    /**
+     * 使用预期 lockVersion 原子占用共享栅栏。
+     * runType 只允许数据库 CHECK 约束中的 PERSISTENT/TEMPORARY，避免两套互斥机制彼此绕过。
+     */
     @Update("""
             UPDATE agent_run_guard
             SET active_run_id=#{runId,typeHandler=cumt.zongzuo.community.event.persistence.UuidBinaryTypeHandler},
-                active_run_type='PERSISTENT',run_fence=#{runFence},
+                active_run_type=#{runType},run_fence=#{runFence},
                 lease_until=DATE_ADD(CURRENT_TIMESTAMP(6), INTERVAL #{leaseSeconds} SECOND),
                 lock_version=lock_version+1,updated_at=CURRENT_TIMESTAMP(6)
             WHERE user_id=#{userId} AND lock_version=#{lockVersion}
             """)
     int claimGuard(@Param("userId") long userId, @Param("runId") UUID runId,
+                   @Param("runType") String runType,
                    @Param("runFence") long runFence, @Param("leaseSeconds") long leaseSeconds,
                    @Param("lockVersion") long lockVersion);
 

@@ -6,6 +6,10 @@ import org.apache.ibatis.annotations.Select;
 
 import java.util.List;
 
+/**
+ * 搜索已终结的持久消息，并在 SQL 中强制 user_id 所有权边界。
+ * 候选查询有固定上限，避免一次回忆问题扫描用户的全部消息内容。
+ */
 @Mapper
 public interface AgentConversationHistoryMapper {
 

@@ -2,6 +2,10 @@ package cumt.zongzuo.community.ai.agent.turn;
 
 import cumt.zongzuo.community.ai.agent.AgentCitation;
 import cumt.zongzuo.community.ai.agent.GroundedAgentAnswer;
+import cumt.zongzuo.community.ai.agent.memory.AgentMemoryCaptureService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -9,21 +13,35 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.util.UUID;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+/**
+ * 在单个 MySQL 事务中提交持久 Agent 的回答、引用、个人上下文使用记录与终态。
+ *
+ * <p>低风险记忆捕获也在该事务的嵌套保存点内执行。因此查询方一旦看到 SUCCEEDED，
+ * 就不会再遇到“记忆仍在异步写入”的中间状态；同时记忆子事务失败只回滚保存点，
+ * 不会把已生成的有据回答改成失败。</p>
+ */
 @Service
 public class AgentTurnFinalizer {
+
+    private static final Logger log = LoggerFactory.getLogger(AgentTurnFinalizer.class);
 
     private final AgentTurnMapper mapper;
     private final AgentRunLeaseStore leases;
     private final TransactionTemplate transactions;
     private final ObjectMapper objectMapper;
+    private final AgentMemoryCaptureService memories;
+    private final boolean memoryEnabled;
 
     public AgentTurnFinalizer(AgentTurnMapper mapper, AgentRunLeaseStore leases,
                               PlatformTransactionManager transactionManager,
-                              ObjectMapper objectMapper) {
+                              ObjectMapper objectMapper, AgentMemoryCaptureService memories,
+                              @Value("${metro.ai.memory.enabled:false}") boolean memoryEnabled) {
         this.mapper = mapper;
         this.leases = leases;
         this.transactions = new TransactionTemplate(transactionManager);
         this.objectMapper = objectMapper;
+        this.memories = memories;
+        this.memoryEnabled = memoryEnabled;
     }
 
     public boolean complete(long turnId, UUID runId, long runFence, GroundedAgentAnswer answer) {
@@ -70,6 +88,15 @@ public class AgentTurnFinalizer {
                     json(java.util.Map.of("messageId", history.messageId(),
                             "sourceTurnId", history.turnId(), "role", history.role(),
                             "createdAt", history.createdAt().toString())));
+        }
+        if (memoryEnabled) {
+            try {
+                memories.captureUserMessage(userId, turnId);
+            } catch (RuntimeException error) {
+                // 记忆是回答的可选增强。NESTED 传播已回滚它的保存点，外层仍可安全提交回答。
+                log.warn("Agent memory capture failed before completed turn: turnId={}", turnId,
+                        error);
+            }
         }
         if (mapper.completeTurn(turnId, userId, runId, runFence) != 1
                 || mapper.releaseGuard(userId, runId, runFence) != 1

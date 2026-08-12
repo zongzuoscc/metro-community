@@ -131,6 +131,27 @@ class GroundedAnswerServiceTest {
                 .contains("我喜欢简洁的回答风格", "你是我用过最难用的助手");
     }
 
+    @Test
+    void temporaryAnswerUsesOnlySuppliedSessionContextAndNeverReadsPersistentPersonalData() {
+        retrievalResult(List.of());
+        when(gateway.generate(any())).thenReturn(new AiChatResult("""
+                {"answer":"你在这次临时对话里说过喜欢红色。","citations":[]}
+                """, "stop", 80, 20, "test", "deepseek-test"));
+
+        GroundedAgentAnswer answer = service().answerTemporary(9L, "temporary-request",
+                "我刚才说喜欢什么？", List.of("USER\t我喜欢红色"),
+                Instant.parse("2026-08-12T00:00:30Z"));
+
+        verify(memories, never()).recall(any(Long.class), any(), any(Integer.class));
+        verify(history, never()).search(any(Long.class), any(), any(Integer.class));
+        var command = org.mockito.ArgumentCaptor.forClass(
+                cumt.zongzuo.community.ai.provider.AiChatCommand.class);
+        verify(gateway).generate(command.capture());
+        assertThat(command.getValue().messages().toString()).contains("我喜欢红色");
+        assertThat(answer.memoryUses()).isEmpty();
+        assertThat(answer.historyUses()).isEmpty();
+    }
+
     private void retrievalResult(List<ResolvedArticleChunk> chunks) {
         when(retrieval.retrieve(any(ArticleRetrievalQuery.class))).thenReturn(new ArticleRetrievalResult(
                 chunks.size(), chunks.size(), true, true, chunks,

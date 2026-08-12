@@ -8,6 +8,10 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+/**
+ * 使用确定性词法排序召回当前用户已启用的记忆，并对候选数和返回数设置上限。
+ * 该服务不负责搜索原始历史消息，两类个人上下文保持独立可控。
+ */
 @Service
 public class AgentMemoryRecallService {
 
@@ -17,6 +21,10 @@ public class AgentMemoryRecallService {
         this.mapper = mapper;
     }
 
+    /**
+     * 只返回归属请求用户、状态为 ACTIVE 且未过期的记忆。
+     * 用户关闭记忆开关时直接返回空集合，不会把个人数据继续放入模型提示词。
+     */
     public List<AgentMemoryView> recall(long userId, String query, int limit) {
         if (limit < 1 || limit > 16) throw new IllegalArgumentException("Invalid memory limit");
         mapper.ensureSetting(userId);

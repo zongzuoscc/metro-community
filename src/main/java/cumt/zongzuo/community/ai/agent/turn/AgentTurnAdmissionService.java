@@ -16,6 +16,12 @@ import java.time.Duration;
 import java.util.HexFormat;
 import java.util.UUID;
 
+/**
+ * 为持久 Agent turn 建立会话事实、幂等记录和用户级运行栅栏。
+ *
+ * <p>MySQL 保存可恢复的业务事实，Redis 租约只负责运行期心跳。两者必须共用 runId/runFence，
+ * 且 Redis 申请失败时要终结 turn 并释放 MySQL guard，否则用户会被永久占用。</p>
+ */
 @Service
 public class AgentTurnAdmissionService {
 
@@ -40,6 +46,10 @@ public class AgentTurnAdmissionService {
         this.leases = leases;
     }
 
+    /**
+     * 幂等接纳一个持久 turn。同一 clientRequestId 且请求哈希一致时返回原 turn；
+     * 仅在新 turn 创建成功时申请 Redis 租约。
+     */
     public AgentTurnAdmission admit(AgentTurnCreateCommand command) {
         assertRedisAvailable();
         PendingAdmission pending = transactions.execute(status -> admitInTransaction(command));
@@ -66,6 +76,10 @@ public class AgentTurnAdmissionService {
         return pending.admission();
     }
 
+    /**
+     * dispatch 或租约申请失败时，在精确 run fence 下将 turn 收口为 FAILED 并释放 guard。
+     * 旧 worker 或重复补偿无法跨过 runId/runFence 修改新任务。
+     */
     public void compensateFailedDispatch(AgentTurnAdmission admission, long userId,
                                          String errorCode) {
         transactions.executeWithoutResult(status -> {
@@ -89,7 +103,7 @@ public class AgentTurnAdmissionService {
         try {
             leases.release(userId, admission.runId(), admission.runFence());
         } catch (RuntimeException ignored) {
-            // MySQL is authoritative. A later, higher fence safely replaces a stale Redis lease.
+            // MySQL 是最终权威；即使此处 Redis 释放失败，后续更高 fence 也会安全覆盖旧租约。
         }
     }
 
@@ -116,12 +130,13 @@ public class AgentTurnAdmissionService {
         if (guard == null) {
             throw new IllegalStateException("Agent run guard is missing");
         }
+        guard = reclaimExpiredTemporaryGuard(command.userId(), guard);
         if (guard.getActiveRunId() != null) {
             throw AiApiException.activeTurnExists();
         }
         UUID runId = UUID.randomUUID();
         long fence = Math.addExact(guard.getRunFence(), 1);
-        if (mapper.claimGuard(command.userId(), runId, fence, LEASE.toSeconds(),
+        if (mapper.claimGuard(command.userId(), runId, "PERSISTENT", fence, LEASE.toSeconds(),
                 guard.getLockVersion()) != 1) {
             throw AiApiException.activeTurnExists();
         }
@@ -162,12 +177,32 @@ public class AgentTurnAdmissionService {
         }
     }
 
+    /**
+     * 临时 turn 没有 MySQL turn 行可供 recovery 扫描，所以新 admission 会在同一 guard 行锁下回收过期占用。
+     */
+    private AgentRunGuardRecord reclaimExpiredTemporaryGuard(long userId,
+                                                             AgentRunGuardRecord guard) {
+        if (guard.getActiveRunId() == null || !"TEMPORARY".equals(guard.getActiveRunType())) {
+            return guard;
+        }
+        // 是否过期由 SQL 使用数据库时间判定，避免应用节点与 MySQL 时钟偏差导致误回收。
+        if (mapper.releaseExpiredTemporaryGuard(userId, guard.getLockVersion()) != 1) {
+            throw AiApiException.activeTurnExists();
+        }
+        return mapper.selectGuardForUpdate(userId);
+    }
+
     private static String requestHash(AgentTurnCreateCommand command) {
         return sha256(command.message() + "\n" + command.pageContextJson() + "\n"
                 + command.taskType());
     }
 
-    static String sha256(String value) {
+    /**
+     * 计算持久 turn 与临时 turn 共用的稳定 SHA-256 哈希。
+     *
+     * <p>该值用来区分“同一 clientRequestId 的安全重放”与“相同 ID 但请求内容已变更”。</p>
+     */
+    public static String sha256(String value) {
         try {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
                     .digest(value.getBytes(StandardCharsets.UTF_8)));

@@ -11,6 +11,9 @@ import cumt.zongzuo.community.ai.agent.turn.AgentTurnEventStore;
 import cumt.zongzuo.community.ai.agent.turn.AgentTurnQueryService;
 import cumt.zongzuo.community.ai.agent.turn.AgentTurnRunner;
 import cumt.zongzuo.community.ai.agent.turn.AgentTurnSnapshot;
+import cumt.zongzuo.community.ai.agent.temporary.TemporaryTurnAdmission;
+import cumt.zongzuo.community.ai.agent.temporary.TemporaryTurnAdmissionService;
+import cumt.zongzuo.community.ai.agent.temporary.TemporaryTurnRunner;
 import cumt.zongzuo.community.ai.config.MetroAiProperties;
 import cumt.zongzuo.community.ai.web.AiApi;
 import cumt.zongzuo.community.ai.web.AiApiException;
@@ -37,37 +40,57 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * Agent turn 的 HTTP 入口，负责把一次请求精确路由到持久或临时执行边界。
+ *
+ * <p>路由发生在 admission 之前，因此 temporary=true 的请求不会先创建 conversation/episode/turn/message
+ * 再尝试删除。任一 dispatch 失败都必须补偿共享栅栏，防止用户永久卡在 ACTIVE_TURN_EXISTS。</p>
+ */
 @AiApi
 @RestController
 @RequestMapping("/api/agent/turns")
 public class AgentTurnController {
 
     private final AgentTurnAdmissionService admissions;
+    private final TemporaryTurnAdmissionService temporaryAdmissions;
     private final AgentTurnQueryService queries;
     private final AgentTurnEventStore events;
     private final AgentTurnCancellationService cancellations;
     private final ObjectProvider<AgentTurnRunner> runners;
+    private final ObjectProvider<TemporaryTurnRunner> temporaryRunners;
     private final MetroAiProperties properties;
     private final ObjectMapper objectMapper;
 
-    public AgentTurnController(AgentTurnAdmissionService admissions, AgentTurnQueryService queries,
+    public AgentTurnController(AgentTurnAdmissionService admissions,
+                               TemporaryTurnAdmissionService temporaryAdmissions,
+                               AgentTurnQueryService queries,
                                AgentTurnEventStore events,
                                AgentTurnCancellationService cancellations,
                                ObjectProvider<AgentTurnRunner> runners,
+                               ObjectProvider<TemporaryTurnRunner> temporaryRunners,
                                MetroAiProperties properties, ObjectMapper objectMapper) {
         this.admissions = admissions;
+        this.temporaryAdmissions = temporaryAdmissions;
         this.queries = queries;
         this.events = events;
         this.cancellations = cancellations;
         this.runners = runners;
+        this.temporaryRunners = temporaryRunners;
         this.properties = properties;
         this.objectMapper = objectMapper;
     }
 
+    /**
+     * 创建持久或临时 turn。返回 202 表示新任务已接纳，返回 200 表示同一幂等请求已存在；
+     * 两种路径都在异步调度失败时执行精确栅栏补偿。
+     */
     @PostMapping
     public ResponseEntity<Map<String, Object>> create(@Valid @RequestBody AgentTurnCreateRequest request) {
         if (!properties.isCapabilityEnabled(cumt.zongzuo.community.ai.provider.AiCapability.AGENT)) {
             throw AiApiException.disabled();
+        }
+        if (request.temporary()) {
+            return createTemporary(request);
         }
         AgentTurnRunner runner = runners.getIfAvailable();
         if (runner == null) {
@@ -89,14 +112,49 @@ public class AgentTurnController {
         }
         return ResponseEntity.status(admission.created() ? HttpStatus.ACCEPTED : HttpStatus.OK)
                 .body(Map.of("turnId", admission.turnId(), "state", admission.state(),
-                        "created", admission.created()));
+                        "created", admission.created(), "temporary", false));
     }
 
+    /**
+     * 接纳一个只保存在 Redis 中的 turn，并交给临时 runner 异步执行。
+     * 在返回 202 前先写 accepted SSE 事件；如果线程池拒绝或事件写入失败，会将 Redis turn 终结并释放 MySQL/Redis 租约。
+     */
+    private ResponseEntity<Map<String, Object>> createTemporary(AgentTurnCreateRequest request) {
+        if (request.temporarySessionId() == null) {
+            throw AiApiException.validationFailed();
+        }
+        TemporaryTurnRunner runner = temporaryRunners.getIfAvailable();
+        if (runner == null) throw AiApiException.runtimeUnavailable(Duration.ofSeconds(1));
+        long userId = CurrentUser.id();
+        TemporaryTurnAdmission admission = temporaryAdmissions.admit(userId,
+                request.temporarySessionId(), request.clientRequestId(), request.message(),
+                contextJson(request.context()));
+        if (admission.created()) {
+            try {
+                events.append(admission.turnId(), userId, admission.runId(), admission.runFence(),
+                        "accepted", Map.of("state", "RUNNING", "temporary", true));
+                runner.submit(admission, userId, request.message());
+            } catch (java.util.concurrent.RejectedExecutionException rejected) {
+                temporaryAdmissions.compensate(admission, userId, "AGENT_EXECUTOR_SATURATED");
+                throw AiApiException.runtimeUnavailable(Duration.ofSeconds(1));
+            } catch (RuntimeException dispatchFailure) {
+                temporaryAdmissions.compensate(admission, userId, "AGENT_DISPATCH_FAILED");
+                throw dispatchFailure;
+            }
+        }
+        return ResponseEntity.status(admission.created() ? HttpStatus.ACCEPTED : HttpStatus.OK)
+                .body(Map.of("turnId", admission.turnId(), "state", admission.state(),
+                        "created", admission.created(), "temporary", true,
+                        "temporarySessionId", admission.sessionId()));
+    }
+
+    /** 查询当前用户的 turn 快照；负数 ID 自动进入临时 Redis 边界。 */
     @GetMapping("/{turnId}")
     public AgentTurnSnapshot snapshot(@PathVariable long turnId) {
         return queries.snapshot(turnId, CurrentUser.id());
     }
 
+    /** 按 Last-Event-ID/after 恢复 SSE，在终态事件送达或超时后结束连接。 */
     @GetMapping(value = "/{turnId}/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public ResponseEntity<StreamingResponseBody> events(@PathVariable long turnId,
                                                          @RequestParam(required = false) String after,
@@ -110,6 +168,7 @@ public class AgentTurnController {
         return ResponseEntity.ok().contentType(MediaType.TEXT_EVENT_STREAM).body(body);
     }
 
+    /** 使用 turn 当前 run fence 取消任务，迟到的旧请求不能取消新 turn。 */
     @PostMapping("/{turnId}/cancel")
     public AgentTurnSnapshot cancel(@PathVariable long turnId) {
         return cancellations.cancel(turnId, CurrentUser.id(), queries);
