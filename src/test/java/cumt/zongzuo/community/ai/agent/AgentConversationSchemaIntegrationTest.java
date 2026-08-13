@@ -37,8 +37,10 @@ class AgentConversationSchemaIntegrationTest {
                 """);
 
         migrate(dataSource);
+        migrateWebSearch(dataSource);
         String first = fingerprint(jdbc);
         migrate(dataSource);
+        migrateWebSearch(dataSource);
 
         assertThat(fingerprint(jdbc)).isEqualTo(first);
         assertThat(jdbc.queryForList("""
@@ -50,6 +52,18 @@ class AgentConversationSchemaIntegrationTest {
                 SELECT COUNT(*) FROM information_schema.referential_constraints
                 WHERE constraint_schema=DATABASE() AND table_name LIKE 'agent\\_%'
                 """, Integer.class)).isGreaterThanOrEqualTo(10);
+        assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM information_schema.columns
+                WHERE table_schema=DATABASE() AND
+                  ((table_name='agent_conversation' AND column_name='web_search_enabled') OR
+                   (table_name='agent_turn' AND column_name='web_search_enabled'))
+                """, Integer.class)).isEqualTo(2);
+    }
+
+    private static void migrateWebSearch(DataSource dataSource) {
+        new ResourceDatabasePopulator(new FileSystemResource(
+                "docs/database/migrations/2026-08-13-agent-web-search.sql"))
+                .execute(dataSource);
     }
 
     private static void migrate(DataSource dataSource) {

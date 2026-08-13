@@ -9,6 +9,8 @@ import cumt.zongzuo.community.ai.provider.EmbeddingGateway;
 import cumt.zongzuo.community.ai.provider.OllamaEmbeddingGateway;
 import cumt.zongzuo.community.ai.provider.OpenAiCompatibleAiChatGateway;
 import cumt.zongzuo.community.ai.provider.ProviderHttpStatusException;
+import cumt.zongzuo.community.ai.agent.websearch.AgentWebSearchGateway;
+import cumt.zongzuo.community.ai.agent.websearch.DashScopeAgentWebSearchGateway;
 import org.springframework.ai.ollama.OllamaEmbeddingModel;
 import org.springframework.ai.ollama.api.OllamaApi;
 import org.springframework.ai.ollama.api.OllamaEmbeddingOptions;
@@ -91,6 +93,25 @@ public class AiProviderConfiguration {
                 .modelManagementOptions(ModelManagementOptions.defaults())
                 .build();
         return new OllamaEmbeddingGateway(model, ollama.getModel());
+    }
+
+    /**
+     * 仅在后端明确启用并提供 DashScope 地址时装配联网搜索。
+     * API Key 复用平台密钥，但搜索地址使用 DashScope 协议根路径而不是 OpenAI 兼容地址。
+     */
+    @Bean
+    AgentWebSearchGateway agentWebSearchGateway(MetroAiProperties properties) {
+        MetroAiProperties.WebSearchProperties search = properties.getWebSearch();
+        MetroAiProperties.PlatformProperties platform = properties.getPlatform();
+        if (!properties.isEnabled() || !search.isEnabled()
+                || !StringUtils.hasText(search.getBaseUrl())
+                || !StringUtils.hasText(platform.getApiKey())) {
+            return null;
+        }
+        return new DashScopeAgentWebSearchGateway(search.getBaseUrl(), platform.getApiKey(),
+                search.getModel(), search.getStrategy(), search.getMaxSources(),
+                DashScopeAgentWebSearchGateway.httpTransport(
+                        properties.getRuntime().getProviderConnectTimeout(), search.getTimeout()));
     }
 
     private static ResponseErrorHandler statusOnlyErrorHandler() {

@@ -41,7 +41,8 @@ class TemporaryTurnRunnerTest {
         when(turns.previousContext(9L, sessionId, "current"))
                 .thenReturn(List.of("USER\tprior temporary message"));
         GroundedAgentAnswer answer = new GroundedAgentAnswer("answer", List.of(), "stop");
-        when(answers.answerTemporary(eq(9L), eq(runId.toString()), eq("current"), any(), any()))
+        when(answers.answerTemporary(eq(9L), eq(runId.toString()), eq("current"), any(),
+                eq(true), any()))
                 .thenReturn(answer);
         when(lifecycle.complete(admission, 9L, answer)).thenReturn(true);
         org.mockito.Mockito.doAnswer(invocation -> {
@@ -54,7 +55,7 @@ class TemporaryTurnRunnerTest {
                 .submit(admission, 9L, "current");
 
         verify(answers).answerTemporary(eq(9L), eq(runId.toString()), eq("current"),
-                eq(List.of("USER\tprior temporary message")), any());
+                eq(List.of("USER\tprior temporary message")), eq(true), any());
         verify(lifecycle).complete(admission, 9L, answer);
         verify(lifecycle, never()).fail(any(), eq(9L), any());
     }

@@ -89,6 +89,12 @@ public class AgentTurnFinalizer {
                             "sourceTurnId", history.turnId(), "role", history.role(),
                             "createdAt", history.createdAt().toString())));
         }
+        for (var source : answer.webSources()) {
+            mapper.insertWebSourceUse(userId, turnId, "web:" + source.index() + ":"
+                            + AgentTurnAdmissionService.sha256(source.url()), ++contextRank,
+                    source.title(), json(java.util.Map.of("index", source.index(),
+                            "url", source.url(), "siteName", source.siteName())));
+        }
         if (memoryEnabled) {
             try {
                 memories.captureUserMessage(userId, turnId);

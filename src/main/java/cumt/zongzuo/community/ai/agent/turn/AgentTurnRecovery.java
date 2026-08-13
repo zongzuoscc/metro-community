@@ -47,7 +47,8 @@ public class AgentTurnRecovery {
                     turn.getRunFence(), runId, fence, LEASE.toSeconds()) != 1) {
                 throw new IllegalStateException("Agent stale turn reclaim fence was lost");
             }
-            return new Recovery(new AgentTurnAdmission(turn.getId(), runId, fence, true, "RUNNING"),
+            return new Recovery(new AgentTurnAdmission(turn.getId(), runId, fence, true, "RUNNING",
+                    Boolean.TRUE.equals(turn.getWebSearchEnabled())),
                     turn.getUserId(), mapper.selectMessageContent(turn.getId(), turn.getUserId(), "USER"));
         });
         if (recovery == null) {

@@ -35,6 +35,11 @@ import static org.mockito.Mockito.when;
         "metro.ai.enabled=true",
         "metro.ai.agent.enabled=true",
         "metro.ai.memory.enabled=true",
+        // 这组用例只验证站内检索、记忆与持久 turn。联网搜索有独立的网关契约测试，
+        // 在此显式关闭可避免开发者本地 .env 中的真实密钥影响可重复的集成测试。
+        "metro.ai.web-search.enabled=false",
+        // 固定严格回答校验的期望模型，不允许开发机 .env 改变测试语义。
+        "metro.ai.platform.model=deepseek-v4-flash",
         "metro.ai.embedding.enabled=false",
         "metro.projection.article-chunks.enabled=true",
         "metro.projection.article-chunks.parser-generation=97",
@@ -236,6 +241,11 @@ class AgentAnswerIntegrationTest extends IntegrationTestSupport {
 
     @Test
     void persistentTurnsAutomaticallySaveAndRecallLowRiskMemory() throws Exception {
+        // 第一轮也会真实走回答生成，因此必须显式给出严格 JSON，
+        // 不依赖 Mockito 默认 null 或其它用例留下的 stub。
+        when(gateway.generate(any())).thenReturn(new AiChatResult("""
+                {"answer":"我会记住你偏好简洁的回答。","citations":[]}
+                """, "stop", 80, 18, "test", "deepseek-v4-flash"));
         HttpHeaders headers = new HttpHeaders();
         headers.setBearerAuth(jwtService.generate(USER_ID));
         headers.setContentType(MediaType.APPLICATION_JSON);

@@ -50,9 +50,15 @@ public class TemporaryTurnAdmissionService {
      */
     public TemporaryTurnAdmission admit(long userId, UUID sessionId, UUID requestId,
                                         String message, String pageContextJson) {
+        return admit(userId, sessionId, requestId, message, pageContextJson, true);
+    }
+
+    public TemporaryTurnAdmission admit(long userId, UUID sessionId, UUID requestId,
+                                        String message, String pageContextJson,
+                                        boolean webSearchEnabled) {
         sessions.require(userId, sessionId);
         String requestHash = AgentTurnAdmissionService.sha256(
-                message + "\n" + pageContextJson + "\nCOMMUNITY_QA");
+                message + "\n" + pageContextJson + "\nCOMMUNITY_QA\n" + webSearchEnabled);
         TemporaryTurnRecord existing = turns.findByRequest(userId, sessionId, requestId);
         if (existing != null) {
             if (!requestHash.equals(existing.requestHash())) {
@@ -102,10 +108,13 @@ public class TemporaryTurnAdmissionService {
                 // 先保存精确补偿句柄，再进入 Lua。这个顺序专门覆盖“服务端已提交，
                 // 客户端在收到返回包前断线”的不确定结果；补偿仍会用 runId + fence 精确限定。
                 TemporaryTurnAdmission value = new TemporaryTurnAdmission(turnId, sessionId,
-                        claim.runId(), claim.fence(), true, "RUNNING");
+                        claim.runId(), claim.fence(), true, "RUNNING", webSearchEnabled);
                 created.set(value);
                 TemporaryTurnRecord turn = turns.create(turnId, userId, sessionId, requestId,
-                        claim.runId(), claim.fence(), requestHash, message);
+                        claim.runId(), claim.fence(), requestHash, message, webSearchEnabled);
+                if (turn.webSearchEnabled() != webSearchEnabled) {
+                    throw new IllegalStateException("Temporary web search preference was not frozen");
+                }
                 value = admission(turn, true);
                 return value;
             });
@@ -170,7 +179,7 @@ public class TemporaryTurnAdmissionService {
 
     private static TemporaryTurnAdmission admission(TemporaryTurnRecord turn, boolean created) {
         return new TemporaryTurnAdmission(turn.turnId(), turn.sessionId(), turn.runId(),
-                turn.runFence(), created, turn.state());
+                turn.runFence(), created, turn.state(), turn.webSearchEnabled());
     }
 
     private record GuardClaim(UUID runId, long fence) {

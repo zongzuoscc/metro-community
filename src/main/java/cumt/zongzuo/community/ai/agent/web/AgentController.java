@@ -2,6 +2,7 @@ package cumt.zongzuo.community.ai.agent.web;
 
 import cumt.zongzuo.community.ai.agent.GroundedAgentAnswer;
 import cumt.zongzuo.community.ai.agent.GroundedAnswerService;
+import cumt.zongzuo.community.ai.agent.turn.AgentConversationPreferenceService;
 import cumt.zongzuo.community.ai.config.MetroAiProperties;
 import cumt.zongzuo.community.ai.web.AiApi;
 import cumt.zongzuo.community.ai.web.AiApiException;
@@ -23,13 +24,16 @@ public class AgentController {
     private final ObjectProvider<GroundedAnswerService> services;
     private final MetroAiProperties properties;
     private final Clock clock;
+    private final AgentConversationPreferenceService preferences;
 
     public AgentController(ObjectProvider<GroundedAnswerService> services,
                            MetroAiProperties properties,
-                           Clock clock) {
+                           Clock clock,
+                           AgentConversationPreferenceService preferences) {
         this.services = services;
         this.properties = properties;
         this.clock = clock;
+        this.preferences = preferences;
     }
 
     @PostMapping("/answer")
@@ -39,7 +43,9 @@ public class AgentController {
                 cumt.zongzuo.community.ai.provider.AiCapability.AGENT)) {
             throw AiApiException.disabled();
         }
-        return service.answer(CurrentUser.id(), request.clientRequestId().toString(),
-                request.message(), clock.instant().plus(properties.getAgent().getTaskTimeout()));
+        long userId = CurrentUser.id();
+        boolean webSearchEnabled = preferences.get(userId).enabled();
+        return service.answer(userId, request.clientRequestId().toString(), request.message(),
+                webSearchEnabled, clock.instant().plus(properties.getAgent().getTaskTimeout()));
     }
 }

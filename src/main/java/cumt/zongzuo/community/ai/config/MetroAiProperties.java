@@ -25,6 +25,7 @@ public class MetroAiProperties {
             Duration.ofMinutes(1), Duration.ofSeconds(45), Duration.ofSeconds(45), 4);
     private RuntimeProperties runtime = new RuntimeProperties();
     private PlatformProperties platform = new PlatformProperties();
+    private WebSearchProperties webSearch = new WebSearchProperties();
     private OllamaProperties ollama = new OllamaProperties();
 
     public boolean isEnabled() {
@@ -101,6 +102,14 @@ public class MetroAiProperties {
 
     public PlatformProperties getPlatform() {
         return platform;
+    }
+
+    public WebSearchProperties getWebSearch() {
+        return webSearch;
+    }
+
+    public void setWebSearch(WebSearchProperties webSearch) {
+        this.webSearch = webSearch;
     }
 
     public void setPlatform(PlatformProperties platform) {
@@ -341,6 +350,35 @@ public class MetroAiProperties {
         public void setModel(String model) {
             this.model = model;
         }
+    }
+
+    /**
+     * 平台提供的百炼联网搜索配置。
+     *
+     * <p>搜索与用户自带的生成模型分开：用户可以让自己的模型承担生成 Token，站点仍能
+     * 用统一、可审计的搜索服务返回来源。密钥继续只由后端环境变量注入。</p>
+     */
+    public static class WebSearchProperties {
+
+        private boolean enabled;
+        private String baseUrl = "";
+        private String model = "qwen-plus";
+        private String strategy = "turbo";
+        private int maxSources = 8;
+        private Duration timeout = Duration.ofSeconds(35);
+
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
+        public String getBaseUrl() { return baseUrl; }
+        public void setBaseUrl(String baseUrl) { this.baseUrl = baseUrl; }
+        public String getModel() { return model; }
+        public void setModel(String model) { this.model = model; }
+        public String getStrategy() { return strategy; }
+        public void setStrategy(String strategy) { this.strategy = strategy; }
+        public int getMaxSources() { return maxSources; }
+        public void setMaxSources(int maxSources) { this.maxSources = maxSources; }
+        public Duration getTimeout() { return timeout; }
+        public void setTimeout(Duration timeout) { this.timeout = timeout; }
     }
 
     public static class ModerationProperties extends CapabilityProperties {

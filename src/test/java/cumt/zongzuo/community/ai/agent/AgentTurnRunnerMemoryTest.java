@@ -49,7 +49,8 @@ class AgentTurnRunnerMemoryTest {
         doReturn(heartbeatFuture).when(heartbeat).scheduleAtFixedRate(
                 any(Runnable.class), anyLong(), anyLong(), any());
         when(leases.renew(41L, 9L, runId, 7L)).thenReturn(true);
-        when(answers.answer(eq(9L), eq(runId.toString()), eq("我喜欢简洁回答"), any()))
+        when(answers.answer(eq(9L), eq(runId.toString()), eq("我喜欢简洁回答"),
+                eq(true), any()))
                 .thenReturn(answer);
         when(finalizer.complete(41L, runId, 7L, answer)).thenReturn(true);
 
@@ -59,6 +60,7 @@ class AgentTurnRunnerMemoryTest {
 
         verify(events).append(41L, 9L, runId, 7L, "done", java.util.Map.of(
                 "finalMessage", "answer", "finishReason", "stop", "citationCount", 0,
+                "citations", java.util.List.of(), "webSources", java.util.List.of(),
                 "fundingSource", "PLATFORM", "provider", "", "model", ""));
     }
 
@@ -82,7 +84,7 @@ class AgentTurnRunnerMemoryTest {
         doReturn(heartbeatFuture).when(heartbeat).scheduleAtFixedRate(
                 any(Runnable.class), anyLong(), anyLong(), any());
         when(leases.renew(42L, 9L, runId, 8L)).thenReturn(true);
-        when(answers.answer(eq(9L), eq(runId.toString()), eq("question"), any()))
+        when(answers.answer(eq(9L), eq(runId.toString()), eq("question"), eq(true), any()))
                 .thenReturn(answer);
         when(finalizer.complete(42L, runId, 8L, answer)).thenReturn(true);
         new AgentTurnRunner(answers, finalizer, failures, events, executor, heartbeat, leases,
@@ -91,6 +93,7 @@ class AgentTurnRunnerMemoryTest {
 
         verify(events).append(42L, 9L, runId, 8L, "done", java.util.Map.of(
                 "finalMessage", "answer", "finishReason", "stop", "citationCount", 0,
+                "citations", java.util.List.of(), "webSources", java.util.List.of(),
                 "fundingSource", "PLATFORM", "provider", "", "model", ""));
         verify(failures, org.mockito.Mockito.never()).fail(anyLong(), anyLong(), any(), anyLong(), any());
     }

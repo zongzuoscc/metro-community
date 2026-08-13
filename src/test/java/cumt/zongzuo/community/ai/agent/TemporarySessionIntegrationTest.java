@@ -328,7 +328,8 @@ class TemporarySessionIntegrationTest extends IntegrationTestSupport {
                 assertThat(allowCreate.await(10, TimeUnit.SECONDS)).isTrue();
             }
             return invocation.callRealMethod();
-        }).when(temporaryTurns).create(anyLong(), anyLong(), any(), any(), any(), anyLong(), any(), any());
+        }).when(temporaryTurns).create(anyLong(), anyLong(), any(), any(), any(), anyLong(), any(),
+                any(), org.mockito.ArgumentMatchers.anyBoolean());
 
         try (var executor = Executors.newFixedThreadPool(2)) {
             var first = executor.submit(() -> restTemplate.postForEntity(url("/api/agent/turns"),
@@ -367,7 +368,8 @@ class TemporarySessionIntegrationTest extends IntegrationTestSupport {
                         "simulated lost Lua response");
             }
             return createdTurn;
-        }).when(temporaryTurns).create(anyLong(), anyLong(), any(), any(), any(), anyLong(), any(), any());
+        }).when(temporaryTurns).create(anyLong(), anyLong(), any(), any(), any(), anyLong(), any(),
+                any(), org.mockito.ArgumentMatchers.anyBoolean());
 
         ResponseEntity<String> uncertain = restTemplate.postForEntity(url("/api/agent/turns"),
                 new HttpEntity<>(body, jsonHeaders()), String.class);

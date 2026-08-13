@@ -87,9 +87,17 @@ public class TemporaryTurnStore {
      */
     public TemporaryTurnRecord create(long turnId, long userId, UUID sessionId, UUID requestId,
                                       UUID runId, long fence, String requestHash, String question) {
+        return create(turnId, userId, sessionId, requestId, runId, fence, requestHash,
+                question, true);
+    }
+
+    /** 创建时冻结联网偏好，临时 session 后续切换主对话设置也不会改变已运行的 turn。 */
+    public TemporaryTurnRecord create(long turnId, long userId, UUID sessionId, UUID requestId,
+                                      UUID runId, long fence, String requestHash, String question,
+                                      boolean webSearchEnabled) {
         TemporarySessionView session = sessions.require(userId, sessionId);
         TemporaryTurnRecord turn = new TemporaryTurnRecord(turnId, userId, sessionId, requestId,
-                runId, fence, requestHash, "RUNNING", question, null, null,
+                runId, fence, requestHash, "RUNNING", webSearchEnabled, question, null, null,
                 0, clock.instant(), null);
         // remaining() 会在进入 Lua 前先拒绝已过期 session；Lua 内仍使用 Redis TIME 再次封堵边界竞态。
         sessions.remaining(session);
@@ -142,7 +150,7 @@ public class TemporaryTurnStore {
         TemporarySessionView session = sessions.require(userId, turn.sessionId());
         TemporaryTurnRecord completed = new TemporaryTurnRecord(turn.turnId(), turn.userId(),
                 turn.sessionId(), turn.clientRequestId(), turn.runId(), turn.runFence(),
-                turn.requestHash(), "SUCCEEDED", turn.question(), answer, null,
+                turn.requestHash(), "SUCCEEDED", turn.webSearchEnabled(), turn.question(), answer, null,
                 citationCount, turn.createdAt(), clock.instant());
         Duration ttl = sessions.remaining(session);
         redis.opsForValue().set(key(turnId), encode(completed), ttl);
@@ -157,7 +165,7 @@ public class TemporaryTurnStore {
         TemporarySessionView session = sessions.require(userId, turn.sessionId());
         TemporaryTurnRecord failed = new TemporaryTurnRecord(turn.turnId(), turn.userId(),
                 turn.sessionId(), turn.clientRequestId(), turn.runId(), turn.runFence(),
-                turn.requestHash(), "FAILED", turn.question(), null, errorCode,
+                turn.requestHash(), "FAILED", turn.webSearchEnabled(), turn.question(), null, errorCode,
                 0, turn.createdAt(), clock.instant());
         redis.opsForValue().set(key(turnId), encode(failed), sessions.remaining(session));
         return true;
@@ -170,7 +178,7 @@ public class TemporaryTurnStore {
         TemporarySessionView session = sessions.require(userId, turn.sessionId());
         TemporaryTurnRecord cancelled = new TemporaryTurnRecord(turn.turnId(), turn.userId(),
                 turn.sessionId(), turn.clientRequestId(), turn.runId(), turn.runFence(),
-                turn.requestHash(), "CANCELLED", turn.question(), null, null, 0,
+                turn.requestHash(), "CANCELLED", turn.webSearchEnabled(), turn.question(), null, null, 0,
                 turn.createdAt(), clock.instant());
         redis.opsForValue().set(key(turnId), encode(cancelled), sessions.remaining(session));
         return true;

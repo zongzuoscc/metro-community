@@ -9,6 +9,7 @@ import java.util.UUID;
  */
 public record TemporaryTurnRecord(long turnId, long userId, UUID sessionId, UUID clientRequestId,
                                   UUID runId, long runFence, String requestHash, String state,
+                                  boolean webSearchEnabled,
                                   String question, String answer, String errorCode,
                                   int citationCount, Instant createdAt, Instant completedAt) {
 }

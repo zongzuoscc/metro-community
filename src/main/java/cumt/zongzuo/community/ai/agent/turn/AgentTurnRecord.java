@@ -17,6 +17,7 @@ public class AgentTurnRecord {
     private String taskType;
     private String pageContextJson;
     private String groundingMode;
+    private Boolean webSearchEnabled;
     private String state;
     private Long runFence;
     private LocalDateTime leaseUntil;

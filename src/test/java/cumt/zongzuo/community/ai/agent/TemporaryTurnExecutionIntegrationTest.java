@@ -67,7 +67,8 @@ class TemporaryTurnExecutionIntegrationTest extends IntegrationTestSupport {
 
     @Test
     void realRunnerCompletesWithoutDurableContentAndReleasesTheSharedGuard() throws Exception {
-        when(answers.answerTemporary(eq(OWNER), any(), eq("do not remember"), eq(List.of()), any()))
+        when(answers.answerTemporary(eq(OWNER), any(), eq("do not remember"), eq(List.of()),
+                eq(true), any()))
                 .thenReturn(new GroundedAgentAnswer("temporary answer", List.of(), "stop"));
         ResponseEntity<String> session = restTemplate.postForEntity(
                 url("/api/agent/temporary-sessions"), new HttpEntity<>(headers()), String.class);
@@ -94,7 +95,7 @@ class TemporaryTurnExecutionIntegrationTest extends IntegrationTestSupport {
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM agent_message WHERE user_id=?", Integer.class, OWNER)).isZero();
         verify(answers).answerTemporary(eq(OWNER), any(), eq("do not remember"),
-                eq(List.of()), any());
+                eq(List.of()), eq(true), any());
     }
 
     private JsonNode awaitSucceeded(long turnId) throws Exception {

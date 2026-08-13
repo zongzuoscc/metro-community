@@ -96,6 +96,20 @@ public interface AgentTurnMapper {
     @Select("SELECT id FROM agent_conversation WHERE user_id=#{userId} FOR UPDATE")
     Long selectConversationIdForUpdate(@Param("userId") long userId);
 
+    /** 读取当前主对话的联网偏好；新用户由数据库默认值开启。 */
+    @Select("SELECT web_search_enabled FROM agent_conversation WHERE user_id=#{userId}")
+    Boolean selectConversationWebSearch(@Param("userId") long userId);
+
+    /** 用户切换联网偏好时推进会话版本，便于后续设置页和历史页做乐观锁扩展。 */
+    @Update("""
+            UPDATE agent_conversation
+            SET web_search_enabled=#{enabled},lock_version=lock_version+1,
+                updated_at=CURRENT_TIMESTAMP(6)
+            WHERE user_id=#{userId}
+            """)
+    int updateConversationWebSearch(@Param("userId") long userId,
+                                    @Param("enabled") boolean enabled);
+
     @Insert("""
             INSERT IGNORE INTO agent_episode
                 (user_id,conversation_id,episode_no,state,opened_at,turn_count,token_count,
@@ -173,14 +187,15 @@ public interface AgentTurnMapper {
     @Insert("""
             INSERT INTO agent_turn
                 (user_id,conversation_id,episode_id,run_id,client_request_id,request_hash,
-                 task_type,page_context_json,grounding_mode,state,run_fence,lease_until,
+                 task_type,page_context_json,grounding_mode,web_search_enabled,state,run_fence,lease_until,
                  created_at,started_at)
             VALUES
                 (#{row.userId},#{row.conversationId},#{row.episodeId},
                  #{row.runId,typeHandler=cumt.zongzuo.community.event.persistence.UuidBinaryTypeHandler},
                  #{row.clientRequestId,typeHandler=cumt.zongzuo.community.event.persistence.UuidBinaryTypeHandler},
-                 #{row.requestHash},#{row.taskType},#{row.pageContextJson},'COMMUNITY_ONLY',
-                 'RUNNING',#{row.runFence},DATE_ADD(CURRENT_TIMESTAMP(6), INTERVAL #{leaseSeconds} SECOND),
+                 #{row.requestHash},#{row.taskType},#{row.pageContextJson},'MIXED_SOURCES',
+                 #{row.webSearchEnabled},'RUNNING',#{row.runFence},
+                 DATE_ADD(CURRENT_TIMESTAMP(6), INTERVAL #{leaseSeconds} SECOND),
                  CURRENT_TIMESTAMP(6),CURRENT_TIMESTAMP(6))
             """)
     @Options(useGeneratedKeys = true, keyProperty = "row.id")
@@ -242,6 +257,23 @@ public interface AgentTurnMapper {
                                  @Param("rankNo") int rankNo,
                                  @Param("excerpt") String excerpt,
                                  @Param("metadataJson") String metadataJson);
+
+    /** 保存本轮真正采用的联网来源快照，便于历史回看和问题审计。 */
+    @Insert("""
+            INSERT INTO agent_retrieval_hit
+                (user_id,turn_id,source_type,source_key,article_id,revision_id,chunk_id,
+                 memory_id,bm25_score,dense_score,rrf_score,rank_no,excerpt_snapshot,
+                 metadata_json,expires_at)
+            VALUES (#{userId},#{turnId},'WEB',#{sourceKey},NULL,NULL,NULL,NULL,
+                    NULL,NULL,1.0,#{rankNo},#{title},#{metadataJson},
+                    DATE_ADD(CURRENT_TIMESTAMP(6), INTERVAL 30 DAY))
+            """)
+    int insertWebSourceUse(@Param("userId") long userId,
+                           @Param("turnId") long turnId,
+                           @Param("sourceKey") String sourceKey,
+                           @Param("rankNo") int rankNo,
+                           @Param("title") String title,
+                           @Param("metadataJson") String metadataJson);
 
     @Update("""
             UPDATE agent_turn

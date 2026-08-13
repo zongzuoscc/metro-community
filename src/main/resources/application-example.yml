@@ -137,6 +137,13 @@ metro:
       base-url: ${METRO_AI_PLATFORM_BASE_URL:}
       api-key: ${METRO_AI_PLATFORM_API_KEY:}
       model: ${METRO_AI_PLATFORM_MODEL:qwen-plus}
+    web-search:
+      enabled: ${METRO_AI_WEB_SEARCH_ENABLED:false}
+      base-url: ${METRO_AI_WEB_SEARCH_BASE_URL:}
+      model: ${METRO_AI_WEB_SEARCH_MODEL:qwen-plus}
+      strategy: ${METRO_AI_WEB_SEARCH_STRATEGY:turbo}
+      max-sources: ${METRO_AI_WEB_SEARCH_MAX_SOURCES:8}
+      timeout: ${METRO_AI_WEB_SEARCH_TIMEOUT:PT35S}
     ollama:
       base-url: ${OLLAMA_BASE_URL:http://127.0.0.1:11434}
       model: "${OLLAMA_EMBEDDING_MODEL:metro-bge-m3:790764642607}"

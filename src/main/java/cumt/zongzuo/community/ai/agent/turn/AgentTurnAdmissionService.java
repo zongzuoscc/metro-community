@@ -113,6 +113,8 @@ public class AgentTurnAdmissionService {
         mapper.ensureConversation(command.userId());
         long conversationId = required(mapper.selectConversationIdForUpdate(command.userId()),
                 "conversation");
+        boolean webSearchEnabled = Boolean.TRUE.equals(
+                mapper.selectConversationWebSearch(command.userId()));
         mapper.ensureActiveEpisode(command.userId(), conversationId);
         long episodeId = required(mapper.selectActiveEpisodeIdForUpdate(command.userId(),
                 conversationId), "active episode");
@@ -124,7 +126,8 @@ public class AgentTurnAdmissionService {
                 throw AiApiException.idempotencyConflict();
             }
             return new PendingAdmission(new AgentTurnAdmission(existing.getId(), existing.getRunId(),
-                    existing.getRunFence(), false, existing.getState()));
+                    existing.getRunFence(), false, existing.getState(),
+                    Boolean.TRUE.equals(existing.getWebSearchEnabled())));
         }
         AgentRunGuardRecord guard = mapper.selectGuardForUpdate(command.userId());
         if (guard == null) {
@@ -149,6 +152,7 @@ public class AgentTurnAdmissionService {
         turn.setRequestHash(requestHash);
         turn.setTaskType(command.taskType());
         turn.setPageContextJson(command.pageContextJson());
+        turn.setWebSearchEnabled(webSearchEnabled);
         turn.setRunFence(fence);
         mapper.insertTurn(turn, LEASE.toSeconds());
         mapper.insertUserMessage(command.userId(), turn.getId(), conversationId, episodeId,
@@ -161,7 +165,7 @@ public class AgentTurnAdmissionService {
                 DomainEventType.AGENT_TURN_REQUESTED, 1, payload,
                 "AGENT_TURN:" + turn.getId() + ":1:" + fence + ":AGENT_TURN_REQUESTED");
         return new PendingAdmission(new AgentTurnAdmission(turn.getId(), runId, fence, true,
-                "RUNNING"));
+                "RUNNING", webSearchEnabled));
     }
 
     private void assertRedisAvailable() {

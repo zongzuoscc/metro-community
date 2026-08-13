@@ -4,6 +4,8 @@ import cumt.zongzuo.community.ai.agent.GroundedAgentAnswer;
 import cumt.zongzuo.community.ai.agent.GroundedAnswerService;
 import org.springframework.stereotype.Service;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -22,6 +24,8 @@ import java.util.concurrent.TimeUnit;
 @Service
 @ConditionalOnProperty(name = {"metro.ai.enabled", "metro.ai.agent.enabled"}, havingValue = "true")
 public class AgentTurnRunner {
+
+    private static final Logger log = LoggerFactory.getLogger(AgentTurnRunner.class);
 
     private final GroundedAnswerService answers;
     private final AgentTurnFinalizer finalizer;
@@ -63,11 +67,13 @@ public class AgentTurnRunner {
                     () -> turnLeases.renew(admission.turnId(), userId, admission.runId(),
                             admission.runFence()), 30, 30, TimeUnit.SECONDS);
             events.append(admission.turnId(), userId, admission.runId(), admission.runFence(),
-                    "retrieving", Map.of("strategy", "HYBRID", "queryCount", 1));
+                    "retrieving", Map.of("strategy", "HYBRID", "queryCount", 1,
+                            "webSearchEnabled", admission.webSearchEnabled()));
             events.append(admission.turnId(), userId, admission.runId(), admission.runFence(),
                     "generating", Map.of("phase", "grounded_answer"));
             GroundedAgentAnswer answer = answers.answer(userId,
-                    admission.runId().toString(), question, clock.instant().plus(Duration.ofMinutes(2)));
+                    admission.runId().toString(), question, admission.webSearchEnabled(),
+                    clock.instant().plus(Duration.ofMinutes(2)));
             if (!turnLeases.renew(admission.turnId(), userId, admission.runId(),
                     admission.runFence())) {
                 return;
@@ -75,12 +81,24 @@ public class AgentTurnRunner {
             if (!finalizer.complete(admission.turnId(), admission.runId(), admission.runFence(), answer)) {
                 return;
             }
+            Map<String, Object> done = new java.util.LinkedHashMap<>();
+            done.put("finalMessage", answer.answer());
+            done.put("finishReason", answer.finishReason());
+            done.put("citationCount", answer.citations().size());
+            done.put("citations", answer.citations());
+            done.put("webSources", answer.webSources());
+            done.put("fundingSource", answer.fundingSource().name());
+            done.put("provider", safe(answer.provider()));
+            done.put("model", safe(answer.model()));
             events.append(admission.turnId(), userId, admission.runId(), admission.runFence(),
-                    "done", Map.of("finalMessage", answer.answer(),
-                            "finishReason", answer.finishReason(), "citationCount",
-                            answer.citations().size(), "fundingSource", answer.fundingSource().name(),
-                            "provider", safe(answer.provider()), "model", safe(answer.model())));
+                    "done", done);
         } catch (RuntimeException error) {
+            // 异步执行不能把异常静默吞掉，否则前端只会看到通用“不可用”，运维也无法区分
+            // 是联网检索、模型响应格式还是事务提交失败。这里只记录异常类型与根因类型，
+            // 不记录问题、回答、联网摘要、URL 或密钥，避免诊断日志变成第二份用户数据。
+            log.warn("Agent turn execution failed turnId={} exceptionType={} rootCauseType={} reason={}",
+                    admission.turnId(), error.getClass().getName(), rootCauseType(error),
+                    safeDiagnostic(error.getMessage()));
             if (failures.fail(admission.turnId(), userId, admission.runId(), admission.runFence(),
                     "AGENT_EXECUTION_FAILED")) {
                 events.append(admission.turnId(), userId, admission.runId(), admission.runFence(),
@@ -96,5 +114,22 @@ public class AgentTurnRunner {
 
     private static String safe(String value) {
         return value == null ? "" : value;
+    }
+
+    private static String rootCauseType(Throwable error) {
+        Throwable current = error;
+        while (current.getCause() != null && current.getCause() != current) {
+            current = current.getCause();
+        }
+        return current.getClass().getName();
+    }
+
+    private static String safeDiagnostic(String value) {
+        if (value == null || value.isBlank()) {
+            return "unspecified";
+        }
+        // 异常消息来自后端预定义校验文本；仍截断并清理换行，禁止意外把供应商正文带入日志。
+        String normalized = value.replaceAll("[\\r\\n]+", " ").strip();
+        return normalized.substring(0, Math.min(normalized.length(), 160));
     }
 }

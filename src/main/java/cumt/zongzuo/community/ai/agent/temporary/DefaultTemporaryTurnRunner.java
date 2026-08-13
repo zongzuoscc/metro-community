@@ -70,15 +70,21 @@ public class DefaultTemporaryTurnRunner implements TemporaryTurnRunner {
             GroundedAgentAnswer answer = answers.answerTemporary(userId,
                     admission.runId().toString(), question,
                     turns.previousContext(userId, admission.sessionId(), question),
-                    clock.instant().plus(Duration.ofMinutes(2)));
+                    admission.webSearchEnabled(), clock.instant().plus(Duration.ofMinutes(2)));
             if (!lifecycle.renew(userId, admission.runId(), admission.runFence())) return;
             // 先在栕栏事务内完成 turn，再发 done 事件；SSE 始终只是短期进度通道。
             if (!lifecycle.complete(admission, userId, answer)) return;
+            Map<String, Object> done = new java.util.LinkedHashMap<>();
+            done.put("finalMessage", answer.answer());
+            done.put("finishReason", answer.finishReason());
+            done.put("citationCount", answer.citations().size());
+            done.put("citations", answer.citations());
+            done.put("webSources", answer.webSources());
+            done.put("fundingSource", answer.fundingSource().name());
+            done.put("provider", safe(answer.provider()));
+            done.put("model", safe(answer.model()));
             events.append(admission.turnId(), userId, admission.runId(), admission.runFence(),
-                    "done", Map.of("finalMessage", answer.answer(), "finishReason",
-                            answer.finishReason(), "citationCount", answer.citations().size(),
-                            "fundingSource", answer.fundingSource().name(),
-                            "provider", safe(answer.provider()), "model", safe(answer.model())));
+                    "done", done);
         } catch (RuntimeException error) {
             if (lifecycle.fail(admission, userId, "AGENT_EXECUTION_FAILED")) {
                 events.append(admission.turnId(), userId, admission.runId(), admission.runFence(),

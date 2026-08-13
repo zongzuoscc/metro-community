@@ -11,6 +11,7 @@ import cumt.zongzuo.community.ai.agent.turn.AgentTurnEventStore;
 import cumt.zongzuo.community.ai.agent.turn.AgentTurnQueryService;
 import cumt.zongzuo.community.ai.agent.turn.AgentTurnRunner;
 import cumt.zongzuo.community.ai.agent.turn.AgentTurnSnapshot;
+import cumt.zongzuo.community.ai.agent.turn.AgentConversationPreferenceService;
 import cumt.zongzuo.community.ai.agent.temporary.TemporaryTurnAdmission;
 import cumt.zongzuo.community.ai.agent.temporary.TemporaryTurnAdmissionService;
 import cumt.zongzuo.community.ai.agent.temporary.TemporaryTurnRunner;
@@ -26,6 +27,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -60,6 +62,7 @@ public class AgentTurnController {
     private final ObjectProvider<TemporaryTurnRunner> temporaryRunners;
     private final MetroAiProperties properties;
     private final ObjectMapper objectMapper;
+    private final AgentConversationPreferenceService preferences;
 
     public AgentTurnController(AgentTurnAdmissionService admissions,
                                TemporaryTurnAdmissionService temporaryAdmissions,
@@ -68,7 +71,8 @@ public class AgentTurnController {
                                AgentTurnCancellationService cancellations,
                                ObjectProvider<AgentTurnRunner> runners,
                                ObjectProvider<TemporaryTurnRunner> temporaryRunners,
-                               MetroAiProperties properties, ObjectMapper objectMapper) {
+                               MetroAiProperties properties, ObjectMapper objectMapper,
+                               AgentConversationPreferenceService preferences) {
         this.admissions = admissions;
         this.temporaryAdmissions = temporaryAdmissions;
         this.queries = queries;
@@ -78,6 +82,20 @@ public class AgentTurnController {
         this.temporaryRunners = temporaryRunners;
         this.properties = properties;
         this.objectMapper = objectMapper;
+        this.preferences = preferences;
+    }
+
+    /** 返回当前用户唯一主对话的联网偏好；默认值为开启。 */
+    @GetMapping("/web-search-setting")
+    public AgentConversationPreferenceService.WebSearchPreference webSearchSetting() {
+        return preferences.get(CurrentUser.id());
+    }
+
+    /** 更新主对话联网偏好，新 turn 会在接纳时冻结该值，运行中请求不被中途改变。 */
+    @PutMapping("/web-search-setting")
+    public AgentConversationPreferenceService.WebSearchPreference webSearchSetting(
+            @Valid @RequestBody AgentWebSearchSettingRequest request) {
+        return preferences.update(CurrentUser.id(), request.enabled());
     }
 
     /**
@@ -128,7 +146,8 @@ public class AgentTurnController {
         long userId = CurrentUser.id();
         TemporaryTurnAdmission admission = temporaryAdmissions.admit(userId,
                 request.temporarySessionId(), request.clientRequestId(), request.message(),
-                contextJson(request.context()));
+                contextJson(request.context()),
+                preferences.getWithoutCreatingConversation(userId).enabled());
         if (admission.created()) {
             try {
                 events.append(admission.turnId(), userId, admission.runId(), admission.runFence(),

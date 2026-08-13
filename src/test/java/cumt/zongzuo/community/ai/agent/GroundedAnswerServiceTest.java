@@ -10,6 +10,9 @@ import cumt.zongzuo.community.ai.agent.history.AgentConversationHistoryHit;
 import cumt.zongzuo.community.ai.agent.history.AgentConversationHistorySearchService;
 import cumt.zongzuo.community.ai.agent.memory.AgentMemoryRecallService;
 import cumt.zongzuo.community.ai.agent.memory.AgentMemoryView;
+import cumt.zongzuo.community.ai.agent.websearch.AgentWebSearchGateway;
+import cumt.zongzuo.community.ai.agent.websearch.AgentWebSearchResult;
+import cumt.zongzuo.community.ai.agent.websearch.AgentWebSource;
 import cumt.zongzuo.community.ai.provider.AiCapability;
 import cumt.zongzuo.community.ai.provider.AiChatGateway;
 import cumt.zongzuo.community.ai.provider.AiChatResult;
@@ -43,6 +46,7 @@ class GroundedAnswerServiceTest {
     private final AgentMemoryRecallService memories = mock(AgentMemoryRecallService.class);
     private final AgentConversationHistorySearchService history =
             mock(AgentConversationHistorySearchService.class);
+    private final AgentWebSearchGateway webSearch = mock(AgentWebSearchGateway.class);
     private final AtomicInteger calls = new AtomicInteger();
     private final ResolvedArticleChunk source = new ResolvedArticleChunk(31L, 301L, 3001L, 0,
             "MySQL locks", List.of("Transactions"),
@@ -164,6 +168,96 @@ class GroundedAnswerServiceTest {
         assertThat(answer.historyUses()).isEmpty();
     }
 
+    @Test
+    void enabledWebSearchRunsEvenWithCommunitySourcesAndKeepsSourceCategoriesSeparate() {
+        retrievalResult(List.of(source));
+        when(webSearch.search(any(), any())).thenReturn(new AgentWebSearchResult(
+                "网上资料补充：MySQL 官方建议保持事务简短。",
+                List.of(new AgentWebSource(1, "MySQL 事务文档",
+                        "https://dev.mysql.com/doc/refman/8.4/en/commit.html", "MySQL"))));
+        when(gateway.generate(any())).thenReturn(new AiChatResult("""
+                {"answer":"【站内文章】可以用行锁串行化写入。[1]\\n\\n【联网搜索】同时应保持事务简短。[W1]","citations":[
+                  {"marker":1,"sourceId":"A301:R3001:C31",
+                   "quote":"Use SELECT FOR UPDATE to serialize writers"}]}
+                """, "stop", 120, 32, "test", "deepseek-test"));
+
+        GroundedAgentAnswer answer = service().answer(9L, "request-web", "如何控制并发写入？",
+                true, Instant.parse("2026-08-12T00:00:30Z"));
+
+        verify(webSearch).search("如何控制并发写入？", Instant.parse("2026-08-12T00:00:30Z"));
+        assertThat(answer.citations()).hasSize(1);
+        assertThat(answer.webSources()).containsExactly(new AgentWebSource(1, "MySQL 事务文档",
+                "https://dev.mysql.com/doc/refman/8.4/en/commit.html", "MySQL"));
+        var command = org.mockito.ArgumentCaptor.forClass(
+                cumt.zongzuo.community.ai.provider.AiChatCommand.class);
+        verify(gateway).generate(command.capture());
+        assertThat(command.getValue().messages().toString())
+                .contains("网上资料补充", "dev.mysql.com", "Use SELECT FOR UPDATE");
+    }
+
+    @Test
+    void disabledWebSearchNeverCallsTheExternalGateway() {
+        retrievalResult(List.of());
+        when(gateway.generate(any())).thenReturn(new AiChatResult("""
+                {"answer":"【模型通用知识】这是不联网的回答。","citations":[]}
+                """, "stop", 20, 8, "test", "deepseek-test"));
+
+        service().answer(9L, "request-web-off", "不要联网", false,
+                Instant.parse("2026-08-12T00:00:30Z"));
+
+        verify(webSearch, never()).search(any(), any());
+    }
+
+    @Test
+    void webOnlyAnswerKeepsItsWebLabelInsteadOfBeingRelabeledAsModelKnowledge() {
+        retrievalResult(List.of());
+        when(webSearch.search(any(), any())).thenReturn(new AgentWebSearchResult(
+                "北京今天晴朗。[W1]", List.of(new AgentWebSource(1, "天气资料",
+                "https://example.com/weather", "Example"))));
+        when(gateway.generate(any())).thenReturn(new AiChatResult("""
+                {"answer":"【联网搜索】北京今天晴朗。[W1]","citations":[]}
+                """, "stop", 30, 8, "test", "deepseek-test"));
+
+        GroundedAgentAnswer answer = service().answer(9L, "request-web-only", "北京天气",
+                true, Instant.parse("2026-08-12T00:00:30Z"));
+
+        assertThat(answer.answer()).startsWith("【联网搜索】");
+        assertThat(answer.webSources()).extracting(AgentWebSource::index).containsExactly(1);
+    }
+
+    @Test
+    void rejectsAnInventedWebMarker() {
+        retrievalResult(List.of());
+        when(webSearch.search(any(), any())).thenReturn(new AgentWebSearchResult(
+                "只提供了一个联网来源。[W1]", List.of(new AgentWebSource(1, "来源一",
+                "https://example.com/one", "Example"))));
+        when(gateway.generate(any())).thenReturn(new AiChatResult("""
+                {"answer":"【联网搜索】这是一个伪造来源。[W9]","citations":[]}
+                """, "stop", 30, 8, "test", "deepseek-test"));
+
+        assertThatThrownBy(() -> service().answer(9L, "request-web-invented", "问题",
+                true, Instant.parse("2026-08-12T00:00:30Z")))
+                .isInstanceOf(InvalidAgentAnswerException.class);
+    }
+
+    @Test
+    void removesOnlyAuthorizedRedundantWebCitationsReturnedByTheModel() {
+        retrievalResult(List.of());
+        when(webSearch.search(any(), any())).thenReturn(new AgentWebSearchResult(
+                "广州今天有雨。[W2]", List.of(new AgentWebSource(2, "广州天气",
+                "https://example.com/guangzhou", "Example"))));
+        when(gateway.generate(any())).thenReturn(new AiChatResult("""
+                {"answer":"【联网搜索】广州今天有雨。[W2]","citations":[
+                  {"marker":"[W2]","sourceId":"webSearch","quote":"广州今天有雨"}]}
+                """, "stop", 30, 8, "test", "deepseek-test"));
+
+        GroundedAgentAnswer answer = service().answer(9L, "request-web-redundant", "广州天气",
+                true, Instant.parse("2026-08-12T00:00:30Z"));
+
+        assertThat(answer.citations()).isEmpty();
+        assertThat(answer.webSources()).extracting(AgentWebSource::index).containsExactly(2);
+    }
+
     private void retrievalResult(List<ResolvedArticleChunk> chunks) {
         when(retrieval.retrieve(any(ArticleRetrievalQuery.class))).thenReturn(new ArticleRetrievalResult(
                 chunks.size(), chunks.size(), true, true, chunks,
@@ -180,7 +274,8 @@ class GroundedAnswerServiceTest {
         return new GroundedAnswerService(retrieval, new DirectExecutor(), router,
                 new GroundedAnswerParser(new ObjectMapper()),
                 Clock.fixed(Instant.parse("2026-08-12T00:00:00Z"), ZoneOffset.UTC),
-                "deepseek-test", Duration.ofSeconds(30), memories, history, memoryEnabled);
+                "deepseek-test", Duration.ofSeconds(30), memories, history, memoryEnabled,
+                webSearch);
     }
 
     private final class DirectExecutor implements AiCapabilityExecutor {
