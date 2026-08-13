@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({
   setAgentMemoryState: vi.fn(),
   updateAgentMemorySetting: vi.fn(),
   deleteAgentMemory: vi.fn(),
+  createAgentMemory: vi.fn(),
+  updateAgentMemoryExpiry: vi.fn(),
   confirm: vi.fn(),
 }))
 
@@ -20,6 +22,8 @@ vi.mock('../api/agent', () => ({
   setAgentMemoryState: mocks.setAgentMemoryState,
   updateAgentMemorySetting: mocks.updateAgentMemorySetting,
   deleteAgentMemory: mocks.deleteAgentMemory,
+  createAgentMemory: mocks.createAgentMemory,
+  updateAgentMemoryExpiry: mocks.updateAgentMemoryExpiry,
 }))
 
 vi.mock('element-plus', () => ({
@@ -84,5 +88,37 @@ describe('桌宠长期记忆中心', () => {
     await flushPromises()
     expect(mocks.deleteAgentMemory).toHaveBeenCalledWith(7)
     expect(wrapper.text()).not.toContain('请先给结论')
+  })
+
+  it('手动添加可设到期时间，列表同时展示来源并可改为永不过期', async () => {
+    mocks.createAgentMemory.mockResolvedValue({
+      id: 9, category: 'GOAL', content: '今年完成 Agent 项目', version: 1,
+      state: 'ACTIVE', sourceType: 'MANUAL', expiresAt: '2099-08-13T10:30:00',
+    })
+    mocks.updateAgentMemoryExpiry.mockResolvedValue({
+      id: 9, category: 'GOAL', content: '今年完成 Agent 项目', version: 1,
+      state: 'ACTIVE', sourceType: 'MANUAL', expiresAt: null,
+    })
+    const wrapper = mount(AgentMemoryCenter)
+    await flushPromises()
+
+    await wrapper.get('[data-test="memory-add-toggle"]').trigger('click')
+    await wrapper.get('[data-test="memory-create-category"]').setValue('GOAL')
+    await wrapper.get('[data-test="memory-create-content"]').setValue('今年完成 Agent 项目')
+    await wrapper.get('[data-test="memory-create-expiry"]').setValue('2099-08-13T10:30')
+    await wrapper.get('[data-test="memory-create-form"]').trigger('submit')
+    await flushPromises()
+
+    expect(mocks.createAgentMemory).toHaveBeenCalledWith({
+      category: 'GOAL', content: '今年完成 Agent 项目', expiresAt: '2099-08-13T10:30:00',
+    })
+    expect(wrapper.text()).toContain('手动添加')
+    expect(wrapper.text()).toContain('2099')
+    await wrapper.get('[data-test="memory-expiry-never-9"]').trigger('click')
+    await flushPromises()
+    expect(mocks.updateAgentMemoryExpiry).toHaveBeenCalledWith(9, {
+      expiresAt: null, expectedVersion: 1,
+    })
+    expect(wrapper.text()).toContain('永不过期')
   })
 })

@@ -195,6 +195,8 @@
         <div class="agent-composer__meta">
           <span>{{ temporaryEnabled ? '临时对话，不保存历史' : '普通对话' }}</span>
           <div class="agent-composer__options">
+            <button v-if="!temporaryEnabled" data-test="agent-reset-context" type="button"
+                    :disabled="taskLoading" @click="resetContext">清空上下文</button>
             <button data-test="web-search-toggle" type="button" :disabled="webSearchLoading"
                     :aria-pressed="webSearchEnabled" @click="toggleWebSearch">
               {{ webSearchEnabled ? '联网开' : '联网关' }}
@@ -214,6 +216,10 @@
             @keydown.enter.exact.prevent="sendChat"
           ></textarea>
           <button type="button" :disabled="!draft.trim() || taskLoading" aria-label="发送" @click="sendChat">↑</button>
+        </div>
+        <div v-if="taskLoading || retryQuestion" class="agent-composer__runtime-actions">
+          <button v-if="taskLoading && activeTurnId" data-test="agent-stop" type="button" @click="stopChat">停止回答</button>
+          <button v-else-if="retryQuestion" data-test="agent-retry" type="button" @click="sendChat(retryQuestion)">重试上一问</button>
         </div>
         <p class="agent-funding">{{ fundingLabel }}</p>
       </footer>
@@ -240,6 +246,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import AgentMemoryCenter from './AgentMemoryCenter.vue'
 import {
+  cancelAgentTurn,
   createAgentTurn,
   createTemporarySession,
   createWritingSuggestion,
@@ -250,6 +257,7 @@ import {
   streamAgentTurnEvents,
   summarizeArticle,
   updateAgentWebSearchSetting,
+  resetAgentConversationContext,
 } from '../api/agent'
 import { clearAgentPageContext, useAgentPageContext } from '../composables/useAgentPageContext'
 import metroPet from '../assets/agent/metro-pet.png'
@@ -265,6 +273,9 @@ const draft = ref('')
 const messages = ref([])
 const taskLoading = ref(false)
 const taskStatus = ref('正在思考')
+const activeTurnId = ref(null)
+const retryQuestion = ref('')
+const contextResetting = ref(false)
 const suggestion = ref(null)
 const memoryCenterOpen = ref(false)
 const funding = ref({ fundingSource: 'PLATFORM', provider: null, model: null })
@@ -300,6 +311,8 @@ function resetPrivateState() {
   temporarySession.value = null
   draft.value = ''
   taskLoading.value = false
+  activeTurnId.value = null
+  retryQuestion.value = ''
   sessionLoading.value = false
   funding.value = { fundingSource: 'PLATFORM', provider: null, model: null }
   webSearchEnabled.value = true
@@ -536,12 +549,14 @@ function applySuggestion() {
 }
 
 /** 自由对话沿用既有 turn/SSE 契约，并把页面类型与文章 ID 显式交给后端。 */
-async function sendChat() {
-  const question = draft.value.trim()
+async function sendChat(questionOverride = null) {
+  const question = typeof questionOverride === 'string' ? questionOverride.trim() : draft.value.trim()
   if (!question || taskLoading.value) return
   taskLoading.value = true
   taskStatus.value = '正在检索社区内容'
   draft.value = ''
+  retryQuestion.value = ''
+  let stopRequested = false
   const pendingUserMessage = { id: `user-${Date.now()}`, role: 'user', content: question, turnId: null }
   messages.value.push(pendingUserMessage)
   selectedHistoryTurnId.value = null
@@ -557,9 +572,10 @@ async function sendChat() {
         articleId: pageContext.value.articleId,
       },
     })
-    pendingUserMessage.turnId = admission.turnId
     // admission 返回前账号可能已切换；此时不能用新账号令牌继续订阅旧账号的 turn。
     if (requestEpoch !== authenticationEpoch) return
+    pendingUserMessage.turnId = admission.turnId
+    activeTurnId.value = admission.turnId
     streamController?.abort()
     streamController = new AbortController()
     await streamAgentTurnEvents(admission.turnId, {
@@ -585,13 +601,64 @@ async function sendChat() {
             loadHistory(false)
           }
         }
+        if (event.type === 'cancelled') {
+          stopRequested = true
+          markCancelled(admission.turnId, question)
+        }
       },
     })
     await scrollToLatest()
-  } catch {
-    if (requestEpoch === authenticationEpoch) ElMessage.error('消息发送失败，请检查网络后重试')
+  } catch (error) {
+    if (requestEpoch === authenticationEpoch && error?.name !== 'AbortError' && !stopRequested) {
+      retryQuestion.value = question
+      ElMessage.error('消息发送失败，可重试上一问')
+    }
   } finally {
-    if (requestEpoch === authenticationEpoch) taskLoading.value = false
+    if (requestEpoch === authenticationEpoch) {
+      taskLoading.value = false
+      activeTurnId.value = null
+      streamController = null
+    }
+  }
+}
+
+/** 取消事件可能同时从 SSE 和 POST 响应到达，使用稳定 ID 去重避免显示两次。 */
+function markCancelled(turnId, question) {
+  retryQuestion.value = question
+  const id = `cancelled-${turnId}`
+  if (!messages.value.some(message => message.id === id)) {
+    messages.value.push({ id, role: 'assistant',
+      content: '已停止这次回答，你可以重试原问题。', turnId })
+  }
+}
+
+/** 先让后端通过 run fence 终止真实任务，再中断本地 SSE，避免只停动画却继续消耗模型额度。 */
+async function stopChat() {
+  const turnId = activeTurnId.value
+  if (!turnId || !taskLoading.value) return
+  const question = messages.value.findLast(message => message.role === 'user' && message.turnId === turnId)?.content || ''
+  try {
+    await cancelAgentTurn(turnId)
+    markCancelled(turnId, question)
+    streamController?.abort()
+  } catch {
+    ElMessage.error('停止失败，请稍后重试')
+  }
+}
+
+/** 新 episode 只改变后续模型可检索的对话范围，已有历史在界面中继续可见。 */
+async function resetContext() {
+  if (taskLoading.value || contextResetting.value) return
+  contextResetting.value = true
+  try {
+    await resetAgentConversationContext()
+    messages.value = []
+    retryQuestion.value = ''
+    ElMessage.success('已开始新的上下文，历史对话仍保留')
+  } catch {
+    ElMessage.error('清空上下文失败，请先结束当前回答')
+  } finally {
+    contextResetting.value = false
   }
 }
 
@@ -972,6 +1039,12 @@ onMounted(() => {
 .agent-composer textarea { min-height: 38px; resize: none; border: 0; outline: 0; background: transparent; color: #29231e; font: inherit; font-size: 12px; }
 .agent-composer__box > button { width: 40px; height: 40px; border: 0; border-radius: 6px; background: #a55245; color: #fff; font-size: 17px; cursor: pointer; }
 .agent-composer__box > button:disabled { opacity: .45; cursor: not-allowed; }
+.agent-composer__runtime-actions { display: flex; justify-content: flex-end; margin-top: 6px; }
+.agent-composer__runtime-actions button {
+  min-height: 29px; padding: 0 10px; border: 1px solid #c79f95; border-radius: 5px;
+  background: #fffdf9; color: #8c493f; font: inherit; font-size: 10px; cursor: pointer;
+}
+.agent-composer__runtime-actions button:hover { border-color: #a55245; background: #f8eae5; }
 .agent-funding { margin: 6px 1px 0; color: #847970; font-size: 9px; }
 
 .agent-pet { position: relative; width: 96px; min-height: 116px; padding: 4px 6px 8px; border: 0; background: transparent; cursor: grab; touch-action: none; user-select: none; filter: drop-shadow(0 9px 8px rgba(47, 32, 21, .18)); }

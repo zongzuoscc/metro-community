@@ -15,6 +15,7 @@ vi.mock('../utils/request', () => ({
 
 import {
   cancelAgentTurn,
+  createAgentMemory,
   createAgentTurn,
   createTemporarySession,
   deleteTemporarySession,
@@ -26,7 +27,9 @@ import {
   setAgentMemoryState,
   updateAgentMemorySetting,
   deleteAgentMemory,
+  resetAgentConversationContext,
   streamAgentTurnEvents,
+  updateAgentMemoryExpiry,
 } from './agent'
 
 describe('Agent 前端接口契约', () => {
@@ -39,25 +42,34 @@ describe('Agent 前端接口契约', () => {
 
   it('uses owner-scoped raw endpoints for memory management', async () => {
     get.mockResolvedValue([])
+    post.mockResolvedValue({ id: 8, version: 1 })
     put.mockResolvedValue({ id: 7, version: 2 })
     deleteRequest.mockResolvedValue(undefined)
 
     await getAgentMemories()
     await getAgentMemorySetting()
+    await createAgentMemory({ category: 'GOAL', content: '完成 Agent', expiresAt: null })
     await updateAgentMemory(7, { content: '偏好简洁回答', expectedVersion: 1 })
     await setAgentMemoryState(7, { paused: true, expectedVersion: 2 })
+    await updateAgentMemoryExpiry(7, { expiresAt: null, expectedVersion: 2 })
     await updateAgentMemorySetting({ enabled: false, expectedVersion: 0 })
     await deleteAgentMemory(7)
 
     expect(get).toHaveBeenNthCalledWith(1, '/api/agent/memories', { rawResponse: true })
     expect(get).toHaveBeenNthCalledWith(2, '/api/agent/memory-settings', { rawResponse: true })
+    expect(post).toHaveBeenCalledWith('/api/agent/memories', {
+      category: 'GOAL', content: '完成 Agent', expiresAt: null,
+    }, { rawResponse: true })
     expect(put).toHaveBeenNthCalledWith(1, '/api/agent/memories/7', {
       content: '偏好简洁回答', expectedVersion: 1,
     }, { rawResponse: true })
     expect(put).toHaveBeenNthCalledWith(2, '/api/agent/memories/7/state', {
       paused: true, expectedVersion: 2,
     }, { rawResponse: true })
-    expect(put).toHaveBeenNthCalledWith(3, '/api/agent/memory-settings', {
+    expect(put).toHaveBeenNthCalledWith(3, '/api/agent/memories/7/expiry', {
+      expiresAt: null, expectedVersion: 2,
+    }, { rawResponse: true })
+    expect(put).toHaveBeenNthCalledWith(4, '/api/agent/memory-settings', {
       enabled: false, expectedVersion: 0,
     }, { rawResponse: true })
     expect(deleteRequest).toHaveBeenCalledWith('/api/agent/memories/7', { rawResponse: true })
@@ -96,6 +108,7 @@ describe('Agent 前端接口契约', () => {
     })
     await getAgentTurn(-1)
     await cancelAgentTurn(-1)
+    await resetAgentConversationContext()
 
     expect(post).toHaveBeenNthCalledWith(1, '/api/agent/turns', {
       clientRequestId: 'request-1',
@@ -106,6 +119,9 @@ describe('Agent 前端接口契约', () => {
     }, { rawResponse: true })
     expect(get).toHaveBeenCalledWith('/api/agent/turns/-1', { rawResponse: true })
     expect(post).toHaveBeenNthCalledWith(2, '/api/agent/turns/-1/cancel', undefined, {
+      rawResponse: true,
+    })
+    expect(post).toHaveBeenNthCalledWith(3, '/api/agent/turns/context/reset', undefined, {
       rawResponse: true,
     })
   })

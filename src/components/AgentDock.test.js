@@ -18,6 +18,8 @@ const mocks = vi.hoisted(() => ({
   updateAgentWebSearchSetting: vi.fn(),
   getAgentTurnHistory: vi.fn(),
   getAgentTurn: vi.fn(),
+  cancelAgentTurn: vi.fn(),
+  resetAgentConversationContext: vi.fn(),
 }))
 
 vi.mock('../api/agent', () => ({
@@ -35,7 +37,8 @@ vi.mock('../api/agent', () => ({
   updateAgentWebSearchSetting: mocks.updateAgentWebSearchSetting,
   getAgentTurnHistory: mocks.getAgentTurnHistory,
   getAgentTurn: mocks.getAgentTurn,
-  cancelAgentTurn: vi.fn(),
+  cancelAgentTurn: mocks.cancelAgentTurn,
+  resetAgentConversationContext: mocks.resetAgentConversationContext,
 }))
 
 const { default: AgentDock } = await import('./AgentDock.vue')
@@ -585,6 +588,58 @@ describe('全局 Agent 桌宠小窗', () => {
     expect(wrapper.get('a[href="https://example.com/news"]').text()).toContain('外部来源')
   })
 
+  it('生成中可停止，失败后可重试原问题', async () => {
+    let rejectStream
+    mocks.createAgentTurn
+      .mockResolvedValueOnce({ turnId: 301 })
+      .mockResolvedValueOnce({ turnId: 302 })
+    mocks.streamAgentTurnEvents
+      .mockImplementationOnce((_turnId, options) => new Promise((_resolve, reject) => {
+        rejectStream = () => {
+          const error = new Error('aborted')
+          error.name = 'AbortError'
+          reject(error)
+        }
+        options.signal.addEventListener('abort', rejectStream)
+      }))
+      .mockImplementationOnce(async (_turnId, options) => {
+        options.onEvent({ type: 'done', data: { payload: { finalMessage: '重试成功' } } })
+      })
+    mocks.cancelAgentTurn.mockResolvedValue({ state: 'CANCELLED' })
+    const wrapper = mountDock()
+    await wrapper.get('[data-test="agent-pet"]').trigger('click')
+    await wrapper.get('textarea').setValue('请回答这个问题')
+    await wrapper.get('[aria-label="发送"]').trigger('click')
+    await flushPromises()
+
+    await wrapper.get('[data-test="agent-stop"]').trigger('click')
+    await flushPromises()
+    expect(mocks.cancelAgentTurn).toHaveBeenCalledWith(301)
+    expect(wrapper.text()).toContain('已停止这次回答')
+    await wrapper.get('[data-test="agent-retry"]').trigger('click')
+    await flushPromises()
+    expect(mocks.createAgentTurn).toHaveBeenLastCalledWith(expect.objectContaining({
+      message: '请回答这个问题',
+    }))
+    expect(wrapper.text()).toContain('重试成功')
+  })
+
+  it('清空当前上下文但不隐藏已有主对话历史', async () => {
+    mocks.getAgentTurnHistory.mockResolvedValue({
+      items: [{ turnId: 201, userMessage: '旧问题', finalMessage: '旧回答' }],
+      nextBeforeTurnId: null,
+    })
+    mocks.resetAgentConversationContext.mockResolvedValue(undefined)
+    const wrapper = mountDock()
+    await wrapper.get('[data-test="agent-pet"]').trigger('click')
+    await flushPromises()
+
+    await wrapper.get('[data-test="agent-reset-context"]').trigger('click')
+    await flushPromises()
+    expect(mocks.resetAgentConversationContext).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('[data-test="agent-conversation"]').text()).toContain('旧回答')
+  })
+
   it('换账号后忽略上一个账号迟到创建的临时会话', async () => {
     let finishTemporarySession
     mocks.createTemporarySession.mockImplementation(() => new Promise(resolve => {
@@ -604,5 +659,27 @@ describe('全局 Agent 桌宠小窗', () => {
 
     expect(wrapper.text()).toContain('开启临时')
     expect(wrapper.text()).not.toContain('退出临时')
+  })
+
+  it('换账号后不接纳上一个账号迟到返回的问答运行状态', async () => {
+    let finishAdmission
+    mocks.createAgentTurn.mockImplementation(() => new Promise(resolve => {
+      finishAdmission = resolve
+    }))
+    const wrapper = mountDock()
+    await wrapper.get('[data-test="agent-pet"]').trigger('click')
+    await wrapper.get('textarea').setValue('账号 A 的问题')
+    await wrapper.get('[aria-label="发送"]').trigger('click')
+
+    localStorage.removeItem('token')
+    window.dispatchEvent(new Event('metro-auth-changed'))
+    localStorage.setItem('token', 'account-b-token')
+    window.dispatchEvent(new Event('metro-auth-changed'))
+    finishAdmission({ turnId: 701 })
+    await flushPromises()
+
+    expect(mocks.streamAgentTurnEvents).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-test="agent-stop"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('账号 A 的问题')
   })
 })

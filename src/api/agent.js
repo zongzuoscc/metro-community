@@ -50,6 +50,10 @@ export const getAgentTurn = turnId =>
 export const cancelAgentTurn = turnId =>
   request.post(`/api/agent/turns/${turnId}/cancel`, undefined, raw)
 
+/** 保留主对话历史，但让后续问答从一个全新的上下文段开始。 */
+export const resetAgentConversationContext = () =>
+  request.post('/api/agent/turns/context/reset', undefined, raw)
+
 /** 按服务端发布指针总结文章，避免把页面 DOM 中可被篡改的文本当成事实源。 */
 export const summarizeArticle = articleId =>
   request.post(`/api/agent/articles/${articleId}/summary`, undefined, raw)
@@ -86,6 +90,10 @@ export const deleteAiProviderSetting = () =>
 export const getAgentMemories = () =>
   request.get('/api/agent/memories', raw)
 
+/** 手动添加稳定偏好、目标或基础资料，敏感信息仍由后端拒绝。 */
+export const createAgentMemory = payload =>
+  request.post('/api/agent/memories', payload, raw)
+
 /** 读取长期记忆总开关及其乐观锁版本。 */
 export const getAgentMemorySetting = () =>
   request.get('/api/agent/memory-settings', raw)
@@ -97,6 +105,10 @@ export const updateAgentMemory = (memoryId, payload) =>
 /** 暂停会立即切断召回，恢复不会丢失原内容和来源。 */
 export const setAgentMemoryState = (memoryId, payload) =>
   request.put(`/api/agent/memories/${memoryId}/state`, payload, raw)
+
+/** 到期时间独立管理，不因为只改时间而制造新内容版本。 */
+export const updateAgentMemoryExpiry = (memoryId, payload) =>
+  request.put(`/api/agent/memories/${memoryId}/expiry`, payload, raw)
 
 /** 开关全部长期记忆；关闭后 Agent 不会把任何记忆放入模型上下文。 */
 export const updateAgentMemorySetting = payload =>

@@ -25,7 +25,32 @@
     <div class="memory-toolbar">
       <input v-model.trim="query" type="search" aria-label="搜索长期记忆" placeholder="搜索记忆内容" />
       <span>{{ filteredMemories.length }} 条</span>
+      <button data-test="memory-add-toggle" type="button" class="memory-toolbar__add" @click="creating = !creating">
+        {{ creating ? '收起' : '手动添加' }}
+      </button>
     </div>
+
+    <!-- 手动记忆与自动提取使用同一后端安全边界；页面不会绕过敏感信息校验。 -->
+    <form v-if="creating" data-test="memory-create-form" class="memory-create" @submit.prevent="createMemory">
+      <label>记忆类型
+        <select v-model="createForm.category" data-test="memory-create-category">
+          <option value="PREFERENCE">偏好与边界</option>
+          <option value="GOAL">目标与项目</option>
+          <option value="PROFILE">基础个人信息</option>
+        </select>
+      </label>
+      <label>内容
+        <textarea v-model="createForm.content" data-test="memory-create-content" maxlength="1000" rows="3"
+                  placeholder="例如：回答时请先给结论"></textarea>
+      </label>
+      <label>到期时间（可选）
+        <input v-model="createForm.expiresAt" data-test="memory-create-expiry" type="datetime-local" />
+      </label>
+      <button data-test="memory-create-submit" type="submit" class="is-primary"
+              :disabled="creatingMemory || !createForm.content.trim()">
+        {{ creatingMemory ? '正在保存…' : '保存记忆' }}
+      </button>
+    </form>
 
     <div v-if="loading" class="memory-center__state">正在读取你的记忆…</div>
     <div v-else-if="loadFailed" class="memory-center__state is-error">
@@ -60,11 +85,17 @@
         </template>
         <template v-else>
           <p>{{ memory.content }}</p>
+          <div class="memory-row__metadata">
+            <span>{{ sourceLabel(memory.sourceType) }}</span>
+            <span>{{ expiryLabel(memory.expiresAt) }}</span>
+          </div>
           <footer>
             <button :data-test="`memory-edit-${memory.id}`" type="button" :disabled="busyId === memory.id" @click="beginEdit(memory)">编辑</button>
             <button :data-test="`memory-state-${memory.id}`" type="button" :disabled="busyId === memory.id" @click="toggleState(memory)">
               {{ memory.state === 'PAUSED' ? '恢复' : '暂停' }}
             </button>
+            <button v-if="memory.expiresAt" :data-test="`memory-expiry-never-${memory.id}`" type="button"
+                    :disabled="busyId === memory.id" @click="makeNeverExpire(memory)">改为永不过期</button>
             <button :data-test="`memory-delete-${memory.id}`" type="button" class="is-danger" :disabled="busyId === memory.id" @click="remove(memory)">删除</button>
           </footer>
         </template>
@@ -79,10 +110,12 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
+  createAgentMemory,
   deleteAgentMemory,
   getAgentMemories,
   getAgentMemorySetting,
   setAgentMemoryState,
+  updateAgentMemoryExpiry,
   updateAgentMemory,
   updateAgentMemorySetting,
 } from '../api/agent'
@@ -96,6 +129,9 @@ const savingSetting = ref(false)
 const busyId = ref(null)
 const editingId = ref(null)
 const editingContent = ref('')
+const creating = ref(false)
+const creatingMemory = ref(false)
+const createForm = reactive({ category: 'PREFERENCE', content: '', expiresAt: '' })
 
 const filteredMemories = computed(() => {
   const keyword = query.value.toLowerCase()
@@ -108,6 +144,51 @@ const filteredMemories = computed(() => {
 
 function categoryLabel(category) {
   return ({ PREFERENCE: '偏好与边界', GOAL: '目标与项目', PROFILE: '个人信息' })[category] || '其他记忆'
+}
+
+function sourceLabel(sourceType) {
+  return sourceType === 'MANUAL' ? '手动添加' : '来自主对话'
+}
+
+function expiryLabel(expiresAt) {
+  if (!expiresAt) return '永不过期'
+  return `到期：${new Date(expiresAt).toLocaleString('zh-CN', { hour12: false })}`
+}
+
+/** datetime-local 不携带时区，与后端 MySQL DATETIME 的用户本地时间语义保持一致。 */
+async function createMemory() {
+  if (creatingMemory.value || !createForm.content.trim()) return
+  creatingMemory.value = true
+  try {
+    const created = await createAgentMemory({
+      category: createForm.category,
+      content: createForm.content.trim(),
+      expiresAt: createForm.expiresAt ? `${createForm.expiresAt}:00` : null,
+    })
+    memories.value = [created, ...memories.value]
+    Object.assign(createForm, { category: 'PREFERENCE', content: '', expiresAt: '' })
+    creating.value = false
+    ElMessage.success('记忆已添加')
+  } catch {
+    ElMessage.error('记忆添加失败，请检查内容和到期时间')
+  } finally {
+    creatingMemory.value = false
+  }
+}
+
+/** 用户可以显式取消到期限制；内容版本不会因此增加。 */
+async function makeNeverExpire(memory) {
+  busyId.value = memory.id
+  try {
+    replace(await updateAgentMemoryExpiry(memory.id, {
+      expiresAt: null, expectedVersion: memory.version,
+    }))
+    ElMessage.success('已改为永不过期')
+  } catch {
+    ElMessage.error('到期设置更新失败')
+  } finally {
+    busyId.value = null
+  }
 }
 
 /** 设置与记忆并行读取；任一失败都显示可重试状态，避免渲染不完整的隐私控制界面。 */
@@ -233,6 +314,11 @@ onMounted(load)
 .memory-toolbar input { min-width: 0; flex: 1; height: 34px; padding: 0 10px; border: 1px solid #d8cabc; border-radius: 4px; outline: none; background: #fff; }
 .memory-toolbar input:focus { border-color: #a55245; }
 .memory-toolbar span { color: #8b8178; font-size: 10px; }
+.memory-toolbar__add { min-height: 32px; padding: 0 10px; border: 1px solid #a55245; border-radius: 4px; background: #fff; color: #8c493f; cursor: pointer; }
+.memory-create { display: grid; gap: 9px; margin-bottom: 14px; padding: 12px; border: 1px solid #ddcfc2; background: #faf5ef; }
+.memory-create label { display: grid; gap: 4px; color: #766d64; font-size: 10px; }
+.memory-create input, .memory-create select, .memory-create textarea { box-sizing: border-box; width: 100%; padding: 7px; border: 1px solid #cbb8a8; border-radius: 3px; background: #fff; font: inherit; }
+.memory-create button { justify-self: end; min-height: 30px; padding: 0 12px; border: 0; border-radius: 3px; background: #a55245; color: #fff; cursor: pointer; }
 .memory-center__state { display: grid; place-content: center; min-height: 180px; color: #766d64; text-align: center; }
 .memory-center__state p { margin: 0 0 7px; }
 .memory-center__state small { max-width: 260px; line-height: 1.6; }
@@ -243,6 +329,7 @@ onMounted(load)
 .memory-row header { display: flex; justify-content: space-between; gap: 10px; color: #8c493f; font-size: 10px; font-weight: 700; }
 .memory-row header small { color: #8b8178; font-weight: 400; }
 .memory-row p { margin: 7px 0 9px; font: 400 12px/1.65 "Songti SC", STSong, SimSun, serif; white-space: pre-wrap; }
+.memory-row__metadata { display: flex; flex-wrap: wrap; gap: 5px 10px; margin: -3px 0 8px; color: #8b8178; font-size: 9px; }
 .memory-row footer, .memory-row__edit-actions { display: flex; justify-content: flex-end; gap: 4px; }
 .memory-row button { min-height: 28px; padding: 0 8px; border: 1px solid transparent; border-radius: 3px; background: transparent; color: #766d64; font-size: 10px; cursor: pointer; }
 .memory-row button:hover { background: #f6eee5; color: #29231e; }
