@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => ({
   getAgentMemorySetting: vi.fn(),
   getAgentWebSearchSetting: vi.fn(),
   updateAgentWebSearchSetting: vi.fn(),
+  getAgentTurnHistory: vi.fn(),
+  getAgentTurn: vi.fn(),
 }))
 
 vi.mock('../api/agent', () => ({
@@ -31,7 +33,8 @@ vi.mock('../api/agent', () => ({
   getAgentMemorySetting: mocks.getAgentMemorySetting,
   getAgentWebSearchSetting: mocks.getAgentWebSearchSetting,
   updateAgentWebSearchSetting: mocks.updateAgentWebSearchSetting,
-  getAgentTurn: vi.fn(),
+  getAgentTurnHistory: mocks.getAgentTurnHistory,
+  getAgentTurn: mocks.getAgentTurn,
   cancelAgentTurn: vi.fn(),
 }))
 
@@ -48,6 +51,7 @@ beforeEach(() => {
   mocks.getAgentMemorySetting.mockResolvedValue({ enabled: true, version: 0 })
   mocks.getAgentWebSearchSetting.mockResolvedValue({ enabled: true })
   mocks.updateAgentWebSearchSetting.mockImplementation(enabled => Promise.resolve({ enabled }))
+  mocks.getAgentTurnHistory.mockResolvedValue({ items: [], nextBeforeTurnId: null })
 })
 
 function mountDock() {
@@ -83,6 +87,38 @@ describe('全局 Agent 桌宠小窗', () => {
 
     await wrapper.get('[data-test="agent-expand"]').trigger('click')
     expect(wrapper.get('[data-test="agent-dock"]').classes()).toContain('is-fullscreen')
+  })
+
+  it('只在全屏展示主对话历史轨道，点击摘要恢复该轮问答', async () => {
+    mocks.getAgentTurnHistory.mockResolvedValue({
+      items: [{
+        turnId: 73,
+        questionPreview: '临时对话模式的意义是什么',
+        answerPreview: '临时对话不保留历史和长期记忆。',
+        createdAt: '2026-08-13T09:00:00',
+      }],
+      nextBeforeTurnId: null,
+    })
+    mocks.getAgentTurn.mockResolvedValue({
+      turnId: 73,
+      userMessage: '临时对话模式的意义是什么',
+      finalMessage: '临时对话不保留历史和长期记忆。',
+      state: 'SUCCEEDED',
+    })
+    const wrapper = mountDock()
+    await wrapper.get('[data-test="agent-pet"]').trigger('click')
+    expect(wrapper.find('[data-test="agent-history-rail"]').exists()).toBe(false)
+
+    await wrapper.get('[data-test="agent-expand"]').trigger('click')
+    await flushPromises()
+    expect(mocks.getAgentTurnHistory).toHaveBeenCalledWith({ size: 30 })
+    expect(wrapper.get('[data-test="agent-history-rail"]').text()).toContain('临时对话模式')
+    expect(wrapper.get('[data-test="history-preview-73"]').text()).toContain('临时对话不保留历史')
+
+    await wrapper.get('[data-test="history-turn-73"]').trigger('click')
+    await flushPromises()
+    expect(mocks.getAgentTurn).toHaveBeenCalledWith(73)
+    expect(wrapper.get('[data-test="agent-conversation"]').text()).toContain('临时对话不保留历史和长期记忆')
   })
 
   it('opens the memory center from normal chat and hides the entry in temporary mode', async () => {

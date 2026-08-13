@@ -32,6 +32,16 @@ export const getAgentWebSearchSetting = () =>
 export const updateAgentWebSearchSetting = enabled =>
   request.put('/api/agent/turns/web-search-setting', { enabled }, raw)
 
+/**
+ * 按 turnId 游标读取当前用户主对话的问答摘要。
+ * 返回的只是已成功持久的普通对话，临时对话不会出现。
+ */
+export const getAgentTurnHistory = ({ beforeTurnId, size = 30 } = {}) =>
+  request.get('/api/agent/turns/history', {
+    ...raw,
+    params: { beforeTurnId: beforeTurnId || undefined, size },
+  })
+
 /** 查询 turn 的权威快照，刷新页面或 SSE 中断时以该结果恢复界面。 */
 export const getAgentTurn = turnId =>
   request.get(`/api/agent/turns/${turnId}`, raw)

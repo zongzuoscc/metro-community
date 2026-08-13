@@ -32,7 +32,7 @@
             type="button"
             :aria-label="fullscreen ? '还原小窗' : '放大到全屏'"
             @pointerdown.stop
-            @click.stop="fullscreen = !fullscreen"
+            @click.stop="toggleFullscreen"
           >
             {{ fullscreen ? '↘' : '↗' }}
           </button>
@@ -40,7 +40,47 @@
         </div>
       </header>
 
-      <AgentMemoryCenter v-if="memoryCenterOpen" data-test="memory-center" />
+      <div
+        class="agent-window__workspace"
+        :class="{ 'has-history-rail': fullscreen && !temporaryEnabled && !memoryCenterOpen }"
+      >
+        <nav
+          v-if="fullscreen && !temporaryEnabled && !memoryCenterOpen"
+          data-test="agent-history-rail"
+          class="agent-history-rail"
+          aria-label="主对话历史"
+        >
+          <span class="agent-history-rail__title">历</span>
+          <div class="agent-history-rail__items">
+            <button
+              v-for="item in historyItems"
+              :key="item.turnId"
+              :data-test="`history-turn-${item.turnId}`"
+              type="button"
+              class="agent-history-rail__item"
+              :class="{ 'is-active': selectedHistoryTurnId === item.turnId }"
+              :aria-label="`查看历史问答：${item.questionPreview}`"
+              @click="restoreHistoryTurn(item.turnId)"
+            >
+              <i aria-hidden="true"></i>
+              <span :data-test="`history-preview-${item.turnId}`" class="agent-history-preview">
+                <strong>{{ item.questionPreview }}</strong>
+                <em>{{ item.answerPreview }}</em>
+              </span>
+            </button>
+            <button
+              v-if="historyNextCursor"
+              type="button"
+              class="agent-history-more"
+              :disabled="historyLoading"
+              aria-label="加载更早的对话"
+              @click="loadHistory(true)"
+            >···</button>
+          </div>
+        </nav>
+
+        <main class="agent-window__main">
+          <AgentMemoryCenter v-if="memoryCenterOpen" data-test="memory-center" />
 
       <section v-else-if="pageContext.kind !== 'general'" class="agent-context">
         <div class="agent-context__title">
@@ -65,7 +105,8 @@
         </div>
       </section>
 
-      <section v-if="!memoryCenterOpen" ref="conversation" class="agent-conversation" aria-live="polite">
+      <section v-if="!memoryCenterOpen" ref="conversation" data-test="agent-conversation"
+               class="agent-conversation" aria-live="polite">
         <div v-if="messages.length === 0 && !suggestion" class="agent-empty">
           <span class="agent-empty__seal">问</span>
           <h2>{{ emptyTitle }}</h2>
@@ -138,6 +179,8 @@
         </div>
         <p class="agent-funding">{{ fundingLabel }}</p>
       </footer>
+        </main>
+      </div>
     </aside>
 
     <button
@@ -163,6 +206,8 @@ import {
   createTemporarySession,
   createWritingSuggestion,
   getAgentWebSearchSetting,
+  getAgentTurn,
+  getAgentTurnHistory,
   analyzeArticle,
   deleteTemporarySession,
   streamAgentTurnEvents,
@@ -188,6 +233,11 @@ const memoryCenterOpen = ref(false)
 const funding = ref({ fundingSource: 'PLATFORM', provider: null, model: null })
 const webSearchEnabled = ref(true)
 const webSearchLoading = ref(false)
+const historyItems = ref([])
+const historyNextCursor = ref(null)
+const historyLoading = ref(false)
+const historyLoaded = ref(false)
+const selectedHistoryTurnId = ref(null)
 const conversation = ref(null)
 const position = ref({ right: 24, bottom: 18 })
 let drag = null
@@ -214,6 +264,11 @@ function resetPrivateState() {
   funding.value = { fundingSource: 'PLATFORM', provider: null, model: null }
   webSearchEnabled.value = true
   webSearchLoading.value = false
+  historyItems.value = []
+  historyNextCursor.value = null
+  historyLoading.value = false
+  historyLoaded.value = false
+  selectedHistoryTurnId.value = null
   open.value = false
   fullscreen.value = false
   clearAgentPageContext()
@@ -249,6 +304,59 @@ const emptyDescription = computed(() => pageContext.value.kind === 'writing'
 const fundingLabel = computed(() => funding.value.fundingSource === 'USER'
   ? `本次使用你的 ${funding.value.provider || '自定义'} API${funding.value.model ? ` · ${funding.value.model}` : ''}`
   : '本次由平台基础额度提供')
+
+/**
+ * 放大时才读取历史摘要，小窗保持轻量。每次换账号都会推进 epoch，
+ * 因此旧账号迟到的历史页不能写入新账号界面。
+ */
+async function toggleFullscreen() {
+  fullscreen.value = !fullscreen.value
+  if (fullscreen.value && !temporaryEnabled.value && !historyLoaded.value) {
+    await loadHistory(false)
+  }
+}
+
+/** 按服务端游标追加主对话摘要，不对时间再做人为分组。 */
+async function loadHistory(append) {
+  if (historyLoading.value) return
+  const requestEpoch = authenticationEpoch
+  historyLoading.value = true
+  try {
+    const page = await getAgentTurnHistory({
+      beforeTurnId: append ? historyNextCursor.value : undefined,
+      size: 30,
+    })
+    if (requestEpoch !== authenticationEpoch) return
+    historyItems.value = append ? [...historyItems.value, ...(page.items || [])] : (page.items || [])
+    historyNextCursor.value = page.nextBeforeTurnId || null
+    historyLoaded.value = true
+  } catch {
+    if (requestEpoch === authenticationEpoch) ElMessage.error('历史对话加载失败')
+  } finally {
+    if (requestEpoch === authenticationEpoch) historyLoading.value = false
+  }
+}
+
+/**
+ * 点击轨道后再读取权威 turn 快照，而不把悬停摘要当作完整对话。
+ * 这是同一主对话内的定位，不会创建或切换会话身份。
+ */
+async function restoreHistoryTurn(turnId) {
+  if (taskLoading.value) return
+  const requestEpoch = authenticationEpoch
+  try {
+    const snapshot = await getAgentTurn(turnId)
+    if (requestEpoch !== authenticationEpoch || snapshot.temporary) return
+    selectedHistoryTurnId.value = turnId
+    messages.value = [
+      { id: `history-user-${turnId}`, role: 'user', content: snapshot.userMessage },
+      { id: `history-assistant-${turnId}`, role: 'assistant', content: snapshot.finalMessage },
+    ]
+    await scrollToLatest()
+  } catch {
+    if (requestEpoch === authenticationEpoch) ElMessage.error('这轮历史已无法读取')
+  }
+}
 
 /** 将最新内容滚动到小窗可见区，不抢占输入框焦点。 */
 async function scrollToLatest() {
@@ -343,6 +451,7 @@ async function sendChat() {
   taskStatus.value = '正在检索社区内容'
   draft.value = ''
   messages.value.push({ id: `user-${Date.now()}`, role: 'user', content: question })
+  selectedHistoryTurnId.value = null
   const requestEpoch = authenticationEpoch
   try {
     const admission = await createAgentTurn({
@@ -375,6 +484,11 @@ async function sendChat() {
             webSources: payload.webSources || [],
           })
           if (payload.fundingSource) funding.value = payload
+          // 新的持久问答完成后刷新服务端摘要；小窗仍只标记为下次展开时刷新。
+          if (!temporaryEnabled.value) {
+            historyLoaded.value = false
+            if (fullscreen.value) loadHistory(false)
+          }
         }
       },
     })
@@ -536,7 +650,7 @@ onMounted(() => {
 
 .agent-window {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr);
   width: min(420px, calc(100vw - 126px));
   height: min(650px, calc(100vh - 44px));
   overflow: hidden;
@@ -545,6 +659,27 @@ onMounted(() => {
   background: #fffdf9;
   box-shadow: 0 24px 64px rgba(61, 41, 26, .2), 0 4px 14px rgba(61, 41, 26, .1);
 }
+
+/*
+ * 小窗正文与全屏历史轨道共用一个工作区。轨道没有出现时只保留一列，
+ * 因此普通小窗不会为了历史功能白白损失宽度。
+ */
+.agent-window__workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+}
+.agent-window__main {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  min-width: 0;
+  min-height: 0;
+}
+.agent-window__main > [data-test="memory-center"] { grid-row: 1 / -1; min-height: 0; }
+.agent-window__main > .agent-context { grid-row: 1; }
+.agent-window__main > .agent-conversation { grid-row: 2; }
+.agent-window__main > .agent-composer { grid-row: 3; }
 
 .agent-window__header {
   display: flex;
@@ -566,6 +701,107 @@ onMounted(() => {
   color: #766d64; font: inherit; font-size: 18px; cursor: pointer;
 }
 .agent-window__controls button:hover { background: #f1e8dc; color: #29231e; }
+
+/*
+ * 历史轨道只表达“主对话中的位置”，每一道短线代表一轮已经成功完成的问答。
+ * 摘要默认收起，鼠标或键盘聚焦时才浮出，避免把全屏重新做成沉重的会话列表。
+ */
+.agent-history-rail {
+  position: relative;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-height: 0;
+  padding: 10px 5px;
+  border-right: 1px solid #d8cabc;
+  background: #f8f1e8;
+}
+.agent-history-rail__title {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  margin-bottom: 8px;
+  border: 1px solid #c9b5a3;
+  border-radius: 50%;
+  color: #7f3d34;
+  font: 700 12px/1 "Songti SC", SimSun, serif;
+}
+.agent-history-rail__items {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  min-height: 0;
+  padding-top: 2px;
+}
+.agent-history-rail__item,
+.agent-history-more {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  min-height: 17px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+.agent-history-rail__item i {
+  display: block;
+  width: 12px;
+  height: 2px;
+  border-radius: 999px;
+  background: #b5aaa0;
+  transition: width .16s ease, background .16s ease;
+}
+.agent-history-rail__item:nth-child(3n + 1) i { width: 19px; }
+.agent-history-rail__item:nth-child(3n + 2) i { width: 8px; }
+.agent-history-rail__item:hover i,
+.agent-history-rail__item:focus-visible i,
+.agent-history-rail__item.is-active i { width: 25px; background: #7f3d34; }
+.agent-history-preview {
+  position: absolute;
+  top: -8px;
+  left: 35px;
+  z-index: 30;
+  display: none;
+  width: min(430px, calc(100vw - 190px));
+  padding: 15px 17px;
+  border: 1px solid #d2c5b9;
+  border-radius: 12px;
+  background: rgba(255, 253, 249, .98);
+  box-shadow: 0 16px 42px rgba(61, 41, 26, .18);
+  text-align: left;
+  pointer-events: none;
+}
+.agent-history-preview strong,
+.agent-history-preview em {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+}
+.agent-history-preview strong {
+  margin-bottom: 8px;
+  color: #29231e;
+  font: 700 14px/1.55 "Songti SC", SimSun, serif;
+  -webkit-line-clamp: 1;
+}
+.agent-history-preview em {
+  color: #7a7169;
+  font-size: 12px;
+  font-style: normal;
+  line-height: 1.65;
+  -webkit-line-clamp: 3;
+}
+.agent-history-rail__item:hover .agent-history-preview,
+.agent-history-rail__item:focus-visible .agent-history-preview { display: block; }
+.agent-history-more { margin-top: 4px; color: #7f3d34; font: 700 13px/1 sans-serif; }
+.agent-history-more:hover { background: #eadfd3; }
 
 .agent-context { padding: 12px 14px; border-bottom: 1px solid #d8cabc; background: #fbf6ef; }
 .agent-context__title { display: flex; gap: 6px; min-width: 0; font-size: 11px; }
@@ -631,7 +867,10 @@ onMounted(() => {
 .agent-pet:hover { transform: translateY(-3px); }
 
 .agent-dock.is-fullscreen { inset: 14px; align-items: stretch; }
-.agent-dock.is-fullscreen .agent-window { width: 100%; height: 100%; border-radius: 10px; }
+.agent-dock.is-fullscreen .agent-window { flex: 1; width: auto; height: 100%; border-radius: 10px; }
+.agent-dock.is-fullscreen .agent-window__workspace.has-history-rail {
+  grid-template-columns: 42px minmax(0, 1fr);
+}
 .agent-dock.is-fullscreen .agent-pet { align-self: flex-end; }
 
 @keyframes agent-pulse { to { transform: translateY(-3px); opacity: .45; } }
