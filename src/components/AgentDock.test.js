@@ -89,6 +89,29 @@ describe('全局 Agent 桌宠小窗', () => {
     expect(wrapper.get('[data-test="agent-dock"]').classes()).toContain('is-fullscreen')
   })
 
+  it('普通小窗打开时显示主对话历史，但不显示全屏历史轨道', async () => {
+    mocks.getAgentTurnHistory.mockResolvedValue({
+      items: [{
+        turnId: 72,
+        questionPreview: '长期记忆是怎么实现的',
+        answerPreview: '长期记忆会保存稳定偏好。',
+        userMessage: '长期记忆是怎么实现的？',
+        finalMessage: '长期记忆会保存稳定偏好，并在回答前按需召回。',
+        createdAt: '2026-08-13T08:50:00',
+      }],
+      nextBeforeTurnId: null,
+    })
+    const wrapper = mountDock()
+
+    await wrapper.get('[data-test="agent-pet"]').trigger('click')
+    await flushPromises()
+
+    expect(mocks.getAgentTurnHistory).toHaveBeenCalledWith({ size: 30 })
+    expect(wrapper.find('[data-test="agent-history-rail"]').exists()).toBe(false)
+    expect(wrapper.get('[data-test="agent-conversation"]').text())
+      .toContain('长期记忆会保存稳定偏好，并在回答前按需召回。')
+  })
+
   it('全屏展示连续主对话，点击历史轨道只定位而不隐藏其他问答', async () => {
     const scrollIntoView = vi.fn()
     Element.prototype.scrollIntoView = scrollIntoView

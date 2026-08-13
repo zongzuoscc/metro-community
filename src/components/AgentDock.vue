@@ -323,7 +323,7 @@ const fundingLabel = computed(() => funding.value.fundingSource === 'USER'
   ? `本次使用你的 ${funding.value.provider || '自定义'} API${funding.value.model ? ` · ${funding.value.model}` : ''}`
   : '本次由平台基础额度提供')
 /** 接口按新到旧分页；正文反转后才符合自然阅读顺序。 */
-const chronologicalHistoryItems = computed(() => fullscreen.value && historyLoaded.value
+const chronologicalHistoryItems = computed(() => !temporaryEnabled.value && historyLoaded.value
   ? [...historyItems.value].reverse()
   : [])
 /** 已进入权威历史页的本地消息不重复渲染；仍在生成中的消息继续即时显示。 */
@@ -640,10 +640,14 @@ function stopDrag(event) {
   window.removeEventListener('pointercancel', stopDrag)
 }
 
-/** 拖动尾声不触发展开，真正的轻点则正常切换小窗。 */
+/**
+ * 拖动尾声不触发展开，真正的轻点则正常切换小窗。
+ * 主对话正文属于普通小窗能力，所以首次打开就加载；全屏只额外展示定位轨道。
+ */
 function toggleDock() {
   if (performance.now() < suppressPetClickUntil) return
   open.value = !open.value
+  if (open.value && !temporaryEnabled.value && !historyLoaded.value) loadHistory(false)
 }
 
 onBeforeUnmount(() => {
