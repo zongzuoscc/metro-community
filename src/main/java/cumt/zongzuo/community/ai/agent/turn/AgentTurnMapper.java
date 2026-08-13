@@ -11,6 +11,7 @@ import org.apache.ibatis.annotations.Results;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -150,6 +151,32 @@ public interface AgentTurnMapper {
     @Select("SELECT * FROM agent_turn WHERE id=#{turnId} AND user_id=#{userId}")
     @ResultMap("turn")
     AgentTurnRecord selectById(@Param("turnId") long turnId, @Param("userId") long userId);
+
+    /**
+     * 只枚举当前用户已成功提交的持久 turn。
+     * 两个 role 都通过 FINAL message 内连接，因此半成品、失败任务和 Redis 临时对话
+     * 不可能混入历史轨道。多取一行由 service 判断是否还有下一页。
+     */
+    @Select("""
+            <script>
+            SELECT t.id AS turn_id,
+                   LEFT(u.content,120) AS question_preview,
+                   LEFT(a.content,240) AS answer_preview,
+                   t.created_at
+            FROM agent_turn t
+            JOIN agent_message u ON u.turn_id=t.id AND u.user_id=t.user_id
+              AND u.role='USER' AND u.state='FINAL'
+            JOIN agent_message a ON a.turn_id=t.id AND a.user_id=t.user_id
+              AND a.role='ASSISTANT' AND a.state='FINAL'
+            WHERE t.user_id=#{userId} AND t.state='SUCCEEDED'
+            <if test="beforeTurnId != null">AND t.id &lt; #{beforeTurnId}</if>
+            ORDER BY t.id DESC
+            LIMIT #{limit}
+            </script>
+            """)
+    List<AgentTurnHistoryRow> selectHistory(@Param("userId") long userId,
+                                            @Param("beforeTurnId") Long beforeTurnId,
+                                            @Param("limit") int limit);
 
     @Select("SELECT user_id FROM agent_turn WHERE id=#{turnId}")
     Long selectOwner(@Param("turnId") long turnId);

@@ -237,6 +237,16 @@ class AgentAnswerIntegrationTest extends IntegrationTestSupport {
         assertThat(stream.getHeaders().getContentType()).isEqualTo(MediaType.TEXT_EVENT_STREAM);
         assertThat(stream.getBody()).contains("event: accepted", "event: retrieving",
                 "event: generating", "event: done");
+
+        // 历史轨道只展示当前用户主对话中已成功持久的问答。
+        // 摘要由服务端从权威 message 行生成，前端不需要先下载整段历史。
+        ResponseEntity<String> history = restTemplate.exchange(
+                url("/api/agent/turns/history?size=10"), HttpMethod.GET,
+                new HttpEntity<>(headers), String.class);
+        assertThat(history.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(history.getBody()).contains("\"turnId\":\"" + turnId + "\"",
+                "How should writers be serialized", "Use a row lock",
+                "\"nextBeforeTurnId\":null");
     }
 
     @Test

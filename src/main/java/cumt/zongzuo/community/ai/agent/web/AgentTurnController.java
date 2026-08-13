@@ -11,6 +11,7 @@ import cumt.zongzuo.community.ai.agent.turn.AgentTurnEventStore;
 import cumt.zongzuo.community.ai.agent.turn.AgentTurnQueryService;
 import cumt.zongzuo.community.ai.agent.turn.AgentTurnRunner;
 import cumt.zongzuo.community.ai.agent.turn.AgentTurnSnapshot;
+import cumt.zongzuo.community.ai.agent.turn.AgentTurnHistoryPage;
 import cumt.zongzuo.community.ai.agent.turn.AgentConversationPreferenceService;
 import cumt.zongzuo.community.ai.agent.temporary.TemporaryTurnAdmission;
 import cumt.zongzuo.community.ai.agent.temporary.TemporaryTurnAdmissionService;
@@ -96,6 +97,17 @@ public class AgentTurnController {
     public AgentConversationPreferenceService.WebSearchPreference webSearchSetting(
             @Valid @RequestBody AgentWebSearchSettingRequest request) {
         return preferences.update(CurrentUser.id(), request.enabled());
+    }
+
+    /**
+     * 全屏历史轨道的有界摘要接口。它仍然只有一个主对话，每一项是其中一轮
+     * 已完成问答，而不是新建 ChatGPT 式的多会话容器。
+     */
+    @GetMapping("/history")
+    public AgentTurnHistoryPage history(
+            @RequestParam(required = false) Long beforeTurnId,
+            @RequestParam(defaultValue = "30") int size) {
+        return queries.history(CurrentUser.id(), beforeTurnId, size);
     }
 
     /**

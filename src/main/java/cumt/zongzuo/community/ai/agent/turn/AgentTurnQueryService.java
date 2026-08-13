@@ -5,6 +5,8 @@ import cumt.zongzuo.community.ai.agent.temporary.TemporaryTurnRecord;
 import cumt.zongzuo.community.ai.agent.temporary.TemporaryTurnStore;
 import org.springframework.stereotype.Service;
 
+import java.util.List;
+
 /**
  * 统一构建当前用户可见的 turn 快照。
  * 持久 turn 从 MySQL 聚合消息与引用，临时 turn 只从 Redis 读取，两者对外共用同一响应结构。
@@ -37,6 +39,27 @@ public class AgentTurnQueryService {
                 turn.getCreatedAt(), turn.getStartedAt(), turn.getCompletedAt(),
                 mapper.selectMessageContent(turnId, userId, "USER"), null, assistant,
                 messageId, citationCount, turn.getErrorCode());
+    }
+
+    /**
+     * 读取当前用户唯一主对话的历史摘要。
+     *
+     * <p>游标只能向更早的 turnId 移动，页大小上限为 50，避免全屏侧边栏变成
+     * 一次性导出全部对话的隐式接口。</p>
+     */
+    public AgentTurnHistoryPage history(long userId, Long beforeTurnId, int size) {
+        if (size < 1 || size > 50 || (beforeTurnId != null && beforeTurnId < 1)) {
+            throw AiApiException.validationFailed();
+        }
+        List<AgentTurnHistoryRow> rows = mapper.selectHistory(
+                userId, beforeTurnId, size + 1);
+        boolean hasMore = rows.size() > size;
+        List<AgentTurnHistoryItem> items = rows.stream().limit(size)
+                .map(row -> new AgentTurnHistoryItem(row.getTurnId(), row.getQuestionPreview(),
+                        row.getAnswerPreview(), row.getCreatedAt()))
+                .toList();
+        Long next = hasMore && !items.isEmpty() ? items.get(items.size() - 1).turnId() : null;
+        return new AgentTurnHistoryPage(items, next);
     }
 
     /**
