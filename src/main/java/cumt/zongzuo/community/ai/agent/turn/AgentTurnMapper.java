@@ -180,6 +180,49 @@ public interface AgentTurnMapper {
                                             @Param("beforeTurnId") Long beforeTurnId,
                                             @Param("limit") int limit);
 
+    /**
+     * 一次读取当前历史页内的站内引用，避免展开多轮记录时形成逐轮查询。
+     * user_id 与 turn_id 同时参与过滤，传入其它账号的 turnId 也不会泄漏来源。
+     */
+    @Select("""
+            <script>
+            SELECT m.turn_id,c.ordinal,c.article_id,c.revision_id,c.chunk_id,
+                   c.title_snapshot,c.quote_snapshot
+            FROM agent_answer_citation c
+            JOIN agent_message m ON m.id=c.assistant_message_id AND m.user_id=c.user_id
+            WHERE c.user_id=#{userId} AND c.state='ACTIVE'
+              AND m.turn_id IN
+              <foreach collection="turnIds" item="turnId" open="(" separator="," close=")">
+                #{turnId}
+              </foreach>
+            ORDER BY m.turn_id DESC,c.ordinal
+            </script>
+            """)
+    List<AgentTurnHistoryCitationRow> selectHistoryCitations(
+            @Param("userId") long userId, @Param("turnIds") List<Long> turnIds);
+
+    /**
+     * 联网来源从回答完成时保存的快照恢复，不重新联网，也不相信回答正文中的 URL。
+     */
+    @Select("""
+            <script>
+            SELECT turn_id,rank_no,excerpt_snapshot,
+                   CAST(JSON_UNQUOTE(JSON_EXTRACT(metadata_json,'$.index')) AS UNSIGNED) AS source_index,
+                   JSON_UNQUOTE(JSON_EXTRACT(metadata_json,'$.url')) AS source_url,
+                   JSON_UNQUOTE(JSON_EXTRACT(metadata_json,'$.siteName')) AS site_name,
+                   expires_at>CURRENT_TIMESTAMP(6) AS source_active
+            FROM agent_retrieval_hit
+            WHERE user_id=#{userId} AND source_type='WEB'
+              AND turn_id IN
+              <foreach collection="turnIds" item="turnId" open="(" separator="," close=")">
+                #{turnId}
+              </foreach>
+            ORDER BY turn_id DESC,rank_no
+            </script>
+            """)
+    List<AgentTurnHistoryWebSourceRow> selectHistoryWebSources(
+            @Param("userId") long userId, @Param("turnIds") List<Long> turnIds);
+
     @Select("SELECT user_id FROM agent_turn WHERE id=#{turnId}")
     Long selectOwner(@Param("turnId") long turnId);
 

@@ -1,6 +1,10 @@
 package cumt.zongzuo.community.ai.agent.turn;
 
+import cumt.zongzuo.community.ai.agent.AgentCitation;
+import cumt.zongzuo.community.ai.agent.websearch.AgentWebSource;
+
 import java.time.LocalDateTime;
+import java.util.List;
 
 /**
  * 主对话历史中的一轮完整问答。
@@ -11,5 +15,14 @@ import java.time.LocalDateTime;
  */
 public record AgentTurnHistoryItem(long turnId, String questionPreview, String answerPreview,
                                    String userMessage, String finalMessage,
+                                   List<AgentCitation> citations,
+                                   List<AgentWebSource> webSources,
+                                   boolean webSourcesExpired,
                                    LocalDateTime createdAt) {
+
+    public AgentTurnHistoryItem {
+        // 对外响应使用不可变副本，避免后续组装另一页历史时误修改已经返回的来源列表。
+        citations = List.copyOf(citations);
+        webSources = List.copyOf(webSources);
+    }
 }

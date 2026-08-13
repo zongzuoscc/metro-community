@@ -46,6 +46,9 @@ class AgentConversationHistoryIntegrationTest extends IntegrationTestSupport {
             redis.delete("agent:run:user:" + userId);
             jdbcTemplate.update("DELETE FROM domain_event_outbox WHERE aggregate_type='AGENT_TURN'");
             jdbcTemplate.update("UPDATE agent_conversation SET last_message_id=NULL WHERE user_id=?", userId);
+            // 历史引用和检索快照都是消息、turn 的子记录，测试清理必须遵守真实外键顺序。
+            jdbcTemplate.update("DELETE FROM agent_answer_citation WHERE user_id=?", userId);
+            jdbcTemplate.update("DELETE FROM agent_retrieval_hit WHERE user_id=?", userId);
             jdbcTemplate.update("DELETE FROM agent_message WHERE user_id=?", userId);
             jdbcTemplate.update("DELETE FROM agent_turn WHERE user_id=?", userId);
             jdbcTemplate.update("DELETE FROM agent_episode WHERE user_id=?", userId);
@@ -126,6 +129,62 @@ class AgentConversationHistoryIntegrationTest extends IntegrationTestSupport {
                 .extracting(item -> item.turnId()).isEqualTo(older.turnId());
         assertThat(secondPage.nextBeforeTurnId()).isNull();
         assertThat(firstPage.items()).noneMatch(item -> item.turnId() == foreign.turnId());
+    }
+
+    @Test
+    void historyReturnsDurableCommunityAndWebSourcesForEveryVisibleAnswer() {
+        var turn = admissions.admit(new AgentTurnCreateCommand(OWNER, UUID.randomUUID(),
+                "这次回答参考了哪些资料？", "{}", "COMMUNITY_QA"));
+        completeTurn(OWNER, turn.turnId(), "站内结论。[1] 联网补充。[W1]");
+        Long assistantMessageId = jdbcTemplate.queryForObject("""
+                SELECT id FROM agent_message
+                WHERE turn_id=? AND user_id=? AND role='ASSISTANT'
+                """, Long.class, turn.turnId(), OWNER);
+        jdbcTemplate.update("""
+                INSERT INTO agent_answer_citation
+                  (user_id,assistant_message_id,ordinal,article_id,revision_id,chunk_id,
+                   title_snapshot,quote_snapshot,quote_hash,state,created_at)
+                VALUES (?,?,?,?,?,?,?, ?,REPEAT('c',64),'ACTIVE',NOW(6))
+                """, OWNER, assistantMessageId, 1, 42L, 420L, 4200L,
+                "站内文章标题", "用于回答的站内原文");
+        jdbcTemplate.update("""
+                INSERT INTO agent_retrieval_hit
+                  (user_id,turn_id,source_type,source_key,article_id,revision_id,chunk_id,
+                   memory_id,bm25_score,dense_score,rrf_score,rank_no,excerpt_snapshot,
+                   metadata_json,expires_at)
+                VALUES (?,?,'WEB','web:1:test',NULL,NULL,NULL,NULL,NULL,NULL,1.0,1,?,
+                        JSON_OBJECT('index',1,'url','https://example.com/news',
+                                    'siteName','示例站'),DATE_ADD(NOW(6),INTERVAL 30 DAY))
+                """, OWNER, turn.turnId(), "外部来源标题");
+        jdbcTemplate.update("""
+                INSERT INTO agent_retrieval_hit
+                  (user_id,turn_id,source_type,source_key,article_id,revision_id,chunk_id,
+                   memory_id,bm25_score,dense_score,rrf_score,rank_no,excerpt_snapshot,
+                   metadata_json,expires_at)
+                VALUES (?,?,'WEB','web:2:expired',NULL,NULL,NULL,NULL,NULL,NULL,1.0,2,?,
+                        JSON_OBJECT('index',2,'url','https://expired.example/news',
+                                    'siteName','过期站点'),DATE_SUB(NOW(6),INTERVAL 1 SECOND)),
+                       (?,?,'WEB','web:3:unsafe',NULL,NULL,NULL,NULL,NULL,NULL,1.0,3,?,
+                        JSON_OBJECT('index',3,'url','javascript:alert(1)',
+                                    'siteName','不安全站点'),DATE_ADD(NOW(6),INTERVAL 30 DAY))
+                """, OWNER, turn.turnId(), "已过期来源", OWNER, turn.turnId(), "不安全来源");
+
+        var page = turnQueries.history(OWNER, null, 10);
+
+        assertThat(page.items()).singleElement().satisfies(item -> {
+            assertThat(item.citations()).singleElement().satisfies(citation -> {
+                assertThat(citation.marker()).isEqualTo(1);
+                assertThat(citation.title()).isEqualTo("站内文章标题");
+                assertThat(citation.url()).isEqualTo("/article/42");
+            });
+            assertThat(item.webSources()).singleElement().satisfies(source -> {
+                assertThat(source.index()).isEqualTo(1);
+                assertThat(source.title()).isEqualTo("外部来源标题");
+                assertThat(source.url()).isEqualTo("https://example.com/news");
+                assertThat(source.siteName()).isEqualTo("示例站");
+            });
+            assertThat(item.webSourcesExpired()).isTrue();
+        });
     }
 
     /** 把 admission 产生的 USER 消息补成一个可见的成功问答事实。 */

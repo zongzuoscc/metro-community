@@ -1,6 +1,7 @@
 package cumt.zongzuo.community.ai.agent.turn;
 
 import cumt.zongzuo.community.ai.agent.AgentCitation;
+import cumt.zongzuo.community.ai.agent.websearch.AgentWebSourceUrlPolicy;
 import cumt.zongzuo.community.ai.agent.GroundedAgentAnswer;
 import cumt.zongzuo.community.ai.agent.memory.AgentMemoryCaptureService;
 import org.slf4j.Logger;
@@ -90,6 +91,10 @@ public class AgentTurnFinalizer {
                             "createdAt", history.createdAt().toString())));
         }
         for (var source : answer.webSources()) {
+            if (!AgentWebSourceUrlPolicy.isSafe(source.url())) {
+                // 来源必须在回答事务提交前再次校验，禁止其它调用路径绕过搜索网关的协议边界。
+                throw new IllegalStateException("Agent web source URL is unsafe");
+            }
             mapper.insertWebSourceUse(userId, turnId, "web:" + source.index() + ":"
                             + AgentTurnAdmissionService.sha256(source.url()), ++contextRank,
                     source.title(), json(java.util.Map.of("index", source.index(),

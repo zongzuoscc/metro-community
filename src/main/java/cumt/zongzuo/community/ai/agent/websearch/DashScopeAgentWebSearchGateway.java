@@ -20,7 +20,6 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 /**
  * 使用百炼 DashScope Generation 协议执行联网搜索。
@@ -32,7 +31,6 @@ import java.util.Set;
 public final class DashScopeAgentWebSearchGateway implements AgentWebSearchGateway {
 
     private static final int MAX_SUMMARY_CHARACTERS = 12_000;
-    private static final Set<String> SAFE_SCHEMES = Set.of("http", "https");
 
     public interface HttpTransport {
         HttpResponse post(URI uri, Map<String, String> headers, String body) throws Exception;
@@ -121,7 +119,7 @@ public final class DashScopeAgentWebSearchGateway implements AgentWebSearchGatew
             String url = item.path("url").asText("").strip();
             String siteName = item.path("site_name").asText("").strip();
             if (index <= 0 || index > 99 || title.isBlank() || title.length() > 300
-                    || siteName.length() > 160 || !safeUrl(url)) {
+                    || siteName.length() > 160 || !AgentWebSourceUrlPolicy.isSafe(url)) {
                 continue;
             }
             sources.add(new AgentWebSource(index, title, url, siteName));
@@ -129,16 +127,6 @@ public final class DashScopeAgentWebSearchGateway implements AgentWebSearchGatew
         // 百炼的角标使用 ref_ 前缀；内部统一改为 W，避免与站内文章数字角标冲突。
         return new AgentWebSearchResult(summary.replaceAll("\\[ref_(\\d{1,2})]", "[W$1]"),
                 sources);
-    }
-
-    private static boolean safeUrl(String value) {
-        try {
-            URI uri = URI.create(value);
-            return uri.getHost() != null && uri.getUserInfo() == null
-                    && SAFE_SCHEMES.contains(uri.getScheme().toLowerCase(java.util.Locale.ROOT));
-        } catch (RuntimeException ignored) {
-            return false;
-        }
     }
 
     /** 创建禁用代理与重定向的 HTTPS 传输，避免平台密钥被转发到第二个地址。 */
