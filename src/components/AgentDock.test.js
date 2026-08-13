@@ -89,21 +89,29 @@ describe('全局 Agent 桌宠小窗', () => {
     expect(wrapper.get('[data-test="agent-dock"]').classes()).toContain('is-fullscreen')
   })
 
-  it('只在全屏展示主对话历史轨道，点击摘要恢复该轮问答', async () => {
+  it('全屏展示连续主对话，点击历史轨道只定位而不隐藏其他问答', async () => {
+    const scrollIntoView = vi.fn()
+    Element.prototype.scrollIntoView = scrollIntoView
     mocks.getAgentTurnHistory.mockResolvedValue({
-      items: [{
-        turnId: 73,
-        questionPreview: '临时对话模式的意义是什么',
-        answerPreview: '临时对话不保留历史和长期记忆。',
-        createdAt: '2026-08-13T09:00:00',
-      }],
+      items: [
+        {
+          turnId: 74,
+          questionPreview: '联网搜索如何关闭',
+          answerPreview: '可以在输入框上方关闭。',
+          userMessage: '联网搜索如何关闭？',
+          finalMessage: '可以在输入框上方关闭联网搜索。',
+          createdAt: '2026-08-13T09:10:00',
+        },
+        {
+          turnId: 73,
+          questionPreview: '临时对话模式的意义是什么',
+          answerPreview: '临时对话不保留历史和长期记忆。',
+          userMessage: '临时对话模式的意义是什么？',
+          finalMessage: '临时对话不保留历史和长期记忆。',
+          createdAt: '2026-08-13T09:00:00',
+        },
+      ],
       nextBeforeTurnId: null,
-    })
-    mocks.getAgentTurn.mockResolvedValue({
-      turnId: 73,
-      userMessage: '临时对话模式的意义是什么',
-      finalMessage: '临时对话不保留历史和长期记忆。',
-      state: 'SUCCEEDED',
     })
     const wrapper = mountDock()
     await wrapper.get('[data-test="agent-pet"]').trigger('click')
@@ -114,11 +122,15 @@ describe('全局 Agent 桌宠小窗', () => {
     expect(mocks.getAgentTurnHistory).toHaveBeenCalledWith({ size: 30 })
     expect(wrapper.get('[data-test="agent-history-rail"]').text()).toContain('临时对话模式')
     expect(wrapper.get('[data-test="history-preview-73"]').text()).toContain('临时对话不保留历史')
+    const conversationBeforeClick = wrapper.get('[data-test="agent-conversation"]').text()
+    expect(conversationBeforeClick).toContain('临时对话模式的意义是什么？')
+    expect(conversationBeforeClick).toContain('联网搜索如何关闭？')
 
     await wrapper.get('[data-test="history-turn-73"]').trigger('click')
     await flushPromises()
-    expect(mocks.getAgentTurn).toHaveBeenCalledWith(73)
-    expect(wrapper.get('[data-test="agent-conversation"]').text()).toContain('临时对话不保留历史和长期记忆')
+    expect(mocks.getAgentTurn).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-test="agent-conversation"]').text()).toContain('联网搜索如何关闭？')
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' })
   })
 
   it('opens the memory center from normal chat and hides the entry in temporary mode', async () => {

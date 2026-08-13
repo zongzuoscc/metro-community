@@ -107,12 +107,30 @@
 
       <section v-if="!memoryCenterOpen" ref="conversation" data-test="agent-conversation"
                class="agent-conversation" aria-live="polite">
-        <div v-if="messages.length === 0 && !suggestion" class="agent-empty">
+        <div v-if="messages.length === 0 && chronologicalHistoryItems.length === 0 && !suggestion" class="agent-empty">
           <span class="agent-empty__seal">问</span>
           <h2>{{ emptyTitle }}</h2>
           <p>{{ emptyDescription }}</p>
         </div>
-        <article v-for="message in messages" :key="message.id" class="agent-message" :class="`is-${message.role}`">
+        <section
+          v-for="turn in chronologicalHistoryItems"
+          :key="`history-${turn.turnId}`"
+          :ref="element => bindHistoryTurnElement(turn.turnId, element)"
+          :data-test="`history-content-${turn.turnId}`"
+          class="agent-history-turn"
+          :class="{ 'is-active': selectedHistoryTurnId === turn.turnId }"
+        >
+          <article class="agent-message is-user">
+            <small>你</small>
+            <p>{{ turn.userMessage }}</p>
+          </article>
+          <article class="agent-message is-assistant">
+            <small>Metro Agent</small>
+            <p>{{ turn.finalMessage }}</p>
+          </article>
+        </section>
+        <article v-for="message in visibleTransientMessages" :key="message.id"
+                 class="agent-message" :class="`is-${message.role}`">
           <small>{{ message.role === 'user' ? '你' : 'Metro Agent' }}</small>
           <p>{{ message.content }}</p>
           <div v-if="message.citations?.length || message.webSources?.length" class="agent-message__sources">
@@ -206,7 +224,6 @@ import {
   createTemporarySession,
   createWritingSuggestion,
   getAgentWebSearchSetting,
-  getAgentTurn,
   getAgentTurnHistory,
   analyzeArticle,
   deleteTemporarySession,
@@ -238,6 +255,7 @@ const historyNextCursor = ref(null)
 const historyLoading = ref(false)
 const historyLoaded = ref(false)
 const selectedHistoryTurnId = ref(null)
+const historyTurnElements = new Map()
 const conversation = ref(null)
 const position = ref({ right: 24, bottom: 18 })
 let drag = null
@@ -304,6 +322,15 @@ const emptyDescription = computed(() => pageContext.value.kind === 'writing'
 const fundingLabel = computed(() => funding.value.fundingSource === 'USER'
   ? `本次使用你的 ${funding.value.provider || '自定义'} API${funding.value.model ? ` · ${funding.value.model}` : ''}`
   : '本次由平台基础额度提供')
+/** 接口按新到旧分页；正文反转后才符合自然阅读顺序。 */
+const chronologicalHistoryItems = computed(() => fullscreen.value && historyLoaded.value
+  ? [...historyItems.value].reverse()
+  : [])
+/** 已进入权威历史页的本地消息不重复渲染；仍在生成中的消息继续即时显示。 */
+const visibleTransientMessages = computed(() => {
+  const persistedTurnIds = new Set(historyItems.value.map(item => String(item.turnId)))
+  return messages.value.filter(message => !message.turnId || !persistedTurnIds.has(String(message.turnId)))
+})
 
 /**
  * 放大时才读取历史摘要，小窗保持轻量。每次换账号都会推进 epoch，
@@ -338,24 +365,18 @@ async function loadHistory(append) {
 }
 
 /**
- * 点击轨道后再读取权威 turn 快照，而不把悬停摘要当作完整对话。
- * 这是同一主对话内的定位，不会创建或切换会话身份。
+ * 记录每一轮在连续对话正文中的 DOM 锚点。Vue 在旧节点卸载时会传入 null，
+ * 必须同步删除，避免后续误滚动到已经销毁的元素。
  */
-async function restoreHistoryTurn(turnId) {
-  if (taskLoading.value) return
-  const requestEpoch = authenticationEpoch
-  try {
-    const snapshot = await getAgentTurn(turnId)
-    if (requestEpoch !== authenticationEpoch || snapshot.temporary) return
-    selectedHistoryTurnId.value = turnId
-    messages.value = [
-      { id: `history-user-${turnId}`, role: 'user', content: snapshot.userMessage },
-      { id: `history-assistant-${turnId}`, role: 'assistant', content: snapshot.finalMessage },
-    ]
-    await scrollToLatest()
-  } catch {
-    if (requestEpoch === authenticationEpoch) ElMessage.error('这轮历史已无法读取')
-  }
+function bindHistoryTurnElement(turnId, element) {
+  if (element) historyTurnElements.set(turnId, element)
+  else historyTurnElements.delete(turnId)
+}
+
+/** 点击轨道只定位到同一主对话中的目标轮次，绝不替换或裁剪其他问答。 */
+function restoreHistoryTurn(turnId) {
+  selectedHistoryTurnId.value = turnId
+  historyTurnElements.get(turnId)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
 /** 将最新内容滚动到小窗可见区，不抢占输入框焦点。 */
@@ -450,7 +471,8 @@ async function sendChat() {
   taskLoading.value = true
   taskStatus.value = '正在检索社区内容'
   draft.value = ''
-  messages.value.push({ id: `user-${Date.now()}`, role: 'user', content: question })
+  const pendingUserMessage = { id: `user-${Date.now()}`, role: 'user', content: question, turnId: null }
+  messages.value.push(pendingUserMessage)
   selectedHistoryTurnId.value = null
   const requestEpoch = authenticationEpoch
   try {
@@ -464,6 +486,7 @@ async function sendChat() {
         articleId: pageContext.value.articleId,
       },
     })
+    pendingUserMessage.turnId = admission.turnId
     // admission 返回前账号可能已切换；此时不能用新账号令牌继续订阅旧账号的 turn。
     if (requestEpoch !== authenticationEpoch) return
     streamController?.abort()
@@ -480,6 +503,7 @@ async function sendChat() {
             id: `assistant-${admission.turnId}`,
             role: 'assistant',
             content: payload.finalMessage,
+            turnId: admission.turnId,
             citations: payload.citations || [],
             webSources: payload.webSources || [],
           })
@@ -820,6 +844,13 @@ onMounted(() => {
 .agent-empty h2 { margin: 0; font: 700 20px/1.4 "Songti SC", SimSun, serif; }
 .agent-empty p { max-width: 290px; margin: 9px auto 0; color: #766d64; font-size: 12px; line-height: 1.7; }
 .agent-message { margin-bottom: 14px; }
+.agent-history-turn {
+  padding: 2px 5px;
+  border-radius: 10px;
+  scroll-margin-top: 16px;
+  transition: background .2s ease;
+}
+.agent-history-turn.is-active { background: #fbf4ea; }
 .agent-message small { display: block; margin-bottom: 4px; color: #766d64; font-size: 10px; }
 .agent-message p { margin: 0; padding: 10px 12px; border-radius: 9px; background: #f3ebe1; font-size: 13px; line-height: 1.75; white-space: pre-wrap; }
 .agent-message.is-user { margin-left: 42px; text-align: right; }
