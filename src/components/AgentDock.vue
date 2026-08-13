@@ -53,7 +53,15 @@
           <span class="agent-history-rail__title">历</span>
           <div class="agent-history-rail__items">
             <button
-              v-for="item in historyItems"
+              v-if="historyNextCursor"
+              type="button"
+              class="agent-history-more"
+              :disabled="historyLoading"
+              aria-label="加载更早的对话"
+              @click="loadHistory(true)"
+            >···</button>
+            <button
+              v-for="item in chronologicalHistoryItems"
               :key="item.turnId"
               :data-test="`history-turn-${item.turnId}`"
               type="button"
@@ -68,14 +76,6 @@
                 <em>{{ item.answerPreview }}</em>
               </span>
             </button>
-            <button
-              v-if="historyNextCursor"
-              type="button"
-              class="agent-history-more"
-              :disabled="historyLoading"
-              aria-label="加载更早的对话"
-              @click="loadHistory(true)"
-            >···</button>
           </div>
         </nav>
 

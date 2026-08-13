@@ -337,6 +337,8 @@ describe('全局 Agent 桌宠小窗', () => {
     expect(mocks.getAgentTurnHistory).toHaveBeenCalledWith({ size: 30 })
     expect(wrapper.get('[data-test="agent-history-rail"]').text()).toContain('临时对话模式')
     expect(wrapper.get('[data-test="history-preview-73"]').text()).toContain('临时对话不保留历史')
+    expect(wrapper.findAll('.agent-history-rail__item').map(item => item.attributes('data-test')))
+      .toEqual(['history-turn-73', 'history-turn-74'])
     const conversationBeforeClick = wrapper.get('[data-test="agent-conversation"]').text()
     expect(conversationBeforeClick).toContain('临时对话模式的意义是什么？')
     expect(conversationBeforeClick).toContain('联网搜索如何关闭？')
