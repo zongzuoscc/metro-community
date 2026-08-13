@@ -14,6 +14,8 @@ const mocks = vi.hoisted(() => ({
   deleteTemporarySession: vi.fn(),
   getAgentMemories: vi.fn(),
   getAgentMemorySetting: vi.fn(),
+  getAgentWebSearchSetting: vi.fn(),
+  updateAgentWebSearchSetting: vi.fn(),
 }))
 
 vi.mock('../api/agent', () => ({
@@ -27,6 +29,8 @@ vi.mock('../api/agent', () => ({
   deleteTemporarySession: mocks.deleteTemporarySession,
   getAgentMemories: mocks.getAgentMemories,
   getAgentMemorySetting: mocks.getAgentMemorySetting,
+  getAgentWebSearchSetting: mocks.getAgentWebSearchSetting,
+  updateAgentWebSearchSetting: mocks.updateAgentWebSearchSetting,
   getAgentTurn: vi.fn(),
   cancelAgentTurn: vi.fn(),
 }))
@@ -42,6 +46,8 @@ beforeEach(() => {
   mocks.getTemporarySession.mockRejectedValue({ response: { status: 404 } })
   mocks.getAgentMemories.mockResolvedValue([])
   mocks.getAgentMemorySetting.mockResolvedValue({ enabled: true, version: 0 })
+  mocks.getAgentWebSearchSetting.mockResolvedValue({ enabled: true })
+  mocks.updateAgentWebSearchSetting.mockImplementation(enabled => Promise.resolve({ enabled }))
 })
 
 function mountDock() {
@@ -284,6 +290,34 @@ describe('全局 Agent 桌宠小窗', () => {
       temporarySessionId: 'temp-session-7',
     }))
     expect(wrapper.text()).toContain('本次使用你的 qwen API')
+  })
+
+  it('主对话默认显示联网开关，关闭后持久保存并展示分组来源', async () => {
+    mocks.createAgentTurn.mockResolvedValue({ turnId: 91 })
+    mocks.streamAgentTurnEvents.mockImplementation(async (_turnId, options) => {
+      options.onEvent({ type: 'done', data: { payload: {
+        finalMessage: '【站内文章】站内结论。[1]\n\n【联网搜索】最新补充。[W1]',
+        citations: [{ marker: 1, title: '站内文章', url: '/article/42' }],
+        webSources: [{ index: 1, title: '外部来源', url: 'https://example.com/news', siteName: '示例站' }],
+        fundingSource: 'PLATFORM',
+      } } })
+    })
+    const wrapper = mountDock()
+    await wrapper.get('[data-test="agent-pet"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[data-test="web-search-toggle"]').attributes('aria-pressed')).toBe('true')
+    await wrapper.get('[data-test="web-search-toggle"]').trigger('click')
+    await flushPromises()
+    expect(mocks.updateAgentWebSearchSetting).toHaveBeenCalledWith(false)
+
+    await wrapper.get('textarea').setValue('测试来源展示')
+    await wrapper.get('[aria-label="发送"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('站内资料')
+    expect(wrapper.text()).toContain('联网来源')
+    expect(wrapper.get('a[href="/article/42"]').text()).toContain('站内文章')
+    expect(wrapper.get('a[href="https://example.com/news"]').text()).toContain('外部来源')
   })
 
   it('换账号后忽略上一个账号迟到创建的临时会话', async () => {

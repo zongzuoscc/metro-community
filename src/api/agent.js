@@ -24,6 +24,14 @@ export const deleteTemporarySession = () =>
 export const createAgentTurn = payload =>
   request.post('/api/agent/turns', payload, raw)
 
+/** 读取当前主对话的联网偏好；新用户默认为开启。 */
+export const getAgentWebSearchSetting = () =>
+  request.get('/api/agent/turns/web-search-setting', raw)
+
+/** 联网开关按用户唯一主对话持久化，刷新和换设备后仍保持。 */
+export const updateAgentWebSearchSetting = enabled =>
+  request.put('/api/agent/turns/web-search-setting', { enabled }, raw)
+
 /** 查询 turn 的权威快照，刷新页面或 SSE 中断时以该结果恢复界面。 */
 export const getAgentTurn = turnId =>
   request.get(`/api/agent/turns/${turnId}`, raw)

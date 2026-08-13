@@ -74,6 +74,20 @@
         <article v-for="message in messages" :key="message.id" class="agent-message" :class="`is-${message.role}`">
           <small>{{ message.role === 'user' ? '你' : 'Metro Agent' }}</small>
           <p>{{ message.content }}</p>
+          <div v-if="message.citations?.length || message.webSources?.length" class="agent-message__sources">
+            <section v-if="message.citations?.length">
+              <strong>站内资料</strong>
+              <a v-for="citation in message.citations" :key="`site-${citation.marker}`"
+                 :href="citation.url">[{{ citation.marker }}] {{ citation.title }}</a>
+            </section>
+            <section v-if="message.webSources?.length">
+              <strong>联网来源</strong>
+              <a v-for="source in message.webSources" :key="`web-${source.index}`"
+                 :href="source.url" target="_blank" rel="noopener noreferrer">
+                [W{{ source.index }}] {{ source.title }}<span v-if="source.siteName"> · {{ source.siteName }}</span>
+              </a>
+            </section>
+          </div>
         </article>
         <div v-if="taskLoading" class="agent-loading"><i></i><i></i><i></i><span>{{ taskStatus }}</span></div>
 
@@ -101,9 +115,15 @@
       <footer v-if="!memoryCenterOpen" class="agent-composer">
         <div class="agent-composer__meta">
           <span>{{ temporaryEnabled ? '临时对话，不保存历史' : '普通对话' }}</span>
-          <button data-test="temporary-toggle" type="button" :disabled="sessionLoading" @click="toggleTemporaryMode">
-            {{ temporaryEnabled ? '退出临时' : '开启临时' }}
-          </button>
+          <div class="agent-composer__options">
+            <button data-test="web-search-toggle" type="button" :disabled="webSearchLoading"
+                    :aria-pressed="webSearchEnabled" @click="toggleWebSearch">
+              {{ webSearchEnabled ? '联网开' : '联网关' }}
+            </button>
+            <button data-test="temporary-toggle" type="button" :disabled="sessionLoading" @click="toggleTemporaryMode">
+              {{ temporaryEnabled ? '退出临时' : '开启临时' }}
+            </button>
+          </div>
         </div>
         <div class="agent-composer__box">
           <textarea
@@ -142,10 +162,12 @@ import {
   createAgentTurn,
   createTemporarySession,
   createWritingSuggestion,
+  getAgentWebSearchSetting,
   analyzeArticle,
   deleteTemporarySession,
   streamAgentTurnEvents,
   summarizeArticle,
+  updateAgentWebSearchSetting,
 } from '../api/agent'
 import { clearAgentPageContext, useAgentPageContext } from '../composables/useAgentPageContext'
 import metroPet from '../assets/agent/metro-pet.png'
@@ -164,6 +186,8 @@ const taskStatus = ref('正在思考')
 const suggestion = ref(null)
 const memoryCenterOpen = ref(false)
 const funding = ref({ fundingSource: 'PLATFORM', provider: null, model: null })
+const webSearchEnabled = ref(true)
+const webSearchLoading = ref(false)
 const conversation = ref(null)
 const position = ref({ right: 24, bottom: 18 })
 let drag = null
@@ -188,6 +212,8 @@ function resetPrivateState() {
   taskLoading.value = false
   sessionLoading.value = false
   funding.value = { fundingSource: 'PLATFORM', provider: null, model: null }
+  webSearchEnabled.value = true
+  webSearchLoading.value = false
   open.value = false
   fullscreen.value = false
   clearAgentPageContext()
@@ -341,7 +367,13 @@ async function sendChat() {
         if (event.type === 'retrieving') taskStatus.value = '正在检索社区内容'
         if (event.type === 'generating') taskStatus.value = '正在组织回答'
         if (event.type === 'done') {
-          messages.value.push({ id: `assistant-${admission.turnId}`, role: 'assistant', content: payload.finalMessage })
+          messages.value.push({
+            id: `assistant-${admission.turnId}`,
+            role: 'assistant',
+            content: payload.finalMessage,
+            citations: payload.citations || [],
+            webSources: payload.webSources || [],
+          })
           if (payload.fundingSource) funding.value = payload
         }
       },
@@ -351,6 +383,38 @@ async function sendChat() {
     if (requestEpoch === authenticationEpoch) ElMessage.error('消息发送失败，请检查网络后重试')
   } finally {
     if (requestEpoch === authenticationEpoch) taskLoading.value = false
+  }
+}
+
+/**
+ * 联网偏好按主对话保存；旧请求即使迟到也不能覆盖换账号后的新状态。
+ * 临时模式只复用该偏好，不会因此把临时消息写入主对话。
+ */
+async function toggleWebSearch() {
+  if (webSearchLoading.value || taskLoading.value) return
+  const requestEpoch = authenticationEpoch
+  const target = !webSearchEnabled.value
+  webSearchLoading.value = true
+  try {
+    const saved = await updateAgentWebSearchSetting(target)
+    if (requestEpoch !== authenticationEpoch) return
+    webSearchEnabled.value = Boolean(saved.enabled)
+  } catch {
+    if (requestEpoch === authenticationEpoch) ElMessage.error('联网设置保存失败，请稍后重试')
+  } finally {
+    if (requestEpoch === authenticationEpoch) webSearchLoading.value = false
+  }
+}
+
+/** 登录后从后端恢复主对话偏好，默认开启且不使用 localStorage 保存账号数据。 */
+async function restoreWebSearchSetting() {
+  if (!authenticated.value) return
+  const requestEpoch = authenticationEpoch
+  try {
+    const setting = await getAgentWebSearchSetting()
+    if (requestEpoch === authenticationEpoch) webSearchEnabled.value = Boolean(setting.enabled)
+  } catch {
+    // 后端暂不可用时保留默认开启；发送请求仍会由服务端会话事实决定最终行为。
   }
 }
 
@@ -456,6 +520,7 @@ onBeforeUnmount(() => {
 onMounted(() => {
   window.addEventListener('metro-auth-changed', syncAuthentication)
   window.addEventListener('storage', handleAuthenticationStorage)
+  restoreWebSearchSetting()
 })
 </script>
 
@@ -523,6 +588,12 @@ onMounted(() => {
 .agent-message p { margin: 0; padding: 10px 12px; border-radius: 9px; background: #f3ebe1; font-size: 13px; line-height: 1.75; white-space: pre-wrap; }
 .agent-message.is-user { margin-left: 42px; text-align: right; }
 .agent-message.is-user p { background: #e9ddd0; text-align: left; }
+.agent-message__sources { display: grid; gap: 8px; margin-top: 7px; padding: 9px 10px; border-left: 2px solid #caa99d; background: #fbf7f1; }
+.agent-message__sources section { display: grid; gap: 3px; }
+.agent-message__sources strong { color: #7f3d34; font-size: 10px; }
+.agent-message__sources a { overflow: hidden; color: #5c5650; font-size: 10px; line-height: 1.5; text-decoration: none; text-overflow: ellipsis; white-space: nowrap; }
+.agent-message__sources a:hover { color: #a55245; text-decoration: underline; }
+.agent-message__sources a span { color: #8b8178; }
 .agent-loading { display: flex; align-items: center; gap: 5px; color: #7f3d34; font-size: 11px; }
 .agent-loading i { width: 5px; height: 5px; border-radius: 50%; background: #a55245; animation: agent-pulse 1s infinite alternate; }
 .agent-loading i:nth-child(2) { animation-delay: .2s; }
@@ -545,6 +616,8 @@ onMounted(() => {
 .agent-composer { padding: 9px 11px 11px; border-top: 1px solid #d8cabc; background: #f7f1e7; }
 .agent-composer__meta { display: flex; justify-content: space-between; margin-bottom: 6px; color: #766d64; font-size: 10px; }
 .agent-composer__meta button { border: 0; background: transparent; color: #7f3d34; font: inherit; cursor: pointer; }
+.agent-composer__options { display: flex; gap: 8px; }
+.agent-composer__options [aria-pressed="false"] { color: #8b8178; }
 .agent-composer__box { display: grid; grid-template-columns: 1fr 40px; gap: 6px; align-items: end; padding: 6px 6px 6px 10px; border: 1px solid #cdbbaa; border-radius: 8px; background: #fffdf9; }
 .agent-composer textarea { min-height: 38px; resize: none; border: 0; outline: 0; background: transparent; color: #29231e; font: inherit; font-size: 12px; }
 .agent-composer__box > button { width: 40px; height: 40px; border: 0; border-radius: 6px; background: #a55245; color: #fff; font-size: 17px; cursor: pointer; }
