@@ -106,7 +106,7 @@
       </section>
 
       <section v-if="!memoryCenterOpen" ref="conversation" data-test="agent-conversation"
-               class="agent-conversation" aria-live="polite">
+               class="agent-conversation" aria-live="polite" @scroll.passive="handleConversationScroll">
         <div v-if="messages.length === 0 && chronologicalHistoryItems.length === 0 && !suggestion" class="agent-empty">
           <span class="agent-empty__seal">问</span>
           <h2>{{ emptyTitle }}</h2>
@@ -127,6 +127,26 @@
           <article class="agent-message is-assistant">
             <small>Metro Agent</small>
             <p>{{ turn.finalMessage }}</p>
+            <div v-if="turn.citations?.length || turn.webSources?.length || turn.webSourcesExpired"
+                 class="agent-message__sources">
+              <section v-if="turn.citations?.length">
+                <strong>站内资料</strong>
+                <a v-for="citation in turn.citations"
+                   :key="`history-site-${turn.turnId}-${citation.marker}`"
+                   :href="citation.url">[{{ citation.marker }}] {{ citation.title }}</a>
+              </section>
+              <section v-if="turn.webSources?.length">
+                <strong>联网来源</strong>
+                <a v-for="source in turn.webSources"
+                   :key="`history-web-${turn.turnId}-${source.index}`"
+                   :href="source.url" target="_blank" rel="noopener noreferrer">
+                  [W{{ source.index }}] {{ source.title }}<span v-if="source.siteName"> · {{ source.siteName }}</span>
+                </a>
+              </section>
+              <p v-if="turn.webSourcesExpired" class="agent-message__sources-expired">
+                较早的联网来源快照已超过 30 天保留期
+              </p>
+            </div>
           </article>
         </section>
         <article v-for="message in visibleTransientMessages" :key="message.id"
@@ -262,6 +282,8 @@ let drag = null
 let suppressPetClickUntil = 0
 let streamController = null
 let authenticationEpoch = 0
+let historyRefreshPending = false
+let historyExtended = false
 
 /**
  * 清除只属于当前账号的内存状态，并使所有正在等待的旧请求失效。
@@ -286,6 +308,8 @@ function resetPrivateState() {
   historyNextCursor.value = null
   historyLoading.value = false
   historyLoaded.value = false
+  historyRefreshPending = false
+  historyExtended = false
   selectedHistoryTurnId.value = null
   open.value = false
   fullscreen.value = false
@@ -343,10 +367,21 @@ async function toggleFullscreen() {
   }
 }
 
-/** 按服务端游标追加主对话摘要，不对时间再做人为分组。 */
+/**
+ * 按服务端游标追加主对话，不对时间再做人为分组。
+ * 初次加载定位最新内容；向上翻页则保持原有可视内容的位置，不能突然跳到更早记录。
+ */
 async function loadHistory(append) {
-  if (historyLoading.value) return
+  if (historyLoading.value) {
+    // 只有“刷新最新页”需要排队；自动加载更早页的重复滚动事件可以直接合并掉。
+    if (!append) historyRefreshPending = true
+    return
+  }
   const requestEpoch = authenticationEpoch
+  const preserveOlderPages = !append && historyExtended
+  const previousCursor = historyNextCursor.value
+  const previousScrollHeight = append ? (conversation.value?.scrollHeight || 0) : 0
+  const previousScrollTop = append ? (conversation.value?.scrollTop || 0) : 0
   historyLoading.value = true
   try {
     const page = await getAgentTurnHistory({
@@ -354,14 +389,50 @@ async function loadHistory(append) {
       size: 30,
     })
     if (requestEpoch !== authenticationEpoch) return
-    historyItems.value = append ? [...historyItems.value, ...(page.items || [])] : (page.items || [])
-    historyNextCursor.value = page.nextBeforeTurnId || null
+    const pageItems = page.items || []
+    if (append) {
+      historyItems.value = [...historyItems.value, ...pageItems]
+      historyExtended = true
+    } else if (preserveOlderPages) {
+      // 最新页放在前面，并按 turnId 去掉与旧页重叠的记录；已加载的更早记录不能被刷新丢弃。
+      const latestTurnIds = new Set(pageItems.map(item => String(item.turnId)))
+      historyItems.value = [
+        ...pageItems,
+        ...historyItems.value.filter(item => !latestTurnIds.has(String(item.turnId))),
+      ]
+    } else {
+      historyItems.value = pageItems
+    }
+    historyNextCursor.value = preserveOlderPages ? previousCursor : (page.nextBeforeTurnId || null)
     historyLoaded.value = true
+    await nextTick()
+    if (requestEpoch !== authenticationEpoch || !conversation.value) return
+    if (append) {
+      // 更早记录会插入正文顶部，用新增高度补偿 scrollTop，用户仍停留在原来阅读的位置。
+      conversation.value.scrollTop = previousScrollTop
+        + Math.max(0, conversation.value.scrollHeight - previousScrollHeight)
+    } else {
+      conversation.value.scrollTop = conversation.value.scrollHeight
+    }
   } catch {
     if (requestEpoch === authenticationEpoch) ElMessage.error('历史对话加载失败')
   } finally {
-    if (requestEpoch === authenticationEpoch) historyLoading.value = false
+    if (requestEpoch === authenticationEpoch) {
+      historyLoading.value = false
+      if (historyRefreshPending) {
+        historyRefreshPending = false
+        // 当前请求已完全结束后再启动下一次，避免递归复用尚未释放的 loading 状态。
+        loadHistory(false)
+      }
+    }
   }
+}
+
+/** 主对话滚到顶部附近时自动读取上一页，小窗同样可以连续回看全部历史。 */
+function handleConversationScroll() {
+  if (!conversation.value || temporaryEnabled.value || !historyLoaded.value
+      || historyLoading.value || !historyNextCursor.value) return
+  if (conversation.value.scrollTop <= 24) loadHistory(true)
 }
 
 /**
@@ -508,10 +579,10 @@ async function sendChat() {
             webSources: payload.webSources || [],
           })
           if (payload.fundingSource) funding.value = payload
-          // 新的持久问答完成后刷新服务端摘要；小窗仍只标记为下次展开时刷新。
+          // 新的持久问答完成后立即刷新权威主对话。刷新完成前保留当前历史数组，
+          // 避免小窗把此前问答暂时隐藏；turnId 去重会在新页返回后移除即时副本。
           if (!temporaryEnabled.value) {
-            historyLoaded.value = false
-            if (fullscreen.value) loadHistory(false)
+            loadHistory(false)
           }
         }
       },
@@ -865,6 +936,14 @@ onMounted(() => {
 .agent-message__sources a { overflow: hidden; color: #5c5650; font-size: 10px; line-height: 1.5; text-decoration: none; text-overflow: ellipsis; white-space: nowrap; }
 .agent-message__sources a:hover { color: #a55245; text-decoration: underline; }
 .agent-message__sources a span { color: #8b8178; }
+.agent-message__sources-expired {
+  margin: 0;
+  padding: 0 !important;
+  background: transparent !important;
+  color: #8b8178;
+  font-size: 10px !important;
+  line-height: 1.5 !important;
+}
 .agent-loading { display: flex; align-items: center; gap: 5px; color: #7f3d34; font-size: 11px; }
 .agent-loading i { width: 5px; height: 5px; border-radius: 50%; background: #a55245; animation: agent-pulse 1s infinite alternate; }
 .agent-loading i:nth-child(2) { animation-delay: .2s; }

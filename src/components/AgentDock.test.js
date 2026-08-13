@@ -112,6 +112,198 @@ describe('全局 Agent 桌宠小窗', () => {
       .toContain('长期记忆会保存稳定偏好，并在回答前按需召回。')
   })
 
+  it('普通小窗首次加载历史后定位到最新一轮，而不是停在最早记录', async () => {
+    let finishHistory
+    mocks.getAgentTurnHistory.mockImplementation(() => new Promise(resolve => {
+      finishHistory = resolve
+    }))
+    const wrapper = mountDock()
+
+    await wrapper.get('[data-test="agent-pet"]').trigger('click')
+    const conversation = wrapper.get('[data-test="agent-conversation"]').element
+    Object.defineProperty(conversation, 'scrollHeight', { configurable: true, value: 960 })
+    finishHistory({
+      items: [{
+        turnId: 80, questionPreview: '最新问题', answerPreview: '最新回答',
+        userMessage: '最新问题', finalMessage: '最新回答', createdAt: '2026-08-13T10:00:00',
+      }],
+      nextBeforeTurnId: null,
+    })
+    await flushPromises()
+
+    expect(conversation.scrollTop).toBe(960)
+  })
+
+  it('滚动到主对话顶部时自动加载更早记录，并保持当前阅读位置不跳动', async () => {
+    let finishOlderPage
+    mocks.getAgentTurnHistory
+      .mockResolvedValueOnce({
+        items: [{
+          turnId: 80, questionPreview: '较新问题', answerPreview: '较新回答',
+          userMessage: '较新问题', finalMessage: '较新回答', createdAt: '2026-08-13T10:00:00',
+        }],
+        nextBeforeTurnId: 80,
+      })
+      .mockImplementationOnce(() => new Promise(resolve => { finishOlderPage = resolve }))
+    const wrapper = mountDock()
+    await wrapper.get('[data-test="agent-pet"]').trigger('click')
+    await flushPromises()
+    const conversationWrapper = wrapper.get('[data-test="agent-conversation"]')
+    const conversation = conversationWrapper.element
+    let scrollHeight = 600
+    Object.defineProperty(conversation, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight,
+    })
+    conversation.scrollTop = 0
+
+    await conversationWrapper.trigger('scroll')
+    await flushPromises()
+    expect(mocks.getAgentTurnHistory).toHaveBeenLastCalledWith({ beforeTurnId: 80, size: 30 })
+    scrollHeight = 900
+    finishOlderPage({
+      items: [{
+        turnId: 79, questionPreview: '更早问题', answerPreview: '更早回答',
+        userMessage: '更早问题', finalMessage: '更早回答', createdAt: '2026-08-13T09:00:00',
+      }],
+      nextBeforeTurnId: null,
+    })
+    await flushPromises()
+
+    expect(conversation.scrollTop).toBe(300)
+    expect(conversationWrapper.text()).toContain('更早问题')
+  })
+
+  it('主对话历史恢复站内引用和联网来源的可点击链接', async () => {
+    mocks.getAgentTurnHistory.mockResolvedValue({
+      items: [{
+        turnId: 81, questionPreview: '资料来自哪里', answerPreview: '参考如下',
+        userMessage: '资料来自哪里？', finalMessage: '站内结论。[1] 联网补充。[W1]',
+        citations: [{ marker: 1, title: '站内文章', url: '/article/42' }],
+        webSources: [{ index: 1, title: '外部报道', url: 'https://example.com/report', siteName: '示例站' }],
+        webSourcesExpired: true,
+        createdAt: '2026-08-13T10:10:00',
+      }],
+      nextBeforeTurnId: null,
+    })
+    const wrapper = mountDock()
+
+    await wrapper.get('[data-test="agent-pet"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('a[href="/article/42"]').text()).toContain('站内文章')
+    expect(wrapper.get('a[href="https://example.com/report"]').text()).toContain('外部报道')
+    expect(wrapper.text()).toContain('较早的联网来源快照已超过 30 天保留期')
+  })
+
+  it('新回答进入权威历史后只显示一次，不与本地即时消息重复', async () => {
+    mocks.getAgentTurnHistory
+      .mockResolvedValueOnce({
+        items: [{
+          turnId: 90, questionPreview: '原有问题', answerPreview: '原有回答',
+          userMessage: '原有问题', finalMessage: '原有回答', createdAt: '2026-08-13T10:10:00',
+          citations: [], webSources: [],
+        }],
+        nextBeforeTurnId: null,
+      })
+      .mockResolvedValueOnce({
+        items: [
+          {
+            turnId: 91, questionPreview: '唯一问题', answerPreview: '唯一回答',
+            userMessage: '唯一问题', finalMessage: '唯一回答', createdAt: '2026-08-13T10:20:00',
+            citations: [], webSources: [],
+          },
+          {
+            turnId: 90, questionPreview: '原有问题', answerPreview: '原有回答',
+            userMessage: '原有问题', finalMessage: '原有回答', createdAt: '2026-08-13T10:10:00',
+            citations: [], webSources: [],
+          },
+        ],
+        nextBeforeTurnId: null,
+      })
+    mocks.createAgentTurn.mockResolvedValue({ turnId: 91 })
+    mocks.streamAgentTurnEvents.mockImplementation(async (_turnId, options) => {
+      options.onEvent({ type: 'done', data: { payload: { finalMessage: '唯一回答' } } })
+    })
+    const wrapper = mountDock()
+    await wrapper.get('[data-test="agent-pet"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('textarea').setValue('唯一问题')
+    await wrapper.get('[aria-label="发送"]').trigger('click')
+    await flushPromises()
+
+    // 小窗完成新回答后立即刷新连续主对话，旧记录不能先消失、等下次打开才恢复。
+    expect(wrapper.get('[data-test="agent-conversation"]').text()).toContain('原有回答')
+    expect(wrapper.get('[data-test="agent-conversation"]').text().match(/唯一回答/g)).toHaveLength(1)
+  })
+
+  it('首屏历史仍在加载时完成新回答，会在首屏结束后补做一次权威刷新', async () => {
+    let finishInitialHistory
+    mocks.getAgentTurnHistory
+      .mockImplementationOnce(() => new Promise(resolve => { finishInitialHistory = resolve }))
+      .mockResolvedValueOnce({
+        items: [{
+          turnId: 101, questionPreview: '竞态问题', answerPreview: '权威回答',
+          userMessage: '竞态问题', finalMessage: '权威回答', createdAt: '2026-08-13T10:30:00',
+          citations: [], webSources: [],
+        }],
+        nextBeforeTurnId: null,
+      })
+    mocks.createAgentTurn.mockResolvedValue({ turnId: 101 })
+    mocks.streamAgentTurnEvents.mockImplementation(async (_turnId, options) => {
+      options.onEvent({ type: 'done', data: { payload: { finalMessage: '权威回答' } } })
+    })
+    const wrapper = mountDock()
+    await wrapper.get('[data-test="agent-pet"]').trigger('click')
+    await wrapper.get('textarea').setValue('竞态问题')
+    await wrapper.get('[aria-label="发送"]').trigger('click')
+    await flushPromises()
+
+    finishInitialHistory({ items: [], nextBeforeTurnId: null })
+    await flushPromises()
+
+    expect(mocks.getAgentTurnHistory).toHaveBeenCalledTimes(2)
+    expect(wrapper.get('[data-test="agent-conversation"]').text().match(/权威回答/g)).toHaveLength(1)
+  })
+
+  it('刷新最新问答时保留已经向上加载的更早记录和原分页游标', async () => {
+    mocks.getAgentTurnHistory
+      .mockResolvedValueOnce({
+        items: [{ turnId: 60, userMessage: '第 60 问', finalMessage: '第 60 答' }],
+        nextBeforeTurnId: 60,
+      })
+      .mockResolvedValueOnce({
+        items: [{ turnId: 30, userMessage: '第 30 问', finalMessage: '第 30 答' }],
+        nextBeforeTurnId: 30,
+      })
+      .mockResolvedValueOnce({
+        items: [
+          { turnId: 61, userMessage: '第 61 问', finalMessage: '第 61 答' },
+          { turnId: 60, userMessage: '第 60 问', finalMessage: '第 60 答' },
+        ],
+        nextBeforeTurnId: 60,
+      })
+    mocks.createAgentTurn.mockResolvedValue({ turnId: 61 })
+    mocks.streamAgentTurnEvents.mockImplementation(async (_turnId, options) => {
+      options.onEvent({ type: 'done', data: { payload: { finalMessage: '第 61 答' } } })
+    })
+    const wrapper = mountDock()
+    await wrapper.get('[data-test="agent-pet"]').trigger('click')
+    await flushPromises()
+    const conversation = wrapper.get('[data-test="agent-conversation"]')
+    conversation.element.scrollTop = 0
+    await conversation.trigger('scroll')
+    await flushPromises()
+    expect(conversation.text()).toContain('第 30 答')
+
+    await wrapper.get('textarea').setValue('第 61 问')
+    await wrapper.get('[aria-label="发送"]').trigger('click')
+    await flushPromises()
+
+    expect(conversation.text()).toContain('第 30 答')
+    expect(conversation.text().match(/第 61 答/g)).toHaveLength(1)
+  })
+
   it('全屏展示连续主对话，点击历史轨道只定位而不隐藏其他问答', async () => {
     const scrollIntoView = vi.fn()
     Element.prototype.scrollIntoView = scrollIntoView
