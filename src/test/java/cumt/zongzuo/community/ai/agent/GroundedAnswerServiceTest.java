@@ -122,7 +122,8 @@ class GroundedAnswerServiceTest {
         retrievalResult(List.of());
         when(memories.recall(9L, "你记得我喜欢什么，以及我说过的重话吗？", 6))
                 .thenReturn(List.of(new AgentMemoryView(71L, "PREFERENCE",
-                        "我喜欢简洁的回答风格", 2L, "ACTIVE")));
+                        "我喜欢简洁的回答风格", 2L, "ACTIVE", null,
+                        "CONVERSATION")));
         when(history.search(9L, "你记得我喜欢什么，以及我说过的重话吗？", 6))
                 .thenReturn(List.of(new AgentConversationHistoryHit(81L, 801L, 9L, "USER",
                         "你是我用过最难用的助手",

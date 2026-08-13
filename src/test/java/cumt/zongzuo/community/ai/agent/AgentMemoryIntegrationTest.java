@@ -190,6 +190,48 @@ class AgentMemoryIntegrationTest extends IntegrationTestSupport {
                 Integer.class, memoryId)).isOne();
     }
 
+    @Test
+    void ownerCanCreateAManualMemoryAndManageItsAbsoluteExpiry() {
+        ResponseEntity<String> created = exchange(HttpMethod.POST, "/api/agent/memories", """
+                {"category":"PREFERENCE","content":"回答时优先给我可执行的步骤",\
+                 "expiresAt":"2099-08-13T10:30:00"}
+                """, OWNER);
+
+        assertThat(created.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(created.getBody()).contains("\"sourceType\":\"MANUAL\"",
+                "\"expiresAt\":\"2099-08-13T10:30:00\"");
+        long memoryId = jdbcTemplate.queryForObject(
+                "SELECT id FROM agent_memory_item WHERE user_id=?", Long.class, OWNER);
+        assertThat(recall.recall(OWNER, "请给我可执行的步骤", 8)).singleElement()
+                .satisfies(memory -> assertThat(memory.content())
+                        .isEqualTo("回答时优先给我可执行的步骤"));
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM agent_memory_source WHERE memory_id=?",
+                Integer.class, memoryId)).isZero();
+
+        ResponseEntity<String> neverExpires = exchange(HttpMethod.PUT,
+                "/api/agent/memories/" + memoryId + "/expiry",
+                "{\"expiresAt\":null,\"expectedVersion\":1}", OWNER);
+        assertThat(neverExpires.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(neverExpires.getBody()).contains("\"expiresAt\":null");
+    }
+
+    @Test
+    void manualMemoryRejectsSensitiveContentAndPastExpiryWithoutPartialRows() {
+        ResponseEntity<String> sensitive = exchange(HttpMethod.POST, "/api/agent/memories", """
+                {"category":"PROFILE","content":"我的 API key 是 secret-123","expiresAt":null}
+                """, OWNER);
+        ResponseEntity<String> expired = exchange(HttpMethod.POST, "/api/agent/memories", """
+                {"category":"GOAL","content":"学习事务","expiresAt":"2020-01-01T00:00:00"}
+                """, OWNER);
+
+        assertThat(sensitive.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(expired.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM agent_memory_item WHERE user_id=?",
+                Integer.class, OWNER)).isZero();
+    }
+
     private AgentTurnAdmission admit(long userId, String message) {
         return admissions.admit(new AgentTurnCreateCommand(userId, UUID.randomUUID(), message,
                 "{}", "COMMUNITY_QA"));

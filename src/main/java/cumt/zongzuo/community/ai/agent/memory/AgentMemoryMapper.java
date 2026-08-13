@@ -31,17 +31,20 @@ public interface AgentMemoryMapper {
     Long settingVersion(long userId);
 
     @Select("""
-            SELECT m.id,m.category,v.content,v.version_no AS version,m.state
+            SELECT m.id,m.category,v.content,v.version_no AS version,m.state,m.expires_at,
+              CASE WHEN EXISTS(SELECT 1 FROM agent_memory_source s
+                WHERE s.memory_id=m.id AND s.user_id=m.user_id) THEN 'CONVERSATION' ELSE 'MANUAL' END AS source_type
             FROM agent_memory_item m JOIN agent_memory_version v
               ON v.id=m.current_version_id AND v.user_id=m.user_id
             WHERE m.user_id=#{userId} AND m.state IN ('ACTIVE','PAUSED')
-              AND (m.expires_at IS NULL OR m.expires_at>CURRENT_TIMESTAMP(6))
             ORDER BY m.updated_at DESC,m.id DESC LIMIT #{limit}
             """)
     List<AgentMemoryView> listManaged(@Param("userId") long userId, @Param("limit") int limit);
 
     @Select("""
-            SELECT m.id,m.category,v.content,v.version_no AS version,m.state
+            SELECT m.id,m.category,v.content,v.version_no AS version,m.state,m.expires_at,
+              CASE WHEN EXISTS(SELECT 1 FROM agent_memory_source s
+                WHERE s.memory_id=m.id AND s.user_id=m.user_id) THEN 'CONVERSATION' ELSE 'MANUAL' END AS source_type
             FROM agent_memory_item m JOIN agent_memory_version v
               ON v.id=m.current_version_id AND v.user_id=m.user_id
             WHERE m.user_id=#{userId} AND m.state='ACTIVE'
@@ -51,7 +54,9 @@ public interface AgentMemoryMapper {
     List<AgentMemoryView> listActive(@Param("userId") long userId, @Param("limit") int limit);
 
     @Select("""
-            SELECT m.id,m.category,v.content,v.version_no AS version,m.state
+            SELECT m.id,m.category,v.content,v.version_no AS version,m.state,m.expires_at,
+              CASE WHEN EXISTS(SELECT 1 FROM agent_memory_source s
+                WHERE s.memory_id=m.id AND s.user_id=m.user_id) THEN 'CONVERSATION' ELSE 'MANUAL' END AS source_type
             FROM agent_memory_item m JOIN agent_memory_version v
               ON v.id=m.current_version_id AND v.user_id=m.user_id
             WHERE m.id=#{memoryId} AND m.user_id=#{userId} AND m.state<>'DELETED'
@@ -76,7 +81,7 @@ public interface AgentMemoryMapper {
     @Insert("""
             INSERT INTO agent_memory_item(user_id,current_version_id,category,sensitivity,state,
               expires_at,created_at,updated_at,deleted_at,lock_version)
-            VALUES (#{userId},NULL,#{category},'LOW','ACTIVE',NULL,
+            VALUES (#{userId},NULL,#{category},'LOW','ACTIVE',#{expiresAt},
               CURRENT_TIMESTAMP(6),CURRENT_TIMESTAMP(6),NULL,0)
             """)
     @Options(useGeneratedKeys = true, keyProperty = "id")
@@ -156,6 +161,16 @@ public interface AgentMemoryMapper {
                     @Param("expectedLockVersion") long expectedLockVersion);
 
     @Update("""
+            UPDATE agent_memory_item SET expires_at=#{expiresAt},updated_at=CURRENT_TIMESTAMP(6),
+              lock_version=lock_version+1
+            WHERE id=#{memoryId} AND user_id=#{userId} AND state<>'DELETED'
+              AND lock_version=#{expectedLockVersion}
+            """)
+    int updateExpiry(@Param("memoryId") long memoryId, @Param("userId") long userId,
+                     @Param("expiresAt") java.time.LocalDateTime expiresAt,
+                     @Param("expectedLockVersion") long expectedLockVersion);
+
+    @Update("""
             UPDATE agent_memory_item SET state='DELETED',deleted_at=CURRENT_TIMESTAMP(6),
               updated_at=CURRENT_TIMESTAMP(6),lock_version=lock_version+1
             WHERE id=#{memoryId} AND user_id=#{userId} AND state<>'DELETED'
@@ -195,8 +210,10 @@ public interface AgentMemoryMapper {
 
     final class MemoryInsert {
         public Long id; public long userId; public String category;
+        public java.time.LocalDateTime expiresAt;
         public Long getId() { return id; } public void setId(Long id) { this.id = id; }
         public long getUserId() { return userId; } public String getCategory() { return category; }
+        public java.time.LocalDateTime getExpiresAt() { return expiresAt; }
     }
 
     final class MemoryVersionInsert {

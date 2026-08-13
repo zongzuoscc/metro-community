@@ -13,6 +13,10 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
 
 import java.util.UUID;
 
@@ -185,6 +189,33 @@ class AgentConversationHistoryIntegrationTest extends IntegrationTestSupport {
             });
             assertThat(item.webSourcesExpired()).isTrue();
         });
+    }
+
+    @Test
+    void resettingContextKeepsVisibleHistoryButStopsModelSearchAcrossEpisodes() {
+        var oldTurn = admissions.admit(new AgentTurnCreateCommand(OWNER, UUID.randomUUID(),
+                "请记住这段只属于旧上下文的蓝色风筝", "{}", "COMMUNITY_QA"));
+        completeTurn(OWNER, oldTurn.turnId(), "我已经看到蓝色风筝。");
+        releaseGuard(OWNER);
+        assertThat(history.search(OWNER, "蓝色风筝", 5)).isNotEmpty();
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(jwtService.generate(OWNER));
+        var reset = restTemplate.exchange(url("/api/agent/turns/context/reset"),
+                HttpMethod.POST, new HttpEntity<>(null, headers), String.class);
+
+        assertThat(reset.getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
+        assertThat(turnQueries.history(OWNER, null, 10).items()).singleElement()
+                .extracting(item -> item.turnId()).isEqualTo(oldTurn.turnId());
+        assertThat(history.search(OWNER, "蓝色风筝", 5)).isEmpty();
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM agent_episode
+                WHERE user_id=? AND state='ACTIVE'
+                """, Integer.class, OWNER)).isOne();
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM agent_episode
+                WHERE user_id=? AND state='SEALED'
+                """, Integer.class, OWNER)).isOne();
     }
 
     /** 把 admission 产生的 USER 消息补成一个可见的成功问答事实。 */

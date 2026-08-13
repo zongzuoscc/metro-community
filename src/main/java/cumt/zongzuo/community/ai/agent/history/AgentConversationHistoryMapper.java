@@ -15,16 +15,17 @@ public interface AgentConversationHistoryMapper {
 
     @Select("""
             <script>
-            SELECT id AS message_id,turn_id,user_id,role,content,created_at
-            FROM agent_message
-            WHERE user_id=#{userId} AND state='FINAL'
-              AND id &lt; #{beforeMessageId}
+            SELECT m.id AS message_id,m.turn_id,m.user_id,m.role,m.content,m.created_at
+            FROM agent_message m
+            JOIN agent_episode e ON e.id=m.episode_id AND e.user_id=m.user_id AND e.state='ACTIVE'
+            WHERE m.user_id=#{userId} AND m.state='FINAL'
+              AND m.id &lt; #{beforeMessageId}
               AND (
                 <foreach collection="terms" item="term" separator=" OR ">
-                  content LIKE CONCAT('%',#{term},'%')
+                  m.content LIKE CONCAT('%',#{term},'%')
                 </foreach>
               )
-            ORDER BY id DESC LIMIT #{candidateLimit}
+            ORDER BY m.id DESC LIMIT #{candidateLimit}
             </script>
             """)
     List<AgentConversationHistoryHit> searchCandidates(@Param("userId") long userId,

@@ -220,7 +220,11 @@ class ArticleProjectionIntegrationTest extends IntegrationTestSupport {
         sendRouted(event);
 
         await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> {
-            ArticleDoc stored = articleRepository.findById(ARTICLE_ID).orElseThrow();
+            // 两次相同事件会被两个异步消费者并发处理；投影短暂不可见时应继续等待收敛，
+            // 而不是让 Optional.orElseThrow() 提前终止 Awaitility 的重试。
+            var result = articleRepository.findById(ARTICLE_ID);
+            assertThat(result).isPresent();
+            ArticleDoc stored = result.orElseThrow();
             assertThat(stored.getRevisionId()).isEqualTo(publicRevision);
             assertThat(stored.getContentHash()).isEqualTo(publicHash);
             assertThat(jdbcTemplate.queryForObject("""

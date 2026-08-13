@@ -86,10 +86,13 @@ class TemporaryTurnExecutionIntegrationTest extends IntegrationTestSupport {
         JsonNode snapshot = awaitSucceeded(turnId);
         assertThat(snapshot.path("temporary").asBoolean()).isTrue();
         assertThat(snapshot.path("finalMessage").asText()).isEqualTo("temporary answer");
-        assertThat(jdbcTemplate.queryForObject("""
-                SELECT COUNT(*) FROM agent_run_guard
-                WHERE user_id=? AND active_run_id IS NOT NULL
-                """, Integer.class, OWNER)).isZero();
+        // Redis 的终态快照会先于 MySQL 事务提交对轮询线程可见，因此必须等待共享 guard 完成提交，
+        // 不能把正常的跨存储可见性窗口误判成租约泄漏。
+        org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                assertThat(jdbcTemplate.queryForObject("""
+                        SELECT COUNT(*) FROM agent_run_guard
+                        WHERE user_id=? AND active_run_id IS NOT NULL
+                        """, Integer.class, OWNER)).isZero());
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM agent_turn WHERE user_id=?", Integer.class, OWNER)).isZero();
         assertThat(jdbcTemplate.queryForObject(

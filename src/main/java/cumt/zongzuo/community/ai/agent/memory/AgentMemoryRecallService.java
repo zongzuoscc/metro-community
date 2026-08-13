@@ -49,13 +49,28 @@ public class AgentMemoryRecallService {
 
     private static int score(AgentMemoryView memory, Set<String> terms) {
         String content = memory.content().toLowerCase(Locale.ROOT);
-        return terms.stream().mapToInt(term -> content.contains(term) ? 1 : 0).sum();
+        // 较长的词片段具有更强区分度，避免两个常见汉字就把无关记忆排到前面。
+        return terms.stream().mapToInt(term -> content.contains(term) ? term.length() : 0).sum();
     }
 
     private static Set<String> terms(String query) {
         if (query == null) return Set.of();
-        return java.util.Arrays.stream(query.toLowerCase(Locale.ROOT)
-                        .replaceAll("[^\\p{L}\\p{N}]+", " ").split("\\s+"))
-                .filter(term -> term.length() >= 2).collect(Collectors.toSet());
+        java.util.LinkedHashSet<String> result = new java.util.LinkedHashSet<>();
+        for (String token : query.toLowerCase(Locale.ROOT)
+                .replaceAll("[^\\p{L}\\p{N}]+", " ").split("\\s+")) {
+            if (token.length() >= 2) result.add(token);
+            // 中文问句通常没有空格；若只把整句当一个 token，
+            // “你记得我喜欢什么吗”便无法命中“我喜欢简洁回答”。因此有界地生成 2~4 字片段。
+            if (token.codePoints().allMatch(cp -> Character.UnicodeScript.of(cp)
+                    == Character.UnicodeScript.HAN)) {
+                int[] points = token.codePoints().toArray();
+                for (int width : new int[]{4, 3, 2}) {
+                    for (int index = 0; index + width <= points.length; index++) {
+                        result.add(new String(points, index, width));
+                    }
+                }
+            }
+        }
+        return result.stream().limit(48).collect(Collectors.toCollection(java.util.LinkedHashSet::new));
     }
 }

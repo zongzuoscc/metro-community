@@ -5,7 +5,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 长期记忆的用户所有者 CRUD 边界，并管理“是否允许记忆”开关。
@@ -13,6 +15,8 @@ import java.util.List;
  */
 @Service
 public class AgentMemoryManagementService {
+
+    private static final Set<String> MANUAL_CATEGORIES = Set.of("PREFERENCE", "GOAL", "PROFILE");
 
     private final AgentMemoryMapper mapper;
     private final AgentMemoryRecallService recall;
@@ -37,6 +41,74 @@ public class AgentMemoryManagementService {
         AgentMemoryView memory = recall.find(userId, memoryId);
         if (memory == null) throw AiApiException.resourceNotFound();
         return memory;
+    }
+
+    /**
+     * 手动添加与自动捕获共用相同的敏感信息拦截、内容去重和不可变版本结构。
+     * 手动来源不伪造 conversation message；界面依据“是否存在 source 行”展示来源。
+     */
+    public AgentMemoryView create(long userId, String category, String content,
+                                  LocalDateTime expiresAt) {
+        String normalized = AgentMemoryCaptureService.normalize(content);
+        validateManual(category, content, normalized, expiresAt);
+        return transactions.execute(status -> {
+            mapper.ensureSetting(userId);
+            if (mapper.contentHashCount(userId, AgentMemoryCaptureService.sha256(normalized)) > 0) {
+                throw AiApiException.idempotencyConflict();
+            }
+            AgentMemoryMapper.MemoryInsert item = new AgentMemoryMapper.MemoryInsert();
+            item.userId = userId;
+            item.category = category;
+            item.expiresAt = expiresAt;
+            mapper.insertItem(item);
+            AgentMemoryMapper.MemoryVersionInsert version = new AgentMemoryMapper.MemoryVersionInsert();
+            version.userId = userId;
+            version.memoryId = item.id;
+            version.versionNo = 1;
+            version.content = content.strip();
+            version.normalizedContent = normalized;
+            version.contentHash = AgentMemoryCaptureService.sha256(normalized);
+            mapper.insertVersion(version);
+            if (mapper.activateVersion(item.id, userId, version.id) != 1) {
+                throw new IllegalStateException("Manual memory activation lost its owner binding");
+            }
+            mapper.insertProjection(version.id, userId);
+            mapper.incrementEpoch(userId);
+            return mapper.find(item.id, userId);
+        });
+    }
+
+    /** 更新绝对到期时间；null 表示由用户明确改为永不过期。 */
+    public AgentMemoryView updateExpiry(long userId, long memoryId,
+                                        LocalDateTime expiresAt, long expectedVersion) {
+        validateExpiry(expiresAt);
+        return transactions.execute(status -> {
+            Long lockVersion = mapper.itemLockVersion(memoryId, userId);
+            if (lockVersion == null) throw AiApiException.resourceNotFound();
+            AgentMemoryView current = mapper.find(memoryId, userId);
+            if (current == null) throw AiApiException.resourceNotFound();
+            if (current.version() != expectedVersion) throw AiApiException.optimisticLockConflict();
+            if (mapper.updateExpiry(memoryId, userId, expiresAt, lockVersion) != 1) {
+                throw AiApiException.optimisticLockConflict();
+            }
+            mapper.incrementEpoch(userId);
+            return mapper.find(memoryId, userId);
+        });
+    }
+
+    private void validateManual(String category, String content, String normalized,
+                                LocalDateTime expiresAt) {
+        if (!MANUAL_CATEGORIES.contains(category) || normalized.isBlank()
+                || !safety.canStore(content)) {
+            throw AiApiException.validationFailed();
+        }
+        validateExpiry(expiresAt);
+    }
+
+    private void validateExpiry(LocalDateTime expiresAt) {
+        if (expiresAt != null && !expiresAt.isAfter(LocalDateTime.now())) {
+            throw AiApiException.validationFailed();
+        }
     }
 
     /**

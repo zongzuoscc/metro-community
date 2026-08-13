@@ -9,6 +9,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -39,6 +40,15 @@ public class AgentMemoryController {
         return memories.get(CurrentUser.id(), memoryId);
     }
 
+    /** 用户主动添加长期记忆，后端仍执行敏感信息拦截和去重。 */
+    @PostMapping("/memories")
+    public ResponseEntity<AgentMemoryView> create(
+            @Valid @RequestBody AgentMemoryCreateRequest request) {
+        return ResponseEntity.status(org.springframework.http.HttpStatus.CREATED)
+                .body(memories.create(CurrentUser.id(), request.category(), request.content(),
+                        request.expiresAt()));
+    }
+
     @PutMapping("/memories/{memoryId}")
     public AgentMemoryView edit(@PathVariable long memoryId,
                                 @Valid @RequestBody AgentMemoryUpdateRequest request) {
@@ -55,6 +65,14 @@ public class AgentMemoryController {
     public AgentMemoryView updateState(@PathVariable long memoryId,
                                        @Valid @RequestBody AgentMemoryStateRequest request) {
         return memories.updateState(CurrentUser.id(), memoryId, request.paused(), request.expectedVersion());
+    }
+
+    /** 单独更新到期时间，不制造一个内容未变的假版本。 */
+    @PutMapping("/memories/{memoryId}/expiry")
+    public AgentMemoryView updateExpiry(@PathVariable long memoryId,
+                                        @Valid @RequestBody AgentMemoryExpiryRequest request) {
+        return memories.updateExpiry(CurrentUser.id(), memoryId, request.expiresAt(),
+                request.expectedVersion());
     }
 
     @GetMapping("/memory-settings")

@@ -13,6 +13,7 @@ import cumt.zongzuo.community.ai.agent.turn.AgentTurnRunner;
 import cumt.zongzuo.community.ai.agent.turn.AgentTurnSnapshot;
 import cumt.zongzuo.community.ai.agent.turn.AgentTurnHistoryPage;
 import cumt.zongzuo.community.ai.agent.turn.AgentConversationPreferenceService;
+import cumt.zongzuo.community.ai.agent.turn.AgentConversationContextService;
 import cumt.zongzuo.community.ai.agent.temporary.TemporaryTurnAdmission;
 import cumt.zongzuo.community.ai.agent.temporary.TemporaryTurnAdmissionService;
 import cumt.zongzuo.community.ai.agent.temporary.TemporaryTurnRunner;
@@ -64,6 +65,7 @@ public class AgentTurnController {
     private final MetroAiProperties properties;
     private final ObjectMapper objectMapper;
     private final AgentConversationPreferenceService preferences;
+    private final AgentConversationContextService contexts;
 
     public AgentTurnController(AgentTurnAdmissionService admissions,
                                TemporaryTurnAdmissionService temporaryAdmissions,
@@ -73,7 +75,8 @@ public class AgentTurnController {
                                ObjectProvider<AgentTurnRunner> runners,
                                ObjectProvider<TemporaryTurnRunner> temporaryRunners,
                                MetroAiProperties properties, ObjectMapper objectMapper,
-                               AgentConversationPreferenceService preferences) {
+                               AgentConversationPreferenceService preferences,
+                               AgentConversationContextService contexts) {
         this.admissions = admissions;
         this.temporaryAdmissions = temporaryAdmissions;
         this.queries = queries;
@@ -84,6 +87,7 @@ public class AgentTurnController {
         this.properties = properties;
         this.objectMapper = objectMapper;
         this.preferences = preferences;
+        this.contexts = contexts;
     }
 
     /** 返回当前用户唯一主对话的联网偏好；默认值为开启。 */
@@ -108,6 +112,13 @@ public class AgentTurnController {
             @RequestParam(required = false) Long beforeTurnId,
             @RequestParam(defaultValue = "30") int size) {
         return queries.history(CurrentUser.id(), beforeTurnId, size);
+    }
+
+    /** 保留可见历史，但让下一轮开始一个不搜索旧消息的新上下文段。 */
+    @PostMapping("/context/reset")
+    public ResponseEntity<Void> resetContext() {
+        contexts.reset(CurrentUser.id());
+        return ResponseEntity.noContent().build();
     }
 
     /**

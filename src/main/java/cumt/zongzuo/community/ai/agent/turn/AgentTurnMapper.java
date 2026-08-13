@@ -129,6 +129,26 @@ public interface AgentTurnMapper {
     Long selectActiveEpisodeIdForUpdate(@Param("userId") long userId,
                                         @Param("conversationId") long conversationId);
 
+    /** 将当前上下文段封存；历史消息仍保留在主对话中供用户回看。 */
+    @Update("""
+            UPDATE agent_episode SET state='SEALED',sealed_at=CURRENT_TIMESTAMP(6),
+              updated_at=CURRENT_TIMESTAMP(6)
+            WHERE id=#{episodeId} AND user_id=#{userId} AND state='ACTIVE'
+            """)
+    int sealActiveEpisode(@Param("episodeId") long episodeId,
+                          @Param("userId") long userId);
+
+    /** 在同一主对话下创建下一个活动上下文段，episode_no 只在行锁事务内递增。 */
+    @Insert("""
+            INSERT INTO agent_episode(user_id,conversation_id,episode_no,state,opened_at,
+              turn_count,token_count,created_at,updated_at)
+            SELECT #{userId},#{conversationId},COALESCE(MAX(episode_no),0)+1,'ACTIVE',
+              CURRENT_TIMESTAMP(6),0,0,CURRENT_TIMESTAMP(6),CURRENT_TIMESTAMP(6)
+            FROM agent_episode WHERE conversation_id=#{conversationId} AND user_id=#{userId}
+            """)
+    int insertNextEpisode(@Param("userId") long userId,
+                          @Param("conversationId") long conversationId);
+
     @Select("""
             SELECT * FROM agent_turn
             WHERE user_id=#{userId} AND conversation_id=#{conversationId}

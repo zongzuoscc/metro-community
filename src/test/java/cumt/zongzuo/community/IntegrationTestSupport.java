@@ -56,8 +56,8 @@ public abstract class IntegrationTestSupport {
     static final RabbitMQContainer RABBIT = new RabbitMQContainer("rabbitmq:3.13-management");
 
     /**
-     * The application mapping uses IK analyzers, so the test environment must use
-     * the same Elasticsearch image composition as the local Docker deployment.
+     * 应用映射使用 IK 分词，因此集成测试必须与本地部署使用同一种 ES 镜像组成。
+     * Apple Silicon 上首次加载 ES 8.18 偶尔会超过默认 60 秒，放宽启动期不改变测试断言。
      */
     static final ImageFromDockerfile ELASTICSEARCH_WITH_IK = new ImageFromDockerfile(
             "community-elasticsearch-ik-test:8.18.1", false)
@@ -71,7 +71,8 @@ public abstract class IntegrationTestSupport {
             .withEnv("discovery.type", "single-node")
             .withEnv("xpack.security.enabled", "false")
             .withEnv("xpack.security.http.ssl.enabled", "false")
-            .withEnv("ES_JAVA_OPTS", "-Xms512m -Xmx512m");
+            .withEnv("ES_JAVA_OPTS", "-Xms512m -Xmx512m")
+            .withStartupTimeout(java.time.Duration.ofMinutes(2));
 
     static {
         Startables.deepStart(Stream.of(MYSQL, REDIS, RABBIT, ELASTICSEARCH)).join();
