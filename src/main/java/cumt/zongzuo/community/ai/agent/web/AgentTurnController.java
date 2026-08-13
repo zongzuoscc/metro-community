@@ -100,8 +100,8 @@ public class AgentTurnController {
     }
 
     /**
-     * 全屏历史轨道的有界摘要接口。它仍然只有一个主对话，每一项是其中一轮
-     * 已完成问答，而不是新建 ChatGPT 式的多会话容器。
+     * 全屏主对话的有界历史接口。每一项既含轨道摘要，也含该轮完整问答，
+     * 前端因此可以连续渲染全部已加载内容，并让轨道只负责滚动定位。
      */
     @GetMapping("/history")
     public AgentTurnHistoryPage history(

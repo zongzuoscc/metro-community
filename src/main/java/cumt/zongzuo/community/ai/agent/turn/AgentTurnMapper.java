@@ -162,6 +162,8 @@ public interface AgentTurnMapper {
             SELECT t.id AS turn_id,
                    LEFT(u.content,120) AS question_preview,
                    LEFT(a.content,240) AS answer_preview,
+                   u.content AS user_message,
+                   a.content AS final_message,
                    t.created_at
             FROM agent_turn t
             JOIN agent_message u ON u.turn_id=t.id AND u.user_id=t.user_id

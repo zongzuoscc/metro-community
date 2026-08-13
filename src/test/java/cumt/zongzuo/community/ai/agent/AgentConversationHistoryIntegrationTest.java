@@ -116,6 +116,8 @@ class AgentConversationHistoryIntegrationTest extends IntegrationTestSupport {
             assertThat(item.turnId()).isEqualTo(newer.turnId());
             assertThat(item.questionPreview()).isEqualTo("第二轮问题");
             assertThat(item.answerPreview()).isEqualTo("第二轮完整回答");
+            assertThat(item.userMessage()).isEqualTo("第二轮问题");
+            assertThat(item.finalMessage()).isEqualTo("第二轮完整回答");
         });
         assertThat(firstPage.nextBeforeTurnId()).isEqualTo(newer.turnId());
 

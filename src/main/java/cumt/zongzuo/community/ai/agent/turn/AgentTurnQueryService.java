@@ -42,7 +42,7 @@ public class AgentTurnQueryService {
     }
 
     /**
-     * 读取当前用户唯一主对话的历史摘要。
+     * 读取当前用户唯一主对话的一页完整历史。
      *
      * <p>游标只能向更早的 turnId 移动，页大小上限为 50，避免全屏侧边栏变成
      * 一次性导出全部对话的隐式接口。</p>
@@ -56,7 +56,8 @@ public class AgentTurnQueryService {
         boolean hasMore = rows.size() > size;
         List<AgentTurnHistoryItem> items = rows.stream().limit(size)
                 .map(row -> new AgentTurnHistoryItem(row.getTurnId(), row.getQuestionPreview(),
-                        row.getAnswerPreview(), row.getCreatedAt()))
+                        row.getAnswerPreview(), row.getUserMessage(), row.getFinalMessage(),
+                        row.getCreatedAt()))
                 .toList();
         Long next = hasMore && !items.isEmpty() ? items.get(items.size() - 1).turnId() : null;
         return new AgentTurnHistoryPage(items, next);
