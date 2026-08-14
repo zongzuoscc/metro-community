@@ -87,6 +87,38 @@
                 </div>
                 <el-button text type="primary" disabled>暂不支持换绑</el-button>
               </div>
+
+              <el-divider />
+
+              <section class="deletion-panel" :class="{ 'is-pending': deletion.state === 'PENDING_DELETE' }">
+                <div>
+                  <p class="deletion-panel__eyebrow">账号生命周期</p>
+                  <h2 class="pane-title">注销账号</h2>
+                  <template v-if="deletion.state === 'PENDING_DELETE'">
+                    <p>账号正在七天反悔期内，预计于 <strong>{{ formatDeadline(deletion.purgeAfter) }}</strong> 完成注销。</p>
+                    <p class="deletion-panel__hint">恢复后原有文章、对话和记忆设置仍可继续使用。</p>
+                  </template>
+                  <template v-else>
+                    <p>申请后会立即限制账号访问，但不会马上删除。七天内重新登录可随时恢复。</p>
+                    <p class="deletion-panel__hint">到期后仅逻辑删除账号并脱敏私人数据，已发布文章的作者审计仍会保留。</p>
+                  </template>
+                </div>
+                <el-button
+                    v-if="deletion.state === 'PENDING_DELETE'"
+                    data-test="restore-account"
+                    type="primary"
+                    :loading="deletionLoading"
+                    @click="restoreAccount"
+                >恢复账号</el-button>
+                <el-button
+                    v-else
+                    data-test="request-account-deletion"
+                    type="danger"
+                    plain
+                    :loading="deletionLoading"
+                    @click="requestAccountDeletion"
+                >申请注销</el-button>
+              </section>
             </div>
           </el-tab-pane>
 
@@ -133,6 +165,10 @@ const pwdForm = reactive({
   newPassword: '',
   confirmPassword: ''
 })
+
+// 注销状态独立加载：待删除用户会被后端禁止访问 /info，但仍必须能进入这里恢复。
+const deletionLoading = ref(false)
+const deletion = reactive({ state: 'ACTIVE', requestedAt: null, purgeAfter: null })
 
 // 密码校验规则
 const validatePass2 = (rule, value, callback) => {
@@ -243,6 +279,62 @@ const handleForget = () => {
   }).catch(() => {})
 }
 
+const loadAccountDeletion = async () => {
+  try {
+    const res = await request.get('/api/user/account-deletion')
+    if (res.code === 200 && res.data) Object.assign(deletion, res.data)
+  } catch (e) {
+    // request.js 已给出统一网络提示；这里保留默认 ACTIVE，页面其它设置仍可使用。
+  }
+}
+
+const requestAccountDeletion = async () => {
+  try {
+    await ElMessageBox.confirm(
+      '申请后账号会立即进入受限状态，并在七天后完成逻辑删除。七天内可重新登录恢复，是否继续？',
+      '申请注销账号',
+      { confirmButtonText: '进入七天反悔期', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch (e) {
+    return
+  }
+  deletionLoading.value = true
+  try {
+    const res = await request.post('/api/user/account-deletion/request', {
+      confirmation: 'DELETE_MY_ACCOUNT'
+    })
+    Object.assign(deletion, res.data)
+    ElMessage.success('注销申请已提交，七天内可恢复')
+    closeWebSocket()
+    localStorage.clear()
+    window.dispatchEvent(new Event('metro-auth-changed'))
+    router.push('/login')
+  } catch (e) {
+    ElMessage.error(e.message || '注销申请失败')
+  } finally {
+    deletionLoading.value = false
+  }
+}
+
+const restoreAccount = async () => {
+  deletionLoading.value = true
+  try {
+    const res = await request.post('/api/user/account-deletion/restore')
+    Object.assign(deletion, res.data)
+    ElMessage.success('账号已恢复')
+  } catch (e) {
+    ElMessage.error(e.message || '账号恢复失败')
+  } finally {
+    deletionLoading.value = false
+  }
+}
+
+const formatDeadline = (value) => {
+  if (!value) return '未知时间'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false })
+}
+
 // 头像上传相关
 const handleAvatarSuccess = (response, uploadFile) => {
   if(response.code === 200) {
@@ -261,6 +353,7 @@ const beforeAvatarUpload = (rawFile) => {
 
 onMounted(() => {
   loadUserInfo()
+  loadAccountDeletion()
 })
 </script>
 
@@ -309,6 +402,16 @@ onMounted(() => {
   background: #f8f9fa; padding: 20px; border-radius: 4px; display: flex; justify-content: space-between; align-items: center;
   .email-info { color: #666; .email-text { font-weight: 600; color: #333; margin-left: 10px; } }
 }
+
+.deletion-panel {
+  display: flex; align-items: center; justify-content: space-between; gap: 28px;
+  padding: 22px; border: 1px solid var(--line); background: #fffdf9;
+  p { margin: 6px 0; color: var(--ink-muted); font-size: 13px; line-height: 1.7; }
+  .pane-title { margin: 4px 0 12px; }
+  &.is-pending { border-color: #d39a55; background: #fff8ea; }
+}
+.deletion-panel__eyebrow { color: var(--accent) !important; font-size: 11px !important; font-weight: 700; letter-spacing: .12em; }
+.deletion-panel__hint { font-size: 12px !important; }
 
 .setting-layout { background: var(--paper-muted); padding-top: var(--space-5); }
 .nav-back { width: min(1180px, calc(100% - 32px)); color: var(--ink-muted); }

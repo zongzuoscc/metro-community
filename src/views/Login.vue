@@ -117,13 +117,14 @@ const handleLogin = async () => {
           localStorage.setItem('user', JSON.stringify(userData))
           // 同标签页修改 localStorage 不会触发 storage 事件，主动通知全局桌宠刷新登录状态。
           window.dispatchEvent(new Event('metro-auth-changed'))
-          initWebSocket(userData.token)
 
-          ElMessage.success('登录成功，欢迎回来！')
+          const deletionPending = userData.accountState === 'PENDING_DELETE'
+          if (!deletionPending) initWebSocket(userData.token)
+          ElMessage.success(deletionPending ? '账号仍在七天反悔期，请在设置中恢复' : '登录成功，欢迎回来！')
 
           // 稍微延迟跳转，提升体验
           setTimeout(() => {
-            router.push('/home')
+            router.push(deletionPending ? '/settings' : '/home')
           }, 800)
         } else {
           ElMessage.error(res.msg || '登录失败')

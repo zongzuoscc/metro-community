@@ -1,9 +1,13 @@
 import request from '../utils/request'
 import { createAgentSseParser } from '../utils/agentSse'
 
+// Agent 进程拥有独立端口。所有 JSON 与 SSE 请求都从同一环境变量解析地址，
+// 避免普通接口仍在 18080 时，只有事件流或个别操作被错误发往主业务进程。
+const agentApiBase = import.meta.env.VITE_AGENT_API_BASE_URL || 'http://localhost:18081'
+
 // Agent 控制器返回标准 JSON 或 204，因此每个请求都显式启用 rawResponse，
 // 防止它被旧接口的 code/data/msg 响应拦截规则误判为业务失败。
-const raw = Object.freeze({ rawResponse: true })
+const raw = Object.freeze({ rawResponse: true, baseURL: agentApiBase })
 
 /** 创建或复用当前用户唯一的临时会话，后端不会因重复创建而滑动延长有效期。 */
 export const createTemporarySession = () =>
@@ -123,8 +127,7 @@ export const deleteAgentMemory = memoryId =>
  * axios 在当前项目中用于 JSON 请求；流式正文改用 ReadableStream，才能在完整响应结束前逐帧更新界面。
  */
 export async function streamAgentTurnEvents(turnId, { after, onEvent, signal } = {}) {
-  const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:18080'
-  const url = new URL(`/api/agent/turns/${turnId}/events`, apiBase)
+  const url = new URL(`/api/agent/turns/${turnId}/events`, agentApiBase)
   if (after) url.searchParams.set('after', after)
 
   const token = localStorage.getItem('token')
