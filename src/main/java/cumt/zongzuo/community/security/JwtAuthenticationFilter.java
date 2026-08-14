@@ -15,6 +15,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 
 @Component
@@ -36,10 +37,14 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             try {
                 Long userId = jwtService.parse(token);
                 User user = userService.getUserCached(userId);
-                if (user != null && !isBanned(user)) {
-                    List<SimpleGrantedAuthority> authorities = user.getRole() != null && user.getRole() == 1
-                            ? List.of(new SimpleGrantedAuthority("ROLE_ADMIN"))
-                            : List.of();
+                if (user != null && !isBanned(user) && !isDeleted(user)) {
+                    List<SimpleGrantedAuthority> authorities = new ArrayList<>();
+                    if (isActive(user)) {
+                        authorities.add(new SimpleGrantedAuthority("ACCOUNT_ACTIVE"));
+                        if (user.getRole() != null && user.getRole() == 1) {
+                            authorities.add(new SimpleGrantedAuthority("ROLE_ADMIN"));
+                        }
+                    }
                     SecurityContextHolder.getContext().setAuthentication(
                             new UsernamePasswordAuthenticationToken(userId, null, authorities));
                 }
@@ -65,5 +70,14 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             return false;
         }
         return user.getBanTime() == null || LocalDateTime.now().isBefore(user.getBanTime());
+    }
+
+    /** 旧数据库行在迁移瞬间可能暂时为 null，按 ACTIVE 兼容，迁移完成后列为 NOT NULL。 */
+    private boolean isActive(User user) {
+        return user.getAccountState() == null || "ACTIVE".equals(user.getAccountState());
+    }
+
+    private boolean isDeleted(User user) {
+        return "DELETED".equals(user.getAccountState()) || Integer.valueOf(1).equals(user.getDeleted());
     }
 }

@@ -82,7 +82,9 @@ public class SecurityConfig {
                                 "/api/user/profile/**", "/api/user/search").permitAll()
                         .requestMatchers("/api/admin/moderation", "/api/admin/moderation/**").hasRole("ADMIN")
                         .requestMatchers("/api/article/admin/**", "/api/user/admin/**", "/api/report/admin/**").hasRole("ADMIN")
-                        .requestMatchers("/api/**").authenticated()
+                        // 待注销账号仍需用旧 JWT 进入恢复入口，但不能继续读取或修改其它私人资源。
+                        .requestMatchers("/api/user/account-deletion", "/api/user/account-deletion/**").authenticated()
+                        .requestMatchers("/api/**").hasAuthority("ACCOUNT_ACTIVE")
                         .anyRequest().denyAll())
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
 

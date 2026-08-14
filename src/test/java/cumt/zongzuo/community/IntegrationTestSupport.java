@@ -35,12 +35,17 @@ import java.util.stream.Stream;
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {
+                // 集成测试只使用下方的显式测试配置，不能被开发者本机 .env 开关污染。
+                "spring.config.import=",
                 "metro.ai.enabled=false",
                 "metro.ai.agent.enabled=false",
                 "metro.ai.memory.enabled=false",
                 "metro.ai.writing.enabled=false",
                 "metro.ai.moderation.enabled=false",
                 "metro.ai.embedding.enabled=false",
+                "metro.projection.article-chunks.enabled=false",
+                "metro.projection.article-chunk-elasticsearch.enabled=false",
+                "metro.projection.article-chunk-milvus.enabled=false",
                 "METRO_AI_PLATFORM_API_KEY="
         })
 @Import(IntegrationTestSupport.RolloutTestConfiguration.class)

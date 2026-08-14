@@ -48,6 +48,8 @@ public class AiProblemDetailAdvice extends ResponseEntityExceptionHandler {
     @ExceptionHandler(AiExecutionException.class)
     ResponseEntity<Object> handleAiExecutionException(AiExecutionException error,
                                                        HttpServletRequest request) {
+        log.warn("AI 能力执行失败 requestId={} reason={}",
+                AiProblemDetails.requestId(request), error.reason());
         ErrorContract contract = executionContract(error.reason());
         Integer retryAfter = contract.retryable()
                 ? secondsOrDefault(error.retryAfter().orElse(null)) : null;
@@ -58,6 +60,8 @@ public class AiProblemDetailAdvice extends ResponseEntityExceptionHandler {
     @ExceptionHandler(AiProviderException.class)
     ResponseEntity<Object> handleAiProviderException(AiProviderException error,
                                                       HttpServletRequest request) {
+        log.warn("AI 供应商调用失败 requestId={} reason={} httpStatus={}",
+                AiProblemDetails.requestId(request), error.reason(), error.httpStatus().orElse(null));
         ErrorContract contract = providerContract(error.reason());
         Integer retryAfter = contract.retryable() ? DEFAULT_RETRY_AFTER_SECONDS : null;
         return response(request, contract.status(), contract.code(), contract.retryable(),
@@ -67,6 +71,8 @@ public class AiProblemDetailAdvice extends ResponseEntityExceptionHandler {
     @ExceptionHandler(InvalidAgentAnswerException.class)
     ResponseEntity<Object> handleInvalidAgentAnswer(InvalidAgentAnswerException error,
                                                      HttpServletRequest request) {
+        log.warn("Agent 最终答案校验失败 requestId={} reason={}",
+                AiProblemDetails.requestId(request), error.getMessage());
         return response(request, HttpStatus.SERVICE_UNAVAILABLE, "AI_UNAVAILABLE",
                 false, null, List.of());
     }

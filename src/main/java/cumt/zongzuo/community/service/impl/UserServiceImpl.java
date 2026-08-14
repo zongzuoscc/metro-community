@@ -212,6 +212,10 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
             return Result.error("用户不存在");
         }
 
+        if ("DELETED".equals(user.getAccountState())) {
+            return Result.error("该账号已经注销");
+        }
+
         // 2. 【新增】检查封禁状态 (核心拦截逻辑)
         // 如果 status 为 1，直接阻断，不进行密码校验也不发放 Token
         if (Integer.valueOf(1).equals(user.getStatus())) {
@@ -244,6 +248,9 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
 
         // 核心字段，前端用于判断“是否有管理权限”
         map.put("role", user.getRole());
+        // 反悔期内仍签发受限令牌，只允许用户进入设置页恢复账号。
+        map.put("accountState", user.getAccountState() == null ? "ACTIVE" : user.getAccountState());
+        map.put("purgeAfter", user.getPurgeAfter());
 
         return Result.success(map);
     }

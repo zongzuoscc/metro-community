@@ -34,6 +34,21 @@ public class User implements Serializable {
      */
     private LocalDateTime banTime;
 
+    /**
+     * 账号生命周期状态。ACTIVE 可正常使用；PENDING_DELETE 处于七天反悔期；
+     * DELETED 表示到期后已经脱敏并完成逻辑删除。
+     */
+    private String accountState;
+
+    /** 用户提交注销申请的数据库时间。 */
+    private LocalDateTime deletionRequestedAt;
+
+    /** 注销反悔期截止时间；所有到期判断都使用数据库时间。 */
+    private LocalDateTime purgeAfter;
+
+    /** 注销状态的乐观锁版本，防止恢复与清理任务并发覆盖。 */
+    private Long deletionVersion;
+
     @TableLogic // 逻辑删除注解
     private Integer deleted;
 

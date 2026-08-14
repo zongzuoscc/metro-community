@@ -61,6 +61,7 @@ public class GroundedAnswerService {
             Return exactly one JSON object with fields answer and citations. For claims based on a
             community source, put [1], [2] markers in answer. Each citation must contain exactly
             marker, sourceId, and a verbatim quote of 8 to 240 Unicode characters from that source.
+            Use a JSON integer such as 1 for citation marker, not the string "[1]".
             The citations array is exclusively for community sources. Never put web sources in it.
             Memories and history do not use citation markers. Web material uses only [W<number>]
             markers in answer that already occur in the supplied web summary. Clearly label answer sections as

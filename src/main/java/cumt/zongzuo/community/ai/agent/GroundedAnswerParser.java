@@ -80,11 +80,11 @@ public final class GroundedAnswerParser {
         List<AgentCitation> citations = new ArrayList<>();
         Set<Integer> citationMarkers = new HashSet<>();
         for (JsonNode citation : root.path("citations")) {
-            if (!exactObject(citation, CITATION_FIELDS) || !citation.path("marker").isInt()
+            if (!exactObject(citation, CITATION_FIELDS)
                     || !citation.path("sourceId").isTextual() || !citation.path("quote").isTextual()) {
                 throw invalid("Provider citation has an invalid schema");
             }
-            int marker = citation.path("marker").intValue();
+            int marker = citationMarker(citation.path("marker"));
             String sourceId = citation.path("sourceId").textValue();
             String quote = citation.path("quote").textValue().strip();
             ResolvedArticleChunk source = sources.get(sourceId);
@@ -132,6 +132,27 @@ public final class GroundedAnswerParser {
 
     private static int codePoints(String value) {
         return value.codePointCount(0, value.length());
+    }
+
+    /**
+     * 兼容 OpenAI 兼容模型常见的数字标记和带方括号的字符串标记。
+     *
+     * <p>字符串仍只允许严格的 {@code 1} 或 {@code [1]} 格式，不做宽松数字
+     * 转换；后续还会校验连续序号、授权 sourceId 与原文引用，因此不会放宽
+     * 站内引用的可信边界。</p>
+     */
+    private static int citationMarker(JsonNode marker) {
+        if (marker != null && marker.isInt()) {
+            return marker.intValue();
+        }
+        if (marker != null && marker.isTextual()) {
+            Matcher matcher = Pattern.compile("^\\[?(\\d{1,2})]?$", Pattern.CASE_INSENSITIVE)
+                    .matcher(marker.textValue().strip());
+            if (matcher.matches()) {
+                return Integer.parseInt(matcher.group(1));
+            }
+        }
+        throw invalid("Provider citation has an invalid schema");
     }
 
     private static InvalidAgentAnswerException invalid(String message) {

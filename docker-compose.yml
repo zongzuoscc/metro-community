@@ -28,7 +28,9 @@ services:
     volumes:
       - metro-community-redis-data:/data
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli -a '$${REDIS_PASSWORD}' ping | grep -q PONG"]
+      # Compose 使用 $$ 把变量留给容器内的 shell；双引号允许展开并保护密码中的特殊字符。
+      # 旧写法套了单引号，Redis 实际收到字面量 ${REDIS_PASSWORD}，容器会永久 unhealthy。
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$${REDIS_PASSWORD}\" ping | grep -q PONG"]
       interval: 10s
       timeout: 5s
       retries: 12

@@ -9,6 +9,7 @@ import cumt.zongzuo.community.recommendation.mq.RecommendationEventConsumer;
 import cumt.zongzuo.community.recommendation.service.RecommendationFactPersistenceService;
 import cumt.zongzuo.community.recommendation.service.RecommendationMetricsService;
 import cumt.zongzuo.community.recommendation.service.RecommendationProfileService;
+import cumt.zongzuo.community.recommendation.service.RecommendationProfileWriteException;
 import cumt.zongzuo.community.recommendation.service.RecommendationProfileRecoveryService;
 import cumt.zongzuo.community.recommendation.task.RecommendationOutboxDispatcher;
 import cumt.zongzuo.community.recommendation.task.RecommendationProfileRepairTask;
@@ -27,6 +28,7 @@ import org.springframework.data.redis.connection.RedisStandaloneConfiguration;
 import org.springframework.data.redis.connection.lettuce.LettuceClientConfiguration;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 
 import java.net.ServerSocket;
 import java.time.Clock;
@@ -45,6 +47,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.awaitility.Awaitility.await;
+import static org.mockito.Mockito.doThrow;
 
 class RecommendationEventIntegrationTest extends IntegrationTestSupport {
 
@@ -63,7 +66,7 @@ class RecommendationEventIntegrationTest extends IntegrationTestSupport {
     private StringRedisTemplate redisTemplate;
     @Autowired
     private RabbitListenerEndpointRegistry listenerRegistry;
-    @Autowired
+    @MockitoSpyBean
     private RecommendationProfileService profileService;
     @Autowired
     private RecommendationEventConsumer consumer;
@@ -88,6 +91,9 @@ class RecommendationEventIntegrationTest extends IntegrationTestSupport {
     @AfterAll
     void stopRecommendationListener() {
         listenerRegistry.getListenerContainer("recommendationEventConsumer").stop();
+        // 该测试创建了固定用户；必须在共享 Testcontainer 进入下一测试类前清理，
+        // 否则后续同 ID 的鉴权测试会被主键污染。
+        jdbcTemplate.update("DELETE FROM sys_user WHERE id=?", USER_ID);
     }
 
     @BeforeEach
@@ -104,7 +110,15 @@ class RecommendationEventIntegrationTest extends IntegrationTestSupport {
         jdbcTemplate.update("DELETE FROM article_tag");
         jdbcTemplate.update("DELETE FROM tag");
         jdbcTemplate.update("DELETE FROM article");
+        jdbcTemplate.update("DELETE FROM sys_user WHERE id=?", USER_ID);
         redisTemplate.getConnectionFactory().getConnection().serverCommands().flushDb();
+
+        jdbcTemplate.update("""
+                INSERT INTO sys_user
+                    (id,username,password,email,role,status,deleted,account_state,deletion_version)
+                VALUES (?, 'recommendation-user', 'not-used', 'recommendation-user@example.com',
+                        0, 0, 0, 'ACTIVE', 0)
+                """, USER_ID);
 
         jdbcTemplate.update("""
                 INSERT INTO article
@@ -132,6 +146,64 @@ class RecommendationEventIntegrationTest extends IntegrationTestSupport {
             assertThat(redisTemplate.getExpire(eventMetricKey(event))).isPositive()
                     .isLessThanOrEqualTo(Duration.ofDays(40).toSeconds());
         });
+    }
+
+    @Test
+    void delayedEventAfterAccountPurgeIsAcknowledgedWithoutRecreatingPrivateFacts() {
+        RecommendationEventCommand event = event(
+                RecommendationEventType.VIEW, ARTICLE_ID, null, "view:deleted-user-late-delivery");
+        jdbcTemplate.update("""
+                UPDATE sys_user
+                SET account_state='DELETED',deleted=1,email=NULL
+                WHERE id=?
+                """, USER_ID);
+
+        assertThatCode(() -> consumer.consume(event)).doesNotThrowAnyException();
+
+        assertThat(eventCount()).isZero();
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM recommendation_profile_checkpoint WHERE user_id=?",
+                Integer.class, USER_ID)).isZero();
+        assertThat(redisTemplate.opsForValue().get(eventMetricKey(event))).isNull();
+    }
+
+    @Test
+    void profileRecoveryForDeletedAccountRemovesStaleRedisInsteadOfRebuildingIt() {
+        RecommendationEventCommand event = event(
+                RecommendationEventType.COLLECT, ARTICLE_ID, null, "collect:deleted-user-recovery");
+        insertEvent(event);
+        long factId = jdbcTemplate.queryForObject(
+                "SELECT id FROM user_article_event WHERE dedupe_key=?", Long.class, event.dedupeKey());
+        profileRecoveryService.requestRebuild(USER_ID, factId);
+        redisTemplate.opsForZSet().add(tagKey(), "stale-private-tag", 99D);
+        redisTemplate.opsForZSet().add(authorKey(), "9999", 99D);
+        jdbcTemplate.update("UPDATE sys_user SET account_state='DELETED',deleted=1 WHERE id=?", USER_ID);
+
+        assertThat(profileRecoveryService.repairDueProfiles()).isOne();
+
+        assertThat(profileService.profileTags(USER_ID, 5)).isEmpty();
+        assertThat(profileService.profileAuthors(USER_ID, 5)).isEmpty();
+    }
+
+    @Test
+    void proxiedConsumerKeepsFactAndRecoveryCheckpointWhenRedisProfileWriteFails() {
+        RecommendationEventCommand event = event(
+                RecommendationEventType.COMMENT, ARTICLE_ID, null, "comment:redis-write-rollback-fence");
+        doThrow(new RecommendationProfileWriteException(
+                "injected Redis failure", new IllegalStateException("redis unavailable")))
+                .when(profileService).rebuildProfile(USER_ID);
+
+        assertThatThrownBy(() -> consumer.consume(event))
+                .isInstanceOf(RecommendationProfileWriteException.class);
+
+        assertThat(eventCount()).isOne();
+        Map<String, Object> checkpoint = jdbcTemplate.queryForMap("""
+                SELECT requested_event_id,rebuilt_event_id,needs_rebuild
+                FROM recommendation_profile_checkpoint WHERE user_id=?
+                """, USER_ID);
+        assertThat(((Number) checkpoint.get("requested_event_id")).longValue()).isPositive();
+        assertThat(((Number) checkpoint.get("rebuilt_event_id")).longValue()).isZero();
+        assertThat(((Number) checkpoint.get("needs_rebuild")).intValue()).isEqualTo(1);
     }
 
     @Test

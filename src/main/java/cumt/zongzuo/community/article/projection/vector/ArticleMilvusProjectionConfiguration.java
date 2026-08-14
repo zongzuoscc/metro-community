@@ -10,6 +10,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Profile;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -44,6 +45,16 @@ class ArticleMilvusProjectionConfiguration {
     @Bean
     ArticleVectorRepository articleVectorRepository(MilvusClientV2 articleProjectionMilvusClient) {
         return new SdkArticleVectorRepository(articleProjectionMilvusClient);
+    }
+
+    @Bean(initMethod = "initialize")
+    @Profile("worker-service")
+    @ConditionalOnProperty(name = "metro.projection.article-chunk-milvus.initialize-schema",
+            havingValue = "true")
+    MilvusArticleSchemaInitializer milvusArticleSchemaInitializer(
+            MilvusClientV2 articleProjectionMilvusClient) {
+        return new MilvusArticleSchemaInitializer(
+                new SdkMilvusSchemaAdmin(articleProjectionMilvusClient));
     }
 
     @Bean

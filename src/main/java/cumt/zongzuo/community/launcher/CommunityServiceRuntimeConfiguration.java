@@ -48,7 +48,8 @@ import org.springframework.data.elasticsearch.repository.config.EnableElasticsea
         "cumt.zongzuo.community.ai.agent.turn",
         "cumt.zongzuo.community.ai.agent.memory",
         "cumt.zongzuo.community.ai.agent.history",
-        "cumt.zongzuo.community.ai.userprovider"}, annotationClass = Mapper.class)
+        "cumt.zongzuo.community.ai.userprovider",
+        "cumt.zongzuo.community.account"}, annotationClass = Mapper.class)
 @EnableElasticsearchRepositories(basePackages = "cumt.zongzuo.community.repository")
 @EnableConfigurationProperties({SecurityProperties.class, WebSocketProperties.class,
         RecommendationProperties.class, ArticleRevisionProperties.class,

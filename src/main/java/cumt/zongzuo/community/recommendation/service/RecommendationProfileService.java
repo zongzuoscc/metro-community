@@ -7,7 +7,6 @@ import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.data.redis.core.DefaultTypedTuple;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.dao.DataAccessException;
 import org.springframework.beans.factory.ObjectProvider;
@@ -67,9 +66,19 @@ public class RecommendationProfileService {
         this.clock = clock;
     }
 
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    @Transactional(noRollbackFor = RecommendationProfileWriteException.class)
     public void rebuildProfile(Long userId) {
         Objects.requireNonNull(userId, "userId must not be null");
+
+        // 所有画像重建入口（实时消费者、失败恢复、手工修复）都必须经过同一账号
+        // 行锁。这样 purgeDue 与重建严格串行，避免恢复任务在注销提交后写回旧画像。
+        List<String> accountStates = jdbcTemplate.query("""
+                SELECT account_state FROM sys_user WHERE id=? FOR UPDATE
+                """, (rs, rowNumber) -> rs.getString(1), userId);
+        if (accountStates.isEmpty() || "DELETED".equals(accountStates.getFirst())) {
+            deleteProfile(userId);
+            return;
+        }
         String lockName = "recommendation:profile:" + userId;
         boolean acquired = false;
         try {
@@ -98,6 +107,18 @@ public class RecommendationProfileService {
         return readProfileForServing(authorKey(userId), limit, Long::valueOf);
     }
 
+    /**
+     * 注销到期时在持有 sys_user 行锁的事务内调用。消费者也必须先取得同一行锁，
+     * 因而清理完成后不会再有旧消费者把私人画像写回 Redis。
+     */
+    public void deleteProfile(Long userId) {
+        Objects.requireNonNull(userId, "userId must not be null");
+        redisTemplate.delete(List.of(
+                tagKey(userId),
+                authorKey(userId),
+                "recommendation:feed:request:" + userId));
+    }
+
     private <T> Map<T, Double> readProfileForServing(String key, int limit,
                                                       java.util.function.Function<String, T> memberMapper) {
         try {
@@ -117,14 +138,28 @@ public class RecommendationProfileService {
         String suffix = ":rebuild:" + UUID.randomUUID();
         String temporaryTagKey = tagKey(userId) + suffix;
         String temporaryAuthorKey = authorKey(userId) + suffix;
+        DataAccessException redisFailure = null;
         try {
             writeProfile(temporaryTagKey, tags);
             writeProfile(temporaryAuthorKey, authors);
             redisTemplate.execute(REPLACE_PROFILE_SCRIPT,
                     List.of(temporaryTagKey, tagKey(userId), temporaryAuthorKey, authorKey(userId)),
                     Long.toString(TimeUnit.DAYS.toSeconds(Math.max(1, properties.getProfileTtlDays()))));
-        } finally {
+        } catch (DataAccessException failure) {
+            redisFailure = failure;
+        }
+        try {
             redisTemplate.delete(List.of(temporaryTagKey, temporaryAuthorKey));
+        } catch (DataAccessException cleanupFailure) {
+            if (redisFailure == null) {
+                redisFailure = cleanupFailure;
+            } else {
+                redisFailure.addSuppressed(cleanupFailure);
+            }
+        }
+        if (redisFailure != null) {
+            throw new RecommendationProfileWriteException(
+                    "Recommendation profile Redis replacement failed", redisFailure);
         }
     }
 

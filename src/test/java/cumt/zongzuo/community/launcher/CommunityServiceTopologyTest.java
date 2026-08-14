@@ -74,6 +74,22 @@ class CommunityServiceTopologyTest {
     }
 
     @Test
+    void localSupervisorStartsAndStopsAllThreeRoleSpecificArtifacts() throws Exception {
+        Path path = Path.of("scripts/run-local-services.sh");
+        assertThat(path).exists().isRegularFile();
+        String script = Files.readString(path);
+
+        assertThat(script)
+                .contains("community-0.0.1-SNAPSHOT-backend.jar")
+                .contains("community-0.0.1-SNAPSHOT-agent.jar")
+                .contains("community-0.0.1-SNAPSHOT-worker.jar")
+                .contains("http://127.0.0.1:18080/actuator/health")
+                .contains("http://127.0.0.1:18081/actuator/health")
+                .contains("http://127.0.0.1:18082/actuator/health")
+                .contains("trap cleanup EXIT INT TERM");
+    }
+
+    @Test
     void eachProcessOnlyPublishesTheHttpEntryPointsOwnedByItsRole() {
         String articleController = "cumt.zongzuo.community.controller.ArticleController";
         String moderationController = "cumt.zongzuo.community.ai.moderation.web.ModerationAdminController";

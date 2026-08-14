@@ -94,6 +94,10 @@ app:
     ticket-ttl: ${WEBSOCKET_TICKET_TTL:PT30S}
 
 metro:
+  account-deletion:
+    # 到期清理只能由 worker-service 执行；本开关默认开启但仍受 Profile 约束。
+    purge-enabled: ${METRO_ACCOUNT_DELETION_PURGE_ENABLED:true}
+    purge-delay-ms: ${METRO_ACCOUNT_DELETION_PURGE_DELAY_MS:60000}
   migration:
     stage-b:
       action: ${METRO_STAGE_B_MIGRATION_ACTION:NONE}
@@ -134,12 +138,16 @@ metro:
     article-chunks:
       enabled: ${METRO_ARTICLE_CHUNKS_ENABLED:false}
       parser-generation: ${METRO_ARTICLE_CHUNK_PARSER_GENERATION:1}
+      # 仅供本地 worker 首次补齐已有文章；生产保持 false。
+      local-bootstrap-enabled: ${METRO_ARTICLE_CHUNK_LOCAL_BOOTSTRAP_ENABLED:false}
     article-chunk-elasticsearch:
       enabled: ${METRO_ARTICLE_CHUNK_ELASTICSEARCH_ENABLED:false}
       index-name: ${METRO_ARTICLE_CHUNK_ELASTICSEARCH_INDEX:article-chunks-v1}
       lease-duration: ${METRO_ARTICLE_CHUNK_ELASTICSEARCH_LEASE_DURATION:PT30S}
     article-chunk-milvus:
       enabled: ${METRO_ARTICLE_CHUNK_MILVUS_ENABLED:false}
+      # 仅供首次本地启用或受控运维使用；常规生产进程不得在启动时修改 Collection。
+      initialize-schema: ${METRO_ARTICLE_CHUNK_MILVUS_INITIALIZE_SCHEMA:false}
       uri: ${METRO_ARTICLE_CHUNK_MILVUS_URI:http://127.0.0.1:29530}
       username: ${METRO_ARTICLE_CHUNK_MILVUS_USERNAME:}
       password: ${METRO_ARTICLE_CHUNK_MILVUS_PASSWORD:}

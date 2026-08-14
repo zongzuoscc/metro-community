@@ -35,6 +35,9 @@ app:
     ticket-ttl: PT30S
 
 metro:
+  account-deletion:
+    purge-enabled: ${METRO_ACCOUNT_DELETION_PURGE_ENABLED:true}
+    purge-delay-ms: ${METRO_ACCOUNT_DELETION_PURGE_DELAY_MS:60000}
   migration:
     stage-b:
       action: ${METRO_STAGE_B_MIGRATION_ACTION:NONE}
@@ -75,12 +78,14 @@ metro:
     article-chunks:
       enabled: ${METRO_ARTICLE_CHUNKS_ENABLED:false}
       parser-generation: ${METRO_ARTICLE_CHUNK_PARSER_GENERATION:1}
+      local-bootstrap-enabled: ${METRO_ARTICLE_CHUNK_LOCAL_BOOTSTRAP_ENABLED:false}
     article-chunk-elasticsearch:
       enabled: ${METRO_ARTICLE_CHUNK_ELASTICSEARCH_ENABLED:false}
       index-name: ${METRO_ARTICLE_CHUNK_ELASTICSEARCH_INDEX:article-chunks-v1}
       lease-duration: ${METRO_ARTICLE_CHUNK_ELASTICSEARCH_LEASE_DURATION:PT30S}
     article-chunk-milvus:
       enabled: ${METRO_ARTICLE_CHUNK_MILVUS_ENABLED:false}
+      initialize-schema: ${METRO_ARTICLE_CHUNK_MILVUS_INITIALIZE_SCHEMA:false}
       uri: ${METRO_ARTICLE_CHUNK_MILVUS_URI:http://127.0.0.1:29530}
       username: ${METRO_ARTICLE_CHUNK_MILVUS_USERNAME:}
       password: ${METRO_ARTICLE_CHUNK_MILVUS_PASSWORD:}

@@ -181,10 +181,17 @@ create table sys_user
     role        int        default 0                 null comment '角色: 0-普通用户, 1-管理员',
     status      int        default 0                 not null comment '账号状态',
     ban_time    datetime                             null comment '封禁截止时间',
+    account_state varchar(24) default 'ACTIVE'       not null comment 'ACTIVE/PENDING_DELETE/DELETED',
+    deletion_requested_at datetime(6)                null comment '注销申请时间',
+    purge_after datetime(6)                          null comment '七天反悔期截止时间',
+    deletion_version bigint default 0                not null comment '注销状态乐观锁版本',
     constraint uk_email
         unique (email),
     constraint uk_username
-        unique (username)
+        unique (username),
+    index idx_sys_user_deletion_due (account_state,purge_after,id),
+    constraint chk_sys_user_account_state check (
+        account_state in ('ACTIVE','PENDING_DELETE','DELETED'))
 )
     comment '用户表' charset = utf8mb4;
 

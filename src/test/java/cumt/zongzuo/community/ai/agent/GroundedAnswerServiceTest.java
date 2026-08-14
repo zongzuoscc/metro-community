@@ -83,6 +83,21 @@ class GroundedAnswerServiceTest {
     }
 
     @Test
+    void acceptsABracketedCitationMarkerFromAnOpenAiCompatibleModel() {
+        retrievalResult(List.of(source));
+        when(gateway.generate(any())).thenReturn(new AiChatResult("""
+                {"answer":"Use a row lock around the writer transaction.[1]","citations":[
+                  {"marker":"[1]","sourceId":"A301:R3001:C31",
+                   "quote":"Use SELECT FOR UPDATE to serialize writers"}]}
+                """, "stop", 120, 32, "test", "deepseek-test"));
+
+        GroundedAgentAnswer answer = service().answer(9L, "request-text-marker",
+                "How do I serialize writers?", Instant.parse("2026-08-12T00:00:30Z"));
+
+        assertThat(answer.citations()).extracting(AgentCitation::marker).containsExactly(1);
+    }
+
+    @Test
     void rejectsAnInventedCitationEvenWhenTheProviderReturnsValidJson() {
         retrievalResult(List.of(source));
         when(gateway.generate(any())).thenReturn(new AiChatResult("""
