@@ -49,7 +49,7 @@ class DashScopeAgentWebSearchGatewayTest {
                 "secret-key", "qwen-plus", "turbo", 8, transport);
 
         AgentWebSearchResult result = gateway.search("杭州今天会下雨吗",
-                Instant.parse("2026-08-13T12:00:30Z"));
+                Instant.now().plusSeconds(30));
 
         assertThat(endpoint.get().toString()).isEqualTo(
                 "https://workspace.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/text-generation/generation");

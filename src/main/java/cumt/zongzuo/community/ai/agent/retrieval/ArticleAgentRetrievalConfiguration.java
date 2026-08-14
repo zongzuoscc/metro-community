@@ -35,12 +35,17 @@ class ArticleAgentRetrievalConfiguration {
             PublishedArticleChunkResolver resolver,
             AiCapabilityExecutor executor,
             EmbeddingGateway embedding,
+            UserAiChatRouter router,
             MetroAiProperties properties,
             Clock clock,
             @Value("${metro.ai.agent-retrieval.vector-alias:metro_article_chunks_read}")
             String vectorAlias,
             @Value("${metro.ai.agent-retrieval.candidate-limit:40}") int candidateLimit,
-            @Value("${metro.ai.agent-retrieval.context-limit:8}") int contextLimit) {
+            @Value("${metro.ai.agent-retrieval.context-limit:8}") int contextLimit,
+            @Value("${metro.ai.agent-retrieval.hyde-short-query-characters:18}")
+            int hydeShortQueryCharacters,
+            @Value("${metro.ai.agent-retrieval.hyde-minimum-candidates:3}")
+            int hydeMinimumCandidates) {
         if (candidateLimit < 1 || candidateLimit > 100 || contextLimit < 1 || contextLimit > 16) {
             throw new IllegalStateException("Agent retrieval limits are invalid");
         }
@@ -49,9 +54,13 @@ class ArticleAgentRetrievalConfiguration {
                     throw new IllegalStateException("article chunk Elasticsearch is unavailable");
                 });
         ArticleVectorRepository vectors = vectorProvider.getIfAvailable(UnavailableVectors::new);
+        HydeHypotheticalDocumentService hyde = new HydeHypotheticalDocumentService(
+                executor, router, clock, properties.getHyde().getTimeout(),
+                properties.getHyde().getMaxOutputCharacters());
         return new HybridArticleRetrievalService(lexical, vectors, resolver, executor, embedding,
                 clock, vectorAlias, properties.getOllama().getModel(), candidateLimit, contextLimit,
-                min(properties.getAgent().getTimeout(), properties.getEmbedding().getTimeout()));
+                min(properties.getAgent().getTimeout(), properties.getEmbedding().getTimeout()),
+                hyde, hydeShortQueryCharacters, hydeMinimumCandidates);
     }
 
     @Bean

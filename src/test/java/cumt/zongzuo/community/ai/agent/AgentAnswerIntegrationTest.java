@@ -34,6 +34,10 @@ import static org.mockito.Mockito.when;
 @TestPropertySource(properties = {
         "metro.ai.enabled=true",
         "metro.ai.agent.enabled=true",
+        // HyDE 与最终回答共用 Agent 配额，这组集成用例会在同一用户下连续跑多轮。
+        // 放大测试窗口只为避免用例顺序影响结果，生产限额仍由 application.yml 管理。
+        "metro.ai.agent.per-minute=100",
+        "metro.ai.agent.per-day=1000",
         "metro.ai.memory.enabled=true",
         // 这组用例只验证站内检索、记忆与持久 turn。联网搜索有独立的网关契约测试，
         // 在此显式关闭可避免开发者本地 .env 中的真实密钥影响可重复的集成测试。
@@ -194,7 +198,9 @@ class AgentAnswerIntegrationTest extends IntegrationTestSupport {
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getBody()).contains("【模型通用知识】", "\"citations\":[]");
-        verify(gateway).generate(any());
+        // 低召回问题会先调用一次 HyDE，这里只锁定最终回答生成恰好一次。
+        verify(gateway).generate(org.mockito.ArgumentMatchers.argThat(
+                command -> command.capability() == cumt.zongzuo.community.ai.provider.AiCapability.AGENT));
     }
 
     @Test
