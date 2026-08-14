@@ -1,0 +1,32 @@
+name: Frontend CI
+
+on:
+  push:
+    branches: [frontend, master, main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node.js 22 并缓存 npm 依赖
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: 安装锁定依赖
+        run: npm ci
+
+      - name: 运行前端单元测试
+        run: npm test -- --run
+
+      - name: 构建生产资源
+        run: npm run build
