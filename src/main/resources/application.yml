@@ -181,6 +181,12 @@ metro:
       quota-window: PT1M
       timeout: PT45S
       bulkhead: 8
+    # Planner 只选择只读检索来源；轮数、工具数和单轮耗时都是不可放大的安全上限。
+    planner:
+      enabled: ${METRO_AI_PLANNER_ENABLED:true}
+      max-rounds: ${METRO_AI_PLANNER_MAX_ROUNDS:2}
+      max-tool-calls: ${METRO_AI_PLANNER_MAX_TOOL_CALLS:4}
+      timeout: ${METRO_AI_PLANNER_TIMEOUT:PT6S}
     article-summary:
       max-input-characters: 100000
       per-minute: 5

@@ -6,6 +6,8 @@ import cumt.zongzuo.community.ai.agent.GroundedAnswerService;
 import cumt.zongzuo.community.ai.agent.history.AgentConversationHistorySearchService;
 import cumt.zongzuo.community.ai.agent.websearch.AgentWebSearchGateway;
 import cumt.zongzuo.community.ai.agent.memory.AgentMemoryRecallService;
+import cumt.zongzuo.community.ai.agent.planner.AgentReadOnlyPlanProvider;
+import cumt.zongzuo.community.ai.agent.planner.BoundedReadOnlyAgentPlanner;
 import cumt.zongzuo.community.ai.config.MetroAiProperties;
 import cumt.zongzuo.community.ai.userprovider.UserAiChatRouter;
 import cumt.zongzuo.community.ai.provider.EmbeddingGateway;
@@ -64,6 +66,20 @@ class ArticleAgentRetrievalConfiguration {
     }
 
     @Bean
+    @ConditionalOnProperty(name = "metro.ai.planner.enabled", havingValue = "true",
+            matchIfMissing = true)
+    AgentReadOnlyPlanProvider agentReadOnlyPlanner(AiCapabilityExecutor executor,
+                                                   UserAiChatRouter router,
+                                                   ObjectMapper objectMapper,
+                                                   MetroAiProperties properties,
+                                                   Clock clock) {
+        properties.validatePlanner();
+        MetroAiProperties.PlannerProperties limits = properties.getPlanner();
+        return new BoundedReadOnlyAgentPlanner(executor, router, objectMapper, clock,
+                limits.getTimeout(), limits.getMaxRounds(), limits.getMaxToolCalls());
+    }
+
+    @Bean
     GroundedAnswerService groundedAnswerService(HybridArticleRetrievalService retrieval,
                                                 AiCapabilityExecutor executor,
                                                 UserAiChatRouter router,
@@ -72,7 +88,8 @@ class ArticleAgentRetrievalConfiguration {
                                                 Clock clock,
                                                 ObjectProvider<AgentMemoryRecallService> memories,
                                                 ObjectProvider<AgentConversationHistorySearchService> history,
-                                                ObjectProvider<AgentWebSearchGateway> webSearch) {
+                                                ObjectProvider<AgentWebSearchGateway> webSearch,
+                                                ObjectProvider<AgentReadOnlyPlanProvider> planner) {
         String model = properties.getPlatform().getModel();
         if (model == null || model.isBlank()) {
             throw new IllegalStateException("Agent model must not be blank");
@@ -81,7 +98,7 @@ class ArticleAgentRetrievalConfiguration {
                 new GroundedAnswerParser(objectMapper), clock, model,
                 properties.getAgent().getTimeout(), memories.getIfAvailable(),
                 history.getIfAvailable(), properties.getMemory().isEnabled(),
-                webSearch.getIfAvailable());
+                webSearch.getIfAvailable(), planner.getIfAvailable());
     }
 
     private static Duration min(Duration left, Duration right) {

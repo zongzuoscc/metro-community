@@ -10,6 +10,9 @@ import cumt.zongzuo.community.ai.agent.history.AgentConversationHistoryHit;
 import cumt.zongzuo.community.ai.agent.history.AgentConversationHistorySearchService;
 import cumt.zongzuo.community.ai.agent.memory.AgentMemoryRecallService;
 import cumt.zongzuo.community.ai.agent.memory.AgentMemoryView;
+import cumt.zongzuo.community.ai.agent.planner.AgentPlannerRound;
+import cumt.zongzuo.community.ai.agent.planner.AgentReadOnlyPlanProvider;
+import cumt.zongzuo.community.ai.agent.planner.AgentReadOnlyTool;
 import cumt.zongzuo.community.ai.agent.websearch.AgentWebSearchGateway;
 import cumt.zongzuo.community.ai.agent.websearch.AgentWebSearchResult;
 import cumt.zongzuo.community.ai.agent.websearch.AgentWebSource;
@@ -34,6 +37,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anySet;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -259,6 +266,52 @@ class GroundedAnswerServiceTest {
         assertThat(answer.webSources()).extracting(AgentWebSource::index).containsExactly(2);
     }
 
+    @Test
+    void executesAtMostTwoPlannerRoundsAndFourUniqueReadOnlyTools() {
+        AgentReadOnlyPlanProvider planner = mock(AgentReadOnlyPlanProvider.class);
+        when(planner.maxRounds()).thenReturn(2);
+        when(planner.maxToolCalls()).thenReturn(4);
+        when(planner.plan(anyLong(), any(), any(), anyBoolean(), anyBoolean(), anyInt(),
+                anySet(), any(), any())).thenReturn(
+                new AgentPlannerRound(List.of(AgentReadOnlyTool.COMMUNITY_ARTICLES,
+                        AgentReadOnlyTool.LONG_TERM_MEMORY), true),
+                // 第二轮故意重复前两项，回答服务仍必须做独立的去重与预算校验。
+                new AgentPlannerRound(List.of(AgentReadOnlyTool.COMMUNITY_ARTICLES,
+                        AgentReadOnlyTool.LONG_TERM_MEMORY,
+                        AgentReadOnlyTool.CONVERSATION_HISTORY,
+                        AgentReadOnlyTool.WEB_SEARCH), true));
+        retrievalResult(List.of());
+        when(memories.recall(9L, "综合一下我的旧问题", 6)).thenReturn(List.of(
+                new AgentMemoryView(72L, "PREFERENCE", "用户喜欢先看结论", 1L,
+                        "ACTIVE", null, "CONVERSATION")));
+        when(history.search(9L, "综合一下我的旧问题", 6)).thenReturn(List.of(
+                new AgentConversationHistoryHit(82L, 802L, 9L, "USER", "旧问题内容",
+                        LocalDateTime.parse("2026-01-02T03:04:05"))));
+        when(webSearch.search(any(), any())).thenReturn(new AgentWebSearchResult(
+                "外部补充资料。[W1]", List.of(new AgentWebSource(1, "外部资料",
+                "https://example.com/source", "Example"))));
+        when(gateway.generate(any())).thenReturn(new AiChatResult("""
+                {"answer":"【记忆与历史】你喜欢先看结论。\\n\\n【联网搜索】还有外部补充。[W1]",
+                 "citations":[]}
+                """, "stop", 80, 20, "test", "deepseek-test"));
+
+        GroundedAgentAnswer answer = service(true, planner).answer(9L, "request-planned",
+                "综合一下我的旧问题", true,
+                Instant.parse("2026-08-12T00:00:30Z"));
+
+        verify(planner, org.mockito.Mockito.times(2)).plan(anyLong(), any(), any(),
+                anyBoolean(), anyBoolean(), anyInt(), anySet(), any(), any());
+        verify(retrieval).retrieve(any(ArticleRetrievalQuery.class));
+        verify(memories).recall(9L, "综合一下我的旧问题", 6);
+        verify(history).search(9L, "综合一下我的旧问题", 6);
+        verify(webSearch).search("综合一下我的旧问题",
+                Instant.parse("2026-08-12T00:00:30Z"));
+        assertThat(answer.memoryUses()).hasSize(1);
+        assertThat(answer.historyUses()).hasSize(1);
+        assertThat(answer.webSources()).hasSize(1);
+        assertThat(calls).hasValue(1);
+    }
+
     private void retrievalResult(List<ResolvedArticleChunk> chunks) {
         when(retrieval.retrieve(any(ArticleRetrievalQuery.class))).thenReturn(new ArticleRetrievalResult(
                 chunks.size(), chunks.size(), true, true, chunks,
@@ -270,13 +323,18 @@ class GroundedAnswerServiceTest {
     }
 
     private GroundedAnswerService service(boolean memoryEnabled) {
+        return service(memoryEnabled, null);
+    }
+
+    private GroundedAnswerService service(boolean memoryEnabled,
+                                          AgentReadOnlyPlanProvider planner) {
         UserAiChatRouter router = (userId, command) -> new UserAiRoutedResult(
                 gateway.generate(command), UserAiFundingSource.USER);
         return new GroundedAnswerService(retrieval, new DirectExecutor(), router,
                 new GroundedAnswerParser(new ObjectMapper()),
                 Clock.fixed(Instant.parse("2026-08-12T00:00:00Z"), ZoneOffset.UTC),
                 "deepseek-test", Duration.ofSeconds(30), memories, history, memoryEnabled,
-                webSearch);
+                webSearch, planner);
     }
 
     private final class DirectExecutor implements AiCapabilityExecutor {

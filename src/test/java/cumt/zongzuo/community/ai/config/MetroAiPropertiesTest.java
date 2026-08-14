@@ -37,6 +37,12 @@ class MetroAiPropertiesTest {
             assertThat(properties.getAgent().getQuotaWindow()).isEqualTo(Duration.ofMinutes(1));
             assertThat(properties.getAgent().getTimeout()).isEqualTo(Duration.ofSeconds(45));
             assertThat(properties.getAgent().getBulkhead()).isEqualTo(8);
+            // Planner v1 随 Agent 默认启用，避免出现“生产代码存在但环境没有打开”的假交付。
+            assertThat(properties.getPlanner().isEnabled()).isTrue();
+            assertThat(properties.getPlanner().getMaxRounds()).isEqualTo(2);
+            assertThat(properties.getPlanner().getMaxToolCalls()).isEqualTo(4);
+            assertThat(properties.getPlanner().getTimeout()).isEqualTo(Duration.ofSeconds(6));
+            properties.validatePlanner();
             assertThat(properties.getArticleSummary().getMaxInputCharacters()).isEqualTo(100_000);
             assertThat(properties.getArticleSummary().getPerMinute()).isEqualTo(5);
             assertThat(properties.getArticleSummary().getPerDay()).isEqualTo(30);
@@ -136,6 +142,10 @@ class MetroAiPropertiesTest {
                         "metro.ai.agent.per-day=9",
                         "metro.ai.agent.timeout=PT7S",
                         "metro.ai.agent.bulkhead=2",
+                        "metro.ai.planner.enabled=false",
+                        "metro.ai.planner.max-rounds=1",
+                        "metro.ai.planner.max-tool-calls=3",
+                        "metro.ai.planner.timeout=PT4S",
                         "metro.ai.article-summary.max-input-characters=9000",
                         "metro.ai.writing.timeout=PT11S",
                         "metro.ai.writing.quota-window=PT12M",
@@ -162,6 +172,10 @@ class MetroAiPropertiesTest {
                     assertThat(properties.getAgent().getPerDay()).isEqualTo(9);
                     assertThat(properties.getAgent().getTimeout()).isEqualTo(Duration.ofSeconds(7));
                     assertThat(properties.getAgent().getBulkhead()).isEqualTo(2);
+                    assertThat(properties.getPlanner().isEnabled()).isFalse();
+                    assertThat(properties.getPlanner().getMaxRounds()).isEqualTo(1);
+                    assertThat(properties.getPlanner().getMaxToolCalls()).isEqualTo(3);
+                    assertThat(properties.getPlanner().getTimeout()).isEqualTo(Duration.ofSeconds(4));
                     assertThat(properties.getArticleSummary().getMaxInputCharacters()).isEqualTo(9000);
                     assertThat(properties.getWriting().getTimeout()).isEqualTo(Duration.ofSeconds(11));
                     assertThat(properties.getWriting().getQuotaWindow()).isEqualTo(Duration.ofMinutes(12));

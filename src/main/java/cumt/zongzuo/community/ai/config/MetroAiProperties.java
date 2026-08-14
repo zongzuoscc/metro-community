@@ -12,6 +12,7 @@ public class MetroAiProperties {
     private boolean enabled;
     private CapabilityProperties agent = capability(false, 4_000, 600, 8, 100,
             Duration.ofMinutes(1), Duration.ofSeconds(45), Duration.ofSeconds(45), 8);
+    private PlannerProperties planner = new PlannerProperties();
     private CapabilityProperties articleSummary = capability(false, 100_000, 0, 5, 30,
             Duration.ofMinutes(1), Duration.ofSeconds(60), Duration.ofSeconds(60), 4);
     private CapabilityProperties writing = capability(false, 20_000, 0, 10, 60,
@@ -41,6 +42,14 @@ public class MetroAiProperties {
 
     public void setAgent(CapabilityProperties agent) {
         this.agent = agent;
+    }
+
+    public PlannerProperties getPlanner() {
+        return planner;
+    }
+
+    public void setPlanner(PlannerProperties planner) {
+        this.planner = planner;
     }
 
     public CapabilityProperties getArticleSummary() {
@@ -184,6 +193,20 @@ public class MetroAiProperties {
         }
     }
 
+    /**
+     * Planner v1 的限制属于安全边界而不是普通调优参数，因此启动时必须拒绝放大边界。
+     * 后续若要支持深度研究模式，应建立独立配置与用户显式入口，不能偷偷修改这里。
+     */
+    public void validatePlanner() {
+        if (planner == null || planner.getTimeout() == null || planner.getTimeout().isZero()
+                || planner.getTimeout().isNegative()
+                || planner.getTimeout().compareTo(Duration.ofSeconds(10)) > 0
+                || planner.getMaxRounds() < 1 || planner.getMaxRounds() > 2
+                || planner.getMaxToolCalls() < 2 || planner.getMaxToolCalls() > 4) {
+            throw new IllegalStateException("Invalid metro.ai.planner safety configuration");
+        }
+    }
+
     private static long ceilingCost(long tokens, long microsPerMillionTokens) {
         return Math.addExact(Math.multiplyExact(tokens, microsPerMillionTokens),
                 999_999L) / 1_000_000L;
@@ -317,6 +340,23 @@ public class MetroAiProperties {
         public void setBulkhead(int bulkhead) {
             this.bulkhead = bulkhead;
         }
+    }
+
+    /** 普通 Agent 模式使用的受限只读 Planner 配置。 */
+    public static class PlannerProperties {
+        private boolean enabled = true;
+        private int maxRounds = 2;
+        private int maxToolCalls = 4;
+        private Duration timeout = Duration.ofSeconds(6);
+
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
+        public int getMaxRounds() { return maxRounds; }
+        public void setMaxRounds(int maxRounds) { this.maxRounds = maxRounds; }
+        public int getMaxToolCalls() { return maxToolCalls; }
+        public void setMaxToolCalls(int maxToolCalls) { this.maxToolCalls = maxToolCalls; }
+        public Duration getTimeout() { return timeout; }
+        public void setTimeout(Duration timeout) { this.timeout = timeout; }
     }
 
     /**

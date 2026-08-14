@@ -14,6 +14,10 @@ import cumt.zongzuo.community.ai.agent.history.AgentConversationHistorySearchSer
 import cumt.zongzuo.community.ai.agent.history.AgentEpisodeSummaryView;
 import cumt.zongzuo.community.ai.agent.memory.AgentMemoryRecallService;
 import cumt.zongzuo.community.ai.agent.memory.AgentMemoryView;
+import cumt.zongzuo.community.ai.agent.planner.AgentPlannerEvidence;
+import cumt.zongzuo.community.ai.agent.planner.AgentPlannerRound;
+import cumt.zongzuo.community.ai.agent.planner.AgentReadOnlyPlanProvider;
+import cumt.zongzuo.community.ai.agent.planner.AgentReadOnlyTool;
 import cumt.zongzuo.community.ai.agent.websearch.AgentWebSearchGateway;
 import cumt.zongzuo.community.ai.agent.websearch.AgentWebSearchResult;
 import cumt.zongzuo.community.ai.agent.websearch.AgentWebSource;
@@ -33,6 +37,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.HashMap;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -75,6 +80,7 @@ public class GroundedAnswerService {
     private final AgentConversationHistorySearchService history;
     private final boolean memoryEnabled;
     private final AgentWebSearchGateway webSearch;
+    private final AgentReadOnlyPlanProvider planner;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public GroundedAnswerService(HybridArticleRetrievalService retrieval,
@@ -88,6 +94,22 @@ public class GroundedAnswerService {
                                  AgentConversationHistorySearchService history,
                                  boolean memoryEnabled,
                                  AgentWebSearchGateway webSearch) {
+        this(retrieval, executor, router, parser, clock, expectedModel, generationTimeout,
+                memories, history, memoryEnabled, webSearch, null);
+    }
+
+    public GroundedAnswerService(HybridArticleRetrievalService retrieval,
+                                 AiCapabilityExecutor executor,
+                                 UserAiChatRouter router,
+                                 GroundedAnswerParser parser,
+                                 Clock clock,
+                                 String expectedModel,
+                                 Duration generationTimeout,
+                                 AgentMemoryRecallService memories,
+                                 AgentConversationHistorySearchService history,
+                                 boolean memoryEnabled,
+                                 AgentWebSearchGateway webSearch,
+                                 AgentReadOnlyPlanProvider planner) {
         this.retrieval = retrieval;
         this.executor = executor;
         this.router = router;
@@ -99,37 +121,23 @@ public class GroundedAnswerService {
         this.history = history;
         this.memoryEnabled = memoryEnabled;
         this.webSearch = webSearch;
+        this.planner = planner;
     }
 
     public GroundedAgentAnswer answer(long userId, String requestId, String question,
                                       Instant deadline) {
-        ArticleRetrievalResult result = retrieval.retrieve(
-                new ArticleRetrievalQuery(userId, requestId, question, deadline));
-        List<AgentMemoryView> recalled = !memoryEnabled || memories == null ? List.of()
-                : memories.recall(userId, question, 6);
-        List<AgentConversationHistoryHit> historical = history == null ? List.of()
-                : history.search(userId, question, 6).stream()
-                .filter(hit -> !hit.content().strip().equals(question.strip())).toList();
-        List<AgentEpisodeSummaryView> summaries = summaries(userId);
-        return generate(userId, requestId, question, deadline, result, recalled, historical,
-                summaries, List.of(), AgentWebSearchResult.empty());
+        GatheredContext context = gather(userId, requestId, question, true, false, deadline);
+        return generate(userId, requestId, question, deadline, context.articles,
+                context.memories, context.history, context.summaries, List.of(), context.web);
     }
 
     /** 根据当前 turn 已冻结的联网开关决定是否强制执行外部检索。 */
     public GroundedAgentAnswer answer(long userId, String requestId, String question,
                                       boolean webSearchEnabled, Instant deadline) {
-        ArticleRetrievalResult result = retrieval.retrieve(
-                new ArticleRetrievalQuery(userId, requestId, question, deadline));
-        List<AgentMemoryView> recalled = !memoryEnabled || memories == null ? List.of()
-                : memories.recall(userId, question, 6);
-        List<AgentConversationHistoryHit> historical = history == null ? List.of()
-                : history.search(userId, question, 6).stream()
-                .filter(hit -> !hit.content().strip().equals(question.strip())).toList();
-        List<AgentEpisodeSummaryView> summaries = summaries(userId);
-        AgentWebSearchResult web = webSearchEnabled && webSearch != null
-                ? webSearch.search(question, deadline) : AgentWebSearchResult.empty();
-        return generate(userId, requestId, question, deadline, result, recalled, historical,
-                summaries, List.of(), web);
+        GatheredContext context = gather(userId, requestId, question, true,
+                webSearchEnabled, deadline);
+        return generate(userId, requestId, question, deadline, context.articles,
+                context.memories, context.history, context.summaries, List.of(), context.web);
     }
 
     /**
@@ -147,12 +155,136 @@ public class GroundedAnswerService {
     public GroundedAgentAnswer answerTemporary(long userId, String requestId, String question,
                                                List<String> temporaryContext,
                                                boolean webSearchEnabled, Instant deadline) {
+        GatheredContext context = gather(userId, requestId, question, false,
+                webSearchEnabled, deadline);
+        return generate(userId, requestId, question, deadline, context.articles,
+                List.of(), List.of(), List.of(), temporaryContext, context.web);
+    }
+
+    /**
+     * 执行 Planner 给出的高层只读工具计划，并在执行层再次落实权限和预算。
+     *
+     * <p>Planner 只是建议者，不能直接持有任何 Mapper、网关或写服务。这里使用独立的
+     * {@code called} 集合禁止跨轮重复调用，并把任意实现报告的预算再次夹紧到两轮、四次。
+     * 临时会话即使收到错误计划，也不会进入长期记忆或持久历史分支。</p>
+     */
+    private GatheredContext gather(long userId, String requestId, String question,
+                                   boolean persistentContextAllowed,
+                                   boolean webSearchEnabled, Instant deadline) {
+        if (planner == null) {
+            return legacyGather(userId, requestId, question, persistentContextAllowed,
+                    webSearchEnabled, deadline);
+        }
+        MutableGatheredContext context = new MutableGatheredContext();
+        EnumSet<AgentReadOnlyTool> called = EnumSet.noneOf(AgentReadOnlyTool.class);
+        int roundLimit = Math.max(1, Math.min(2, planner.maxRounds()));
+        int toolLimit = Math.max(2, Math.min(4, planner.maxToolCalls()));
+        for (int round = 1; round <= roundLimit && called.size() < toolLimit; round++) {
+            AgentPlannerRound proposed = planner.plan(userId, requestId, question,
+                    persistentContextAllowed, webSearchEnabled, round, Set.copyOf(called),
+                    context.evidence(), deadline);
+            List<AgentReadOnlyTool> tools = securedTools(proposed, round,
+                    persistentContextAllowed, webSearchEnabled, called, toolLimit);
+            if (tools.isEmpty()) break;
+            for (AgentReadOnlyTool tool : tools) {
+                called.add(tool);
+                executeTool(context, tool, userId, requestId, question,
+                        persistentContextAllowed, webSearchEnabled, deadline);
+            }
+            if (called.size() >= toolLimit) break;
+            // 有依据且 Planner 没要求复核时提前结束；完全没找到资料时即使模型说停止，
+            // 仍允许第二轮从尚未调用的白名单来源补查一次。
+            if (!proposed.reviewAfterExecution() && context.evidence().hasAny()) break;
+        }
+        return context.freeze();
+    }
+
+    private List<AgentReadOnlyTool> securedTools(AgentPlannerRound proposed, int round,
+                                                  boolean persistentContextAllowed,
+                                                  boolean webSearchEnabled,
+                                                  Set<AgentReadOnlyTool> called,
+                                                  int toolLimit) {
+        EnumSet<AgentReadOnlyTool> selected = EnumSet.noneOf(AgentReadOnlyTool.class);
+        if (proposed != null && proposed.tools() != null) selected.addAll(proposed.tools());
+        selected.removeAll(called);
+        if (!persistentContextAllowed) {
+            selected.remove(AgentReadOnlyTool.LONG_TERM_MEMORY);
+            selected.remove(AgentReadOnlyTool.CONVERSATION_HISTORY);
+        }
+        if (!webSearchEnabled) selected.remove(AgentReadOnlyTool.WEB_SEARCH);
+        if (round == 1) {
+            selected.add(AgentReadOnlyTool.COMMUNITY_ARTICLES);
+            if (webSearchEnabled) selected.add(AgentReadOnlyTool.WEB_SEARCH);
+        }
+        int remaining = toolLimit - called.size();
+        List<AgentReadOnlyTool> secured = new java.util.ArrayList<>();
+        if (selected.contains(AgentReadOnlyTool.COMMUNITY_ARTICLES) && secured.size() < remaining) {
+            secured.add(AgentReadOnlyTool.COMMUNITY_ARTICLES);
+        }
+        boolean mandatoryWeb = round == 1 && webSearchEnabled
+                && selected.contains(AgentReadOnlyTool.WEB_SEARCH);
+        int reservedForWeb = mandatoryWeb ? 1 : 0;
+        for (AgentReadOnlyTool optional : List.of(AgentReadOnlyTool.LONG_TERM_MEMORY,
+                AgentReadOnlyTool.CONVERSATION_HISTORY)) {
+            if (selected.contains(optional) && secured.size() < remaining - reservedForWeb) {
+                secured.add(optional);
+            }
+        }
+        if (selected.contains(AgentReadOnlyTool.WEB_SEARCH) && secured.size() < remaining) {
+            secured.add(AgentReadOnlyTool.WEB_SEARCH);
+        }
+        return List.copyOf(secured);
+    }
+
+    private void executeTool(MutableGatheredContext context, AgentReadOnlyTool tool,
+                             long userId, String requestId, String question,
+                             boolean persistentContextAllowed, boolean webSearchEnabled,
+                             Instant deadline) {
+        try {
+            switch (tool) {
+                case COMMUNITY_ARTICLES -> context.articles = retrieval.retrieve(
+                        new ArticleRetrievalQuery(userId, requestId, question, deadline));
+                case LONG_TERM_MEMORY -> {
+                    if (persistentContextAllowed && memoryEnabled && memories != null) {
+                        context.memories = memories.recall(userId, question, 6);
+                    }
+                }
+                case CONVERSATION_HISTORY -> {
+                    if (persistentContextAllowed && history != null) {
+                        context.history = history.search(userId, question, 6).stream()
+                                .filter(hit -> !hit.content().strip().equals(question.strip()))
+                                .toList();
+                        context.summaries = summaries(userId);
+                    }
+                }
+                case WEB_SEARCH -> {
+                    if (webSearchEnabled && webSearch != null) {
+                        context.web = webSearch.search(question, deadline);
+                    }
+                }
+            }
+        } catch (RuntimeException unavailable) {
+            // 单个只读来源不可用时保留其它已获得证据。工具已记入 called，第二轮不会
+            // 对同一参数重复轰击故障服务；最终回答仍可明确使用模型通用知识降级。
+        }
+    }
+
+    /** 旧构造器仅供现有窄单元测试使用；生产 Spring 装配始终注入 Planner。 */
+    private GatheredContext legacyGather(long userId, String requestId, String question,
+                                          boolean persistentContextAllowed,
+                                          boolean webSearchEnabled, Instant deadline) {
         ArticleRetrievalResult result = retrieval.retrieve(
                 new ArticleRetrievalQuery(userId, requestId, question, deadline));
+        List<AgentMemoryView> recalled = !persistentContextAllowed || !memoryEnabled
+                || memories == null ? List.of() : memories.recall(userId, question, 6);
+        List<AgentConversationHistoryHit> historical = !persistentContextAllowed || history == null
+                ? List.of() : history.search(userId, question, 6).stream()
+                .filter(hit -> !hit.content().strip().equals(question.strip())).toList();
+        List<AgentEpisodeSummaryView> episodeSummaries = persistentContextAllowed
+                ? summaries(userId) : List.of();
         AgentWebSearchResult web = webSearchEnabled && webSearch != null
                 ? webSearch.search(question, deadline) : AgentWebSearchResult.empty();
-        return generate(userId, requestId, question, deadline, result, List.of(), List.of(),
-                List.of(), temporaryContext, web);
+        return new GatheredContext(result, recalled, historical, episodeSummaries, web);
     }
 
     private GroundedAgentAnswer generate(long userId, String requestId, String question,
@@ -297,5 +429,32 @@ public class GroundedAnswerService {
 
     private static Instant min(Instant left, Instant right) {
         return left.isBefore(right) ? left : right;
+    }
+
+    private record GatheredContext(ArticleRetrievalResult articles,
+                                   List<AgentMemoryView> memories,
+                                   List<AgentConversationHistoryHit> history,
+                                   List<AgentEpisodeSummaryView> summaries,
+                                   AgentWebSearchResult web) {
+    }
+
+    /** 规划执行期间的可变累加器只在当前请求线程内使用，不会跨 turn 共享。 */
+    private static final class MutableGatheredContext {
+        private ArticleRetrievalResult articles = new ArticleRetrievalResult(
+                0, 0, false, false, List.of(), List.of());
+        private List<AgentMemoryView> memories = List.of();
+        private List<AgentConversationHistoryHit> history = List.of();
+        private List<AgentEpisodeSummaryView> summaries = List.of();
+        private AgentWebSearchResult web = AgentWebSearchResult.empty();
+
+        private AgentPlannerEvidence evidence() {
+            return new AgentPlannerEvidence(articles.authorizedChunks().size(), memories.size(),
+                    history.size(), summaries.size(), web.sources().size());
+        }
+
+        private GatheredContext freeze() {
+            return new GatheredContext(articles, List.copyOf(memories), List.copyOf(history),
+                    List.copyOf(summaries), web);
+        }
     }
 }

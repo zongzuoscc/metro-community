@@ -109,6 +109,11 @@ metro:
       enabled: ${METRO_AI_AGENT_ENABLED:false}
       turn-recovery-enabled: ${METRO_AI_AGENT_TURN_RECOVERY_ENABLED:false}
       turn-recovery-delay-ms: ${METRO_AI_AGENT_TURN_RECOVERY_DELAY_MS:10000}
+    planner:
+      enabled: ${METRO_AI_PLANNER_ENABLED:true}
+      max-rounds: ${METRO_AI_PLANNER_MAX_ROUNDS:2}
+      max-tool-calls: ${METRO_AI_PLANNER_MAX_TOOL_CALLS:4}
+      timeout: ${METRO_AI_PLANNER_TIMEOUT:PT6S}
     memory:
       enabled: ${METRO_AI_MEMORY_ENABLED:false}
       semantic-enabled: ${METRO_AI_MEMORY_SEMANTIC_ENABLED:false}

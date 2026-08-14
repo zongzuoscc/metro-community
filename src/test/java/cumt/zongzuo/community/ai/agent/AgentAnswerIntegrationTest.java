@@ -175,6 +175,13 @@ class AgentAnswerIntegrationTest extends IntegrationTestSupport {
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getBody()).contains("Use a row lock", sourceId,
                 "Use SELECT FOR UPDATE to serialize writers", "\"url\":\"/article/97101\"");
+        var commands = org.mockito.ArgumentCaptor.forClass(
+                cumt.zongzuo.community.ai.provider.AiChatCommand.class);
+        verify(gateway, org.mockito.Mockito.atLeast(2)).generate(commands.capture());
+        assertThat(commands.getAllValues()).anySatisfy(command -> assertThat(command.messages()
+                .toString()).contains("read-only retrieval planner"));
+        assertThat(commands.getAllValues()).anySatisfy(command -> assertThat(command.messages()
+                .toString()).contains("UNTRUSTED_COMMUNITY_DATA_JSON"));
     }
 
     @Test
@@ -198,9 +205,14 @@ class AgentAnswerIntegrationTest extends IntegrationTestSupport {
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getBody()).contains("【模型通用知识】", "\"citations\":[]");
-        // 低召回问题会先调用一次 HyDE，这里只锁定最终回答生成恰好一次。
-        verify(gateway).generate(org.mockito.ArgumentMatchers.argThat(
-                command -> command.capability() == cumt.zongzuo.community.ai.provider.AiCapability.AGENT));
+        // 低召回问题还会调用 HyDE；这里只分别锁定 Planner 与最终回答各执行一次，
+        // 防止未来重试或循环规划悄悄突破 2/4 预算。
+        verify(gateway).generate(org.mockito.ArgumentMatchers.argThat(command ->
+                command.capability() == cumt.zongzuo.community.ai.provider.AiCapability.AGENT
+                        && command.messages().toString().contains("read-only retrieval planner")));
+        verify(gateway).generate(org.mockito.ArgumentMatchers.argThat(command ->
+                command.capability() == cumt.zongzuo.community.ai.provider.AiCapability.AGENT
+                        && command.messages().toString().contains("UNTRUSTED_COMMUNITY_DATA_JSON")));
     }
 
     @Test
