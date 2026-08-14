@@ -49,6 +49,17 @@ public class AgentConversationHistorySearchService {
                 .limit(limit).toList();
     }
 
+    /** 最近三个已完成摘要按时间正序返回，帮助模型理解跨 episode 的连续目标。 */
+    public List<AgentEpisodeSummaryView> recentSummaries(long userId, int limit) {
+        if (limit < 1 || limit > 8) throw new IllegalArgumentException("Invalid summary limit");
+        List<AgentEpisodeSummaryView> newestFirst = mapper.recentSummaries(userId, limit);
+        if (newestFirst == null || newestFirst.isEmpty()) return List.of();
+        java.util.ArrayList<AgentEpisodeSummaryView> chronological =
+                new java.util.ArrayList<>(newestFirst);
+        java.util.Collections.reverse(chronological);
+        return List.copyOf(chronological);
+    }
+
     private static int score(String content, List<String> terms) {
         String normalized = content.toLowerCase(Locale.ROOT);
         return terms.stream().mapToInt(term -> normalized.contains(term) ? term.length() : 0).sum();

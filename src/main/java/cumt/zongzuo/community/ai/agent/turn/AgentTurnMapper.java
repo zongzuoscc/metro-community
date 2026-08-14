@@ -12,6 +12,7 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 import java.util.List;
+import cumt.zongzuo.community.ai.agent.history.AgentEpisodeStats;
 import java.util.UUID;
 
 /**
@@ -128,6 +129,15 @@ public interface AgentTurnMapper {
             """)
     Long selectActiveEpisodeIdForUpdate(@Param("userId") long userId,
                                         @Param("conversationId") long conversationId);
+
+    /** 同一行锁同时读取 episode ID 与已完成 turn 数，供长对话滚动门槛判断。 */
+    @Select("""
+            SELECT id,turn_count FROM agent_episode
+            WHERE user_id=#{userId} AND conversation_id=#{conversationId} AND state='ACTIVE'
+            FOR UPDATE
+            """)
+    AgentEpisodeStats selectActiveEpisodeStatsForUpdate(@Param("userId") long userId,
+                                                         @Param("conversationId") long conversationId);
 
     /** 将当前上下文段封存；历史消息仍保留在主对话中供用户回看。 */
     @Update("""

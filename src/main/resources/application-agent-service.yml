@@ -1,0 +1,3 @@
+server:
+  # Agent 使用独立端口，后续可由前端代理或部署层把 /api/agent 路由到这里。
+  port: ${AGENT_SERVER_PORT:18081}

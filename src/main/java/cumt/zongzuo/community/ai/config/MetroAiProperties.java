@@ -21,8 +21,7 @@ public class MetroAiProperties {
     private ModerationProperties moderation = moderation();
     private CapabilityProperties memory = capability(false, 20_000, 0, 0, 0,
             Duration.ofMinutes(1), Duration.ofSeconds(20), Duration.ofSeconds(20), 2);
-    private CapabilityProperties embedding = capability(false, 100_000, 0, 0, 0,
-            Duration.ofMinutes(1), Duration.ofSeconds(45), Duration.ofSeconds(45), 4);
+    private EmbeddingProperties embedding = embedding();
     private RuntimeProperties runtime = new RuntimeProperties();
     private PlatformProperties platform = new PlatformProperties();
     private WebSearchProperties webSearch = new WebSearchProperties();
@@ -84,11 +83,11 @@ public class MetroAiProperties {
         this.memory = memory;
     }
 
-    public CapabilityProperties getEmbedding() {
+    public EmbeddingProperties getEmbedding() {
         return embedding;
     }
 
-    public void setEmbedding(CapabilityProperties embedding) {
+    public void setEmbedding(EmbeddingProperties embedding) {
         this.embedding = embedding;
     }
 
@@ -221,6 +220,20 @@ public class MetroAiProperties {
         return properties;
     }
 
+    private static EmbeddingProperties embedding() {
+        EmbeddingProperties properties = new EmbeddingProperties();
+        properties.setEnabled(false);
+        properties.setMaxInputCharacters(100_000);
+        properties.setMaxOutputCharacters(0);
+        properties.setPerMinute(0);
+        properties.setPerDay(0);
+        properties.setQuotaWindow(Duration.ofMinutes(1));
+        properties.setTimeout(Duration.ofSeconds(45));
+        properties.setTaskTimeout(Duration.ofSeconds(45));
+        properties.setBulkhead(4);
+        return properties;
+    }
+
     public static class CapabilityProperties {
 
         private boolean enabled;
@@ -350,6 +363,24 @@ public class MetroAiProperties {
         public void setModel(String model) {
             this.model = model;
         }
+    }
+
+    /**
+     * 向量模型可以使用本机 Ollama，也可以复用后端统一配置的百炼平台。
+     * provider 只接受 ollama/platform；维度固定写入请求并在网关响应处再次校验。
+     */
+    public static class EmbeddingProperties extends CapabilityProperties {
+
+        private String provider = "ollama";
+        private String model = "bge-m3";
+        private int dimensions = 1_024;
+
+        public String getProvider() { return provider; }
+        public void setProvider(String provider) { this.provider = provider; }
+        public String getModel() { return model; }
+        public void setModel(String model) { this.model = model; }
+        public int getDimensions() { return dimensions; }
+        public void setDimensions(int dimensions) { this.dimensions = dimensions; }
     }
 
     /**

@@ -14,6 +14,15 @@ import java.util.List;
 public interface AgentConversationHistoryMapper {
 
     @Select("""
+            SELECT id AS episode_id,episode_no,summary_text AS summary,sealed_at
+            FROM agent_episode
+            WHERE user_id=#{userId} AND state='READY' AND summary_text IS NOT NULL
+            ORDER BY episode_no DESC LIMIT #{limit}
+            """)
+    List<AgentEpisodeSummaryView> recentSummaries(@Param("userId") long userId,
+                                                  @Param("limit") int limit);
+
+    @Select("""
             <script>
             SELECT m.id AS message_id,m.turn_id,m.user_id,m.role,m.content,m.created_at
             FROM agent_message m

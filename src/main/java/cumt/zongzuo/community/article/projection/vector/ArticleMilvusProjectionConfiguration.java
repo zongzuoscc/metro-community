@@ -60,7 +60,7 @@ class ArticleMilvusProjectionConfiguration {
             @Value("${metro.projection.article-chunk-milvus.lease-duration:PT60S}")
             Duration leaseDuration) {
         return new ArticleMilvusProjectionService(leases, source, repository, executor,
-                embeddingGateway, clock, physicalCollection, aiProperties.getOllama().getModel(),
+                embeddingGateway, clock, physicalCollection, aiProperties.getEmbedding().getModel(),
                 leaseDuration, aiProperties.getEmbedding().getTimeout());
     }
 

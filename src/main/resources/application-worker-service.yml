@@ -1,0 +1,3 @@
+server:
+  # Worker 只保留健康检查入口，业务工作由 RabbitMQ 消费者和定时任务完成。
+  port: ${WORKER_SERVER_PORT:18082}

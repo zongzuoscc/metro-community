@@ -4,6 +4,8 @@ import cumt.zongzuo.community.ai.agent.AgentCitation;
 import cumt.zongzuo.community.ai.agent.websearch.AgentWebSourceUrlPolicy;
 import cumt.zongzuo.community.ai.agent.GroundedAgentAnswer;
 import cumt.zongzuo.community.ai.agent.memory.AgentMemoryCaptureService;
+import cumt.zongzuo.community.ai.agent.history.AgentEpisodeRollService;
+import org.springframework.beans.factory.ObjectProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -32,17 +34,20 @@ public class AgentTurnFinalizer {
     private final ObjectMapper objectMapper;
     private final AgentMemoryCaptureService memories;
     private final boolean memoryEnabled;
+    private final ObjectProvider<AgentEpisodeRollService> episodeRolls;
 
     public AgentTurnFinalizer(AgentTurnMapper mapper, AgentRunLeaseStore leases,
                               PlatformTransactionManager transactionManager,
                               ObjectMapper objectMapper, AgentMemoryCaptureService memories,
-                              @Value("${metro.ai.memory.enabled:false}") boolean memoryEnabled) {
+                              @Value("${metro.ai.memory.enabled:false}") boolean memoryEnabled,
+                              ObjectProvider<AgentEpisodeRollService> episodeRolls) {
         this.mapper = mapper;
         this.leases = leases;
         this.transactions = new TransactionTemplate(transactionManager);
         this.objectMapper = objectMapper;
         this.memories = memories;
         this.memoryEnabled = memoryEnabled;
+        this.episodeRolls = episodeRolls;
     }
 
     public boolean complete(long turnId, UUID runId, long runFence, GroundedAgentAnswer answer) {
@@ -54,6 +59,15 @@ public class AgentTurnFinalizer {
                 userId, turnId, runId, runFence, answer));
         if (Boolean.TRUE.equals(completed)) {
             leases.release(userId, runId, runFence);
+            AgentEpisodeRollService rollService = episodeRolls.getIfAvailable();
+            if (rollService != null) {
+                try {
+                    rollService.rollIfThresholdReached(userId);
+                } catch (RuntimeException error) {
+                    // 回答已经成功提交；摘要滚动失败只能延后重试，不能反向把终态改成失败。
+                    log.warn("Agent episode roll failed after completed turn: turnId={}", turnId, error);
+                }
+            }
         }
         return Boolean.TRUE.equals(completed);
     }

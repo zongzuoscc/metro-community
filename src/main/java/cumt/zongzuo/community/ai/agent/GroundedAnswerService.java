@@ -11,6 +11,7 @@ import cumt.zongzuo.community.ai.agent.retrieval.HybridArticleRetrievalService;
 import cumt.zongzuo.community.ai.agent.retrieval.ResolvedArticleChunk;
 import cumt.zongzuo.community.ai.agent.history.AgentConversationHistoryHit;
 import cumt.zongzuo.community.ai.agent.history.AgentConversationHistorySearchService;
+import cumt.zongzuo.community.ai.agent.history.AgentEpisodeSummaryView;
 import cumt.zongzuo.community.ai.agent.memory.AgentMemoryRecallService;
 import cumt.zongzuo.community.ai.agent.memory.AgentMemoryView;
 import cumt.zongzuo.community.ai.agent.websearch.AgentWebSearchGateway;
@@ -109,8 +110,9 @@ public class GroundedAnswerService {
         List<AgentConversationHistoryHit> historical = history == null ? List.of()
                 : history.search(userId, question, 6).stream()
                 .filter(hit -> !hit.content().strip().equals(question.strip())).toList();
+        List<AgentEpisodeSummaryView> summaries = summaries(userId);
         return generate(userId, requestId, question, deadline, result, recalled, historical,
-                List.of(), AgentWebSearchResult.empty());
+                summaries, List.of(), AgentWebSearchResult.empty());
     }
 
     /** 根据当前 turn 已冻结的联网开关决定是否强制执行外部检索。 */
@@ -123,10 +125,11 @@ public class GroundedAnswerService {
         List<AgentConversationHistoryHit> historical = history == null ? List.of()
                 : history.search(userId, question, 6).stream()
                 .filter(hit -> !hit.content().strip().equals(question.strip())).toList();
+        List<AgentEpisodeSummaryView> summaries = summaries(userId);
         AgentWebSearchResult web = webSearchEnabled && webSearch != null
                 ? webSearch.search(question, deadline) : AgentWebSearchResult.empty();
         return generate(userId, requestId, question, deadline, result, recalled, historical,
-                List.of(), web);
+                summaries, List.of(), web);
     }
 
     /**
@@ -149,17 +152,18 @@ public class GroundedAnswerService {
         AgentWebSearchResult web = webSearchEnabled && webSearch != null
                 ? webSearch.search(question, deadline) : AgentWebSearchResult.empty();
         return generate(userId, requestId, question, deadline, result, List.of(), List.of(),
-                temporaryContext, web);
+                List.of(), temporaryContext, web);
     }
 
     private GroundedAgentAnswer generate(long userId, String requestId, String question,
                                          Instant deadline, ArticleRetrievalResult result,
                                          List<AgentMemoryView> recalled,
                                          List<AgentConversationHistoryHit> historical,
+                                         List<AgentEpisodeSummaryView> episodeSummaries,
                                          List<String> temporaryContext,
                                          AgentWebSearchResult web) {
         List<AiPromptMessage> prompt = prompt(question, result.authorizedChunks(), recalled,
-                historical, temporaryContext, web);
+                historical, episodeSummaries, temporaryContext, web);
         int characters = prompt.stream().mapToInt(message -> message.text().length()).sum();
         Instant generationDeadline = min(deadline, clock.instant().plus(generationTimeout));
         UserAiRoutedResult routed = executor.execute(new AiInvocationContext(AiCapability.AGENT,
@@ -192,6 +196,7 @@ public class GroundedAnswerService {
     private List<AiPromptMessage> prompt(String question, List<ResolvedArticleChunk> sources,
                                          List<AgentMemoryView> memories,
                                          List<AgentConversationHistoryHit> history,
+                                         List<AgentEpisodeSummaryView> episodeSummaries,
                                          List<String> temporaryContext,
                                          AgentWebSearchResult web) {
         ObjectNode user = objectMapper.createObjectNode().put("question", question);
@@ -213,6 +218,12 @@ public class GroundedAnswerService {
                     .put("role", hit.role()).put("content", hit.content())
                     .put("createdAt", hit.createdAt().toString());
         }
+        ArrayNode summaryArray = user.putArray("episodeSummaries");
+        for (AgentEpisodeSummaryView summary : episodeSummaries) {
+            summaryArray.addObject().put("episodeId", summary.episodeId())
+                    .put("episodeNo", summary.episodeNo()).put("summary", summary.summary())
+                    .put("sealedAt", summary.sealedAt() == null ? "" : summary.sealedAt().toString());
+        }
         ArrayNode temporary = user.putArray("temporaryConversation");
         temporaryContext.forEach(temporary::add);
         ObjectNode webNode = user.putObject("webSearch").put("summary", web.summary());
@@ -228,6 +239,12 @@ public class GroundedAnswerService {
         } catch (JsonProcessingException error) {
             throw new IllegalStateException("Agent prompt cannot be encoded", error);
         }
+    }
+
+    private List<AgentEpisodeSummaryView> summaries(long userId) {
+        if (history == null) return List.of();
+        List<AgentEpisodeSummaryView> summaries = history.recentSummaries(userId, 3);
+        return summaries == null ? List.of() : summaries;
     }
 
     private static List<AgentWebSource> referencedWebSources(String answer,

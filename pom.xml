@@ -256,6 +256,42 @@
 						</exclude>
 					</excludes>
 				</configuration>
+				<executions>
+					<!--
+						覆盖 Spring Boot Parent 自带的 repackage 执行：主制品保留为普通
+						依赖 Jar，同时一次构建附加三个拥有不同启动类的可执行 Jar。
+					-->
+					<execution>
+						<id>repackage</id>
+						<goals>
+							<goal>repackage</goal>
+						</goals>
+						<configuration>
+							<classifier>backend</classifier>
+							<mainClass>cumt.zongzuo.community.launcher.CommunityBackendServiceApplication</mainClass>
+						</configuration>
+					</execution>
+					<execution>
+						<id>agent-service</id>
+						<goals>
+							<goal>repackage</goal>
+						</goals>
+						<configuration>
+							<classifier>agent</classifier>
+							<mainClass>cumt.zongzuo.community.launcher.CommunityAgentServiceApplication</mainClass>
+						</configuration>
+					</execution>
+					<execution>
+						<id>worker-service</id>
+						<goals>
+							<goal>repackage</goal>
+						</goals>
+						<configuration>
+							<classifier>worker</classifier>
+							<mainClass>cumt.zongzuo.community.launcher.CommunityWorkerServiceApplication</mainClass>
+						</configuration>
+					</execution>
+				</executions>
 			</plugin>
 		</plugins>
 	</build>

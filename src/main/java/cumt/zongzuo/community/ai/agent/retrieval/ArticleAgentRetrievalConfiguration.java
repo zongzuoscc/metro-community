@@ -58,7 +58,7 @@ class ArticleAgentRetrievalConfiguration {
                 executor, router, clock, properties.getHyde().getTimeout(),
                 properties.getHyde().getMaxOutputCharacters());
         return new HybridArticleRetrievalService(lexical, vectors, resolver, executor, embedding,
-                clock, vectorAlias, properties.getOllama().getModel(), candidateLimit, contextLimit,
+                clock, vectorAlias, properties.getEmbedding().getModel(), candidateLimit, contextLimit,
                 min(properties.getAgent().getTimeout(), properties.getEmbedding().getTimeout()),
                 hyde, hydeShortQueryCharacters, hydeMinimumCandidates);
     }

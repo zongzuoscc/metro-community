@@ -1,6 +1,7 @@
 package cumt.zongzuo.community.ai.agent.memory;
 
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.ObjectProvider;
 
 import java.util.Comparator;
 import java.util.List;
@@ -16,9 +17,12 @@ import java.util.stream.Collectors;
 public class AgentMemoryRecallService {
 
     private final AgentMemoryMapper mapper;
+    private final ObjectProvider<AgentMemorySemanticRanker> semanticRanker;
 
-    public AgentMemoryRecallService(AgentMemoryMapper mapper) {
+    public AgentMemoryRecallService(AgentMemoryMapper mapper,
+                                    ObjectProvider<AgentMemorySemanticRanker> semanticRanker) {
         this.mapper = mapper;
+        this.semanticRanker = semanticRanker;
     }
 
     /**
@@ -30,10 +34,14 @@ public class AgentMemoryRecallService {
         mapper.ensureSetting(userId);
         if (!Boolean.TRUE.equals(mapper.enabled(userId))) return List.of();
         Set<String> terms = terms(query);
-        return mapper.listActive(userId, 100).stream()
-                .sorted(Comparator.comparingInt((AgentMemoryView memory) -> score(memory, terms))
-                        .reversed().thenComparing(AgentMemoryView::id, Comparator.reverseOrder()))
+        List<AgentMemoryView> candidates = mapper.listActive(userId, 100);
+        java.util.Map<Long, Double> semanticScores = semanticScores(userId, query, candidates);
+        return candidates.stream()
+                .sorted(Comparator.comparingDouble((AgentMemoryView memory) ->
+                                combinedScore(memory, terms, semanticScores)).reversed()
+                        .thenComparing(AgentMemoryView::id, Comparator.reverseOrder()))
                 .filter(memory -> terms.isEmpty() || score(memory, terms) > 0
+                        || semanticScores.getOrDefault(memory.id(), -1D) >= 0.35D
                         || query.contains("\u8bb0\u5f97") || query.toLowerCase(Locale.ROOT).contains("remember"))
                 .limit(limit).toList();
     }
@@ -51,6 +59,27 @@ public class AgentMemoryRecallService {
         String content = memory.content().toLowerCase(Locale.ROOT);
         // 较长的词片段具有更强区分度，避免两个常见汉字就把无关记忆排到前面。
         return terms.stream().mapToInt(term -> content.contains(term) ? term.length() : 0).sum();
+    }
+
+    private java.util.Map<Long, Double> semanticScores(long userId, String query,
+                                                        List<AgentMemoryView> candidates) {
+        AgentMemorySemanticRanker ranker = semanticRanker.getIfAvailable();
+        if (ranker == null) return java.util.Map.of();
+        try {
+            return ranker.rank(userId, query, candidates).stream().collect(
+                    java.util.stream.Collectors.toUnmodifiableMap(
+                            AgentMemorySemanticScore::memoryId, AgentMemorySemanticScore::score));
+        } catch (RuntimeException unavailable) {
+            // 语义召回是增强项。Embedding 超时、限流或模型离线时必须继续使用词法结果，
+            // 不能因为可选向量服务故障让整个 Agent 对话失败。
+            return java.util.Map.of();
+        }
+    }
+
+    private static double combinedScore(AgentMemoryView memory, Set<String> terms,
+                                        java.util.Map<Long, Double> semanticScores) {
+        // 词法命中用于精确名称和原话，语义分用于同义改写；二者相加而不是互相覆盖。
+        return score(memory, terms) + Math.max(0D, semanticScores.getOrDefault(memory.id(), 0D)) * 4D;
     }
 
     private static Set<String> terms(String query) {

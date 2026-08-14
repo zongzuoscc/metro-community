@@ -8,6 +8,7 @@ import cumt.zongzuo.community.ai.provider.DisabledEmbeddingGateway;
 import cumt.zongzuo.community.ai.provider.EmbeddingGateway;
 import cumt.zongzuo.community.ai.provider.OllamaEmbeddingGateway;
 import cumt.zongzuo.community.ai.provider.OpenAiCompatibleAiChatGateway;
+import cumt.zongzuo.community.ai.provider.OpenAiCompatibleEmbeddingGateway;
 import cumt.zongzuo.community.ai.provider.ProviderHttpStatusException;
 import cumt.zongzuo.community.ai.agent.websearch.AgentWebSearchGateway;
 import cumt.zongzuo.community.ai.agent.websearch.DashScopeAgentWebSearchGateway;
@@ -72,6 +73,26 @@ public class AiProviderConfiguration {
             return new DisabledEmbeddingGateway(AiProviderErrorReason.AI_DISABLED);
         }
 
+        MetroAiProperties.EmbeddingProperties embeddingProperties = properties.getEmbedding();
+        if ("platform".equalsIgnoreCase(embeddingProperties.getProvider())) {
+            MetroAiProperties.PlatformProperties platform = properties.getPlatform();
+            if (!StringUtils.hasText(platform.getBaseUrl())
+                    || !StringUtils.hasText(platform.getApiKey())
+                    || !StringUtils.hasText(platform.getProvider())
+                    || !StringUtils.hasText(embeddingProperties.getModel())) {
+                return new DisabledEmbeddingGateway(AiProviderErrorReason.AI_UNAVAILABLE);
+            }
+            Duration readTimeout = providerReadTimeout(embeddingProperties.getTimeout(),
+                    properties.getRuntime());
+            return new OpenAiCompatibleEmbeddingGateway(
+                    OpenAiCompatibleEmbeddingGateway.httpTransport(
+                            properties.getRuntime().getProviderConnectTimeout(), readTimeout),
+                    platform.getBaseUrl(), platform.getApiKey(), platform.getProvider(),
+                    embeddingProperties.getModel(), embeddingProperties.getDimensions());
+        }
+        if (!"ollama".equalsIgnoreCase(embeddingProperties.getProvider())) {
+            return new DisabledEmbeddingGateway(AiProviderErrorReason.AI_UNAVAILABLE);
+        }
         MetroAiProperties.OllamaProperties ollama = properties.getOllama();
         if (!StringUtils.hasText(ollama.getBaseUrl()) || !StringUtils.hasText(ollama.getModel())) {
             return new DisabledEmbeddingGateway(AiProviderErrorReason.AI_UNAVAILABLE);

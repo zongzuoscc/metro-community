@@ -221,10 +221,19 @@ metro:
       recovery-initial-delay-ms: ${METRO_AI_MODERATION_RECOVERY_INITIAL_DELAY_MS:30000}
     memory:
       enabled: ${METRO_AI_MEMORY_ENABLED:false}
+      semantic-enabled: ${METRO_AI_MEMORY_SEMANTIC_ENABLED:false}
+      summary-enabled: ${METRO_AI_MEMORY_SUMMARY_ENABLED:false}
+      summary-turn-threshold: ${METRO_AI_MEMORY_SUMMARY_TURN_THRESHOLD:20}
+      summary-max-characters: ${METRO_AI_MEMORY_SUMMARY_MAX_CHARACTERS:2000}
+      summary-delay-ms: ${METRO_AI_MEMORY_SUMMARY_DELAY_MS:15000}
+      summary-initial-delay-ms: ${METRO_AI_MEMORY_SUMMARY_INITIAL_DELAY_MS:15000}
       timeout: PT20S
       bulkhead: 2
     embedding:
       enabled: ${METRO_AI_EMBEDDING_ENABLED:false}
+      provider: ${METRO_AI_EMBEDDING_PROVIDER:ollama}
+      model: "${METRO_AI_EMBEDDING_MODEL:${OLLAMA_EMBEDDING_MODEL:metro-bge-m3:790764642607}}"
+      dimensions: ${METRO_AI_EMBEDDING_DIMENSIONS:1024}
       timeout: PT45S
       bulkhead: 4
     runtime:
