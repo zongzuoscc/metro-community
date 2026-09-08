@@ -89,7 +89,8 @@ class ArticleAgentRetrievalConfiguration {
                                                 ObjectProvider<AgentMemoryRecallService> memories,
                                                 ObjectProvider<AgentConversationHistorySearchService> history,
                                                 ObjectProvider<AgentWebSearchGateway> webSearch,
-                                                ObjectProvider<AgentReadOnlyPlanProvider> planner) {
+                                                ObjectProvider<AgentReadOnlyPlanProvider> planner,
+                                                cumt.zongzuo.community.ai.agent.context.AgentContextProperties contextProperties) {
         String model = properties.getPlatform().getModel();
         if (model == null || model.isBlank()) {
             throw new IllegalStateException("Agent model must not be blank");
@@ -98,7 +99,9 @@ class ArticleAgentRetrievalConfiguration {
                 new GroundedAnswerParser(objectMapper), clock, model,
                 properties.getAgent().getTimeout(), memories.getIfAvailable(),
                 history.getIfAvailable(), properties.getMemory().isEnabled(),
-                webSearch.getIfAvailable(), planner.getIfAvailable());
+                webSearch.getIfAvailable(), planner.getIfAvailable(),
+                new cumt.zongzuo.community.ai.agent.context.AgentPromptBudget(contextProperties),
+                properties.getAgent().getMaxInputCharacters());
     }
 
     private static Duration min(Duration left, Duration right) {

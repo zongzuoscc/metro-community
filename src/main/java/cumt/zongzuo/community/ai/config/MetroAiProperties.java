@@ -10,7 +10,7 @@ import java.time.Duration;
 public class MetroAiProperties {
 
     private boolean enabled;
-    private CapabilityProperties agent = capability(false, 4_000, 600, 8, 100,
+    private CapabilityProperties agent = capability(false, 400_000, 600, 8, 100,
             Duration.ofMinutes(1), Duration.ofSeconds(45), Duration.ofSeconds(45), 8);
     private PlannerProperties planner = new PlannerProperties();
     private CapabilityProperties articleSummary = capability(false, 100_000, 0, 5, 30,

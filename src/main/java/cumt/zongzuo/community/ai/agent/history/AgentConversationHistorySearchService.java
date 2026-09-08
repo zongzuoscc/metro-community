@@ -42,7 +42,7 @@ public class AgentConversationHistorySearchService {
                 || query.contains("我对你说") || query.contains("我曾说"));
         return mapper.searchCandidates(userId, terms, Long.MAX_VALUE, Math.min(200, limit * 20))
                 .stream().filter(hit -> !userSelfRecall || "USER".equals(hit.role()))
-                .filter(hit -> safety.canStore(hit.content())).sorted(Comparator.comparingInt(
+                .filter(hit -> safety.canUseAsContext(hit.content())).sorted(Comparator.comparingInt(
                         (AgentConversationHistoryHit hit) -> score(hit.content(), terms)).reversed()
                         .thenComparing(AgentConversationHistoryHit::messageId,
                                 Comparator.reverseOrder()))
@@ -55,9 +55,47 @@ public class AgentConversationHistorySearchService {
         List<AgentEpisodeSummaryView> newestFirst = mapper.recentSummaries(userId, limit);
         if (newestFirst == null || newestFirst.isEmpty()) return List.of();
         java.util.ArrayList<AgentEpisodeSummaryView> chronological =
-                new java.util.ArrayList<>(newestFirst);
+                new java.util.ArrayList<>(newestFirst.stream()
+                        .filter(summary -> safety.canUseAsContext(summary.summary())).toList());
         java.util.Collections.reverse(chronological);
         return List.copyOf(chronological);
+    }
+
+    /**
+     * 近期窗口独立于相关性检索。只接收完整成功问答，按消息 ID 正序恢复；若一轮中出现
+     * 凭据等敏感内容，整轮跳过，避免只留下孤立回答。不会为此提取或写入长期记忆。
+     */
+    public List<AgentConversationHistoryHit> recentConversation(long userId, int turns) {
+        if (turns < 1 || turns > 64) throw new IllegalArgumentException("Invalid recent turn limit");
+        var rows = mapper.recentCompletedMessages(userId, turns);
+        return safeCompleteTurns(userId, rows);
+    }
+
+    /**
+     * 查询一页并先从原始行计算游标，再做敏感信息过滤。即使安全消息为空，仍能继续读取
+     * 更老的一页；数据库读取只持续单条查询，不在模型等待期间持有事务或连接。
+     */
+    public AgentConversationPage conversationPage(long userId, long beforeTurnId, int pageTurns) {
+        if (beforeTurnId < 1 || pageTurns < 1 || pageTurns > 64) {
+            throw new IllegalArgumentException("Invalid history page request");
+        }
+        var rows = mapper.completedMessagesBefore(userId, beforeTurnId, pageTurns);
+        if (rows == null || rows.isEmpty()) return AgentConversationPage.empty();
+        long next = rows.stream().mapToLong(AgentConversationHistoryHit::turnId).min().orElseThrow();
+        boolean exhausted = rows.stream().map(AgentConversationHistoryHit::turnId).distinct().count() < pageTurns;
+        return new AgentConversationPage(safeCompleteTurns(userId, rows), next, exhausted);
+    }
+
+    private List<AgentConversationHistoryHit> safeCompleteTurns(long userId, List<AgentConversationHistoryHit> rows) {
+        if (rows == null || rows.isEmpty()) return List.of();
+        var grouped = rows.stream().filter(row -> row.userId() == userId)
+                .collect(java.util.stream.Collectors.groupingBy(AgentConversationHistoryHit::turnId));
+        return grouped.values().stream().filter(pair -> pair.size() == 2
+                        && pair.stream().anyMatch(m -> "USER".equals(m.role()))
+                        && pair.stream().anyMatch(m -> "ASSISTANT".equals(m.role()))
+                        && pair.stream().allMatch(m -> safety.canUseAsContext(m.content())))
+                .flatMap(List::stream).sorted(Comparator.comparingLong(
+                        AgentConversationHistoryHit::messageId)).toList();
     }
 
     private static int score(String content, List<String> terms) {

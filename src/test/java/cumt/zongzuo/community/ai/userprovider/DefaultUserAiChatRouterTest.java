@@ -71,4 +71,25 @@ class DefaultUserAiChatRouterTest {
         row.setEnabled(true);
         return row;
     }
+
+    @Test
+    void preparedAnswerKeepsItsModelWhenSettingsChangeDuringRetrieval() {
+        AiChatGateway platform = mock(AiChatGateway.class);
+        UserAiProviderService settings = mock(UserAiProviderService.class);
+        UserOpenAiCompatibleGateway userGateway = mock(UserOpenAiCompatibleGateway.class);
+        UserAiProviderRecord row = configured();
+        when(settings.findEnabledRecord(7L)).thenReturn(Optional.of(row));
+        when(settings.decryptApiKey(org.mockito.ArgumentMatchers.any())).thenReturn("secret");
+        when(userGateway.generate(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+                .thenAnswer(invocation -> {
+                    UserAiProviderRecord frozen = invocation.getArgument(0);
+                    return new AiChatResult("完成", "stop", 1, 1, "openai", frozen.getModel());
+                });
+        var router = new DefaultUserAiChatRouter(platform, settings, userGateway);
+        var prepared = router.prepare(7L, "platform");
+        row.setModel("new-small-model");
+        assertThat(prepared.model()).isEqualTo("gpt-4.1-mini");
+        assertThat(prepared.generate(COMMAND).result().model()).isEqualTo("gpt-4.1-mini");
+    }
 }

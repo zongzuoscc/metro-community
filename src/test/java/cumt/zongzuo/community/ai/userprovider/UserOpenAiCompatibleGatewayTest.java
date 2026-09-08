@@ -59,9 +59,11 @@ class UserOpenAiCompatibleGatewayTest {
         gateway.generate(setting("https://example.com/openai/v1", "custom-model"), "secret",
                 new AiChatCommand(AiCapability.AGENT,
                         List.of(new AiPromptMessage(AiPromptRole.USER, "问题")),
-                        AiResponseMode.JSON_OBJECT));
+                        AiResponseMode.JSON_OBJECT, 2048));
 
         assertThat(transport.body).contains("\"response_format\":{\"type\":\"json_object\"}");
+        assertThat(new com.fasterxml.jackson.databind.ObjectMapper().readTree(transport.body)
+                .path("max_tokens").asInt()).isEqualTo(2048);
     }
 
     private static UserAiProviderRecord setting(String baseUrl, String model) {

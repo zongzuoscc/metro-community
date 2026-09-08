@@ -102,6 +102,19 @@ class OpenAiCompatibleAiChatGatewayContractTest {
     }
 
     @Test
+    void forwardsReservedAnswerTokensToThePlatform() throws Exception {
+        AtomicReference<String> body = new AtomicReference<>();
+        start(exchange -> {
+            body.set(readBody(exchange));
+            respond(exchange, 200, successJson("{}", "stop", 2, 1));
+        });
+        withGateway(gateway -> gateway.generate(new AiChatCommand(AiCapability.AGENT,
+                List.of(new AiPromptMessage(AiPromptRole.USER, "回答")),
+                AiResponseMode.JSON_OBJECT, 2048)));
+        assertThat(readJson(body.get()).path("max_tokens").asInt()).isEqualTo(2048);
+    }
+
+    @Test
     void moderationOptionsFollowCapabilityWhileJsonFormatFollowsResponseMode() throws Exception {
         List<String> bodies = new ArrayList<>();
         start(exchange -> {

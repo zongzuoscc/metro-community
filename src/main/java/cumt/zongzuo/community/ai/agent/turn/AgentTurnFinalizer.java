@@ -99,10 +99,12 @@ public class AgentTurnFinalizer {
         }
         for (var history : answer.historyUses()) {
             mapper.insertPersonalContextUse(userId, turnId, "CONVERSATION_HISTORY",
-                    "message:" + history.messageId(), null, ++contextRank, history.content(),
+                    "message:" + history.messageId(), null, ++contextRank, contextExcerpt(history.content()),
                     json(java.util.Map.of("messageId", history.messageId(),
                             "sourceTurnId", history.turnId(), "role", history.role(),
-                            "createdAt", history.createdAt().toString())));
+                            "createdAt", history.createdAt().toString(),
+                            "contentHash", AgentTurnAdmissionService.sha256(history.content()),
+                            "contentCodePoints", history.content().codePointCount(0, history.content().length()))));
         }
         for (var source : answer.webSources()) {
             if (!AgentWebSourceUrlPolicy.isSafe(source.url())) {
@@ -130,6 +132,16 @@ public class AgentTurnFinalizer {
             throw new IllegalStateException("Agent completion fence was lost");
         }
         return true;
+    }
+
+    /**
+     * 使用记录只保存最多 1000 个 Unicode 码点的预览，匹配 VARCHAR(1000) 字段。
+     * 原文仍在 agent_message，通过消息 ID 和完整内容哈希追溯；不能为了审计重复长文而
+     * 让已生成的回答因 Data too long 回滚，也不能按 UTF-16 下标截断半个 emoji。
+     */
+    private static String contextExcerpt(String content) {
+        int end = content.offsetByCodePoints(0, Math.min(1000, content.codePointCount(0, content.length())));
+        return content.substring(0, end);
     }
 
     private String json(Object value) {

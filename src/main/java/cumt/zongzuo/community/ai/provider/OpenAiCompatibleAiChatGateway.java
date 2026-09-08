@@ -105,6 +105,12 @@ public final class OpenAiCompatibleAiChatGateway implements AiChatGateway {
             request.put("temperature", 0.0);
             request.put("max_tokens", moderationMaxOutputTokens);
         }
+        if (command.maxOutputTokens() != null) {
+            // 显式输出预算不能放大审核能力本身的上限。
+            request.put("max_tokens", command.capability() == AiCapability.MODERATION
+                    ? Math.min(moderationMaxOutputTokens, command.maxOutputTokens())
+                    : command.maxOutputTokens());
+        }
         return request;
     }
 

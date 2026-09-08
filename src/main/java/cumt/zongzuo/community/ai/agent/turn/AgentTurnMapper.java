@@ -159,6 +159,16 @@ public interface AgentTurnMapper {
     int insertNextEpisode(@Param("userId") long userId,
                           @Param("conversationId") long conversationId);
 
+    /** 仅主动清空时推进读取边界；自动摘要滚段不推进，因而能跨段连续对话。 */
+    @Update("""
+            UPDATE agent_conversation c
+            JOIN agent_episode e ON e.conversation_id=c.id AND e.user_id=c.user_id AND e.state='ACTIVE'
+            SET c.context_start_episode_no=e.episode_no,c.lock_version=c.lock_version+1,
+                c.updated_at=CURRENT_TIMESTAMP(6)
+            WHERE c.user_id=#{userId}
+            """)
+    int advanceContextBoundary(@Param("userId") long userId);
+
     @Select("""
             SELECT * FROM agent_turn
             WHERE user_id=#{userId} AND conversation_id=#{conversationId}

@@ -183,12 +183,25 @@ metro:
       enabled: ${METRO_AI_AGENT_ENABLED:false}
       turn-recovery-enabled: ${METRO_AI_AGENT_TURN_RECOVERY_ENABLED:false}
       turn-recovery-delay-ms: ${METRO_AI_AGENT_TURN_RECOVERY_DELAY_MS:10000}
-      max-input-characters: 4000
+      # 字符上限只作最终防护；实际提示词先按 context 的 Token 预算自动裁减。
+      max-input-characters: ${METRO_AI_AGENT_MAX_INPUT_CHARACTERS:400000}
       per-minute: 8
       per-day: 100
       quota-window: PT1M
       timeout: PT45S
       bulkhead: 8
+    context:
+      # 业务安全上限，不是固定输入目标；实际仍与已确认的模型容量取较小值。
+      working-window-tokens: ${METRO_AI_CONTEXT_WORKING_WINDOW_TOKENS:262144}
+      # 此处是部署者确认的可用容量，不是根据模型名称猜测供应商规格。
+      platform-window-tokens: ${METRO_AI_CONTEXT_PLATFORM_WINDOW_TOKENS:32768}
+      unknown-model-window-tokens: ${METRO_AI_CONTEXT_UNKNOWN_MODEL_WINDOW_TOKENS:8192}
+      max-output-tokens: ${METRO_AI_CONTEXT_MAX_OUTPUT_TOKENS:4096}
+      safety-margin-tokens: ${METRO_AI_CONTEXT_SAFETY_MARGIN_TOKENS:1024}
+      history-page-turns: ${METRO_AI_CONTEXT_HISTORY_PAGE_TURNS:24}
+      history-load-timeout: ${METRO_AI_CONTEXT_HISTORY_LOAD_TIMEOUT:PT2S}
+      # 支持 model-windows[精确模型名] 覆盖单个模型容量，再与工作预算取较小值。
+      model-windows: {}
     # Planner 只选择只读检索来源；轮数、工具数和单轮耗时都是不可放大的安全上限。
     planner:
       enabled: ${METRO_AI_PLANNER_ENABLED:true}

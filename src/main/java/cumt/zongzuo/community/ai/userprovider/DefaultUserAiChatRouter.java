@@ -25,4 +25,23 @@ public final class DefaultUserAiChatRouter implements UserAiChatRouter {
                 .orElseGet(() -> new UserAiRoutedResult(platformGateway.generate(command),
                         UserAiFundingSource.PLATFORM));
     }
+
+    @Override
+    public PreparedUserAiChat prepare(long userId, String platformModel) {
+        return settings.findEnabledRecord(userId).map(record -> {
+            // Mapper 对象可变，复制调用所需字段，避免检索期间切换模型后预算与实际模型不一致。
+            UserAiProviderRecord frozen = new UserAiProviderRecord();
+            frozen.setUserId(record.getUserId());
+            frozen.setProvider(record.getProvider());
+            frozen.setBaseUrl(record.getBaseUrl());
+            frozen.setModel(record.getModel());
+            frozen.setEncryptedApiKey(record.getEncryptedApiKey());
+            frozen.setEnabled(record.isEnabled());
+            return new PreparedUserAiChat(frozen.getModel(), UserAiFundingSource.USER,
+                    command -> new UserAiRoutedResult(userGateway.generate(frozen,
+                            settings.decryptApiKey(frozen), command), UserAiFundingSource.USER));
+        }).orElseGet(() -> new PreparedUserAiChat(platformModel, UserAiFundingSource.PLATFORM,
+                command -> new UserAiRoutedResult(platformGateway.generate(command),
+                        UserAiFundingSource.PLATFORM)));
+    }
 }

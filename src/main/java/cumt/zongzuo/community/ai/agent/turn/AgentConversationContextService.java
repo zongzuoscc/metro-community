@@ -37,7 +37,8 @@ public class AgentConversationContextService {
             mapper.ensureActiveEpisode(userId, conversationId);
             Long episodeId = mapper.selectActiveEpisodeIdForUpdate(userId, conversationId);
             if (episodeId == null || mapper.sealActiveEpisode(episodeId, userId) != 1
-                    || mapper.insertNextEpisode(userId, conversationId) != 1) {
+                    || mapper.insertNextEpisode(userId, conversationId) != 1
+                    || mapper.advanceContextBoundary(userId) != 1) {
                 throw AiApiException.optimisticLockConflict();
             }
         });

@@ -183,6 +183,9 @@ class GroundedAnswerServiceTest {
 
         verify(memories, never()).recall(any(Long.class), any(), any(Integer.class));
         verify(history, never()).search(any(Long.class), any(), any(Integer.class));
+        verify(history, never()).recentConversation(anyLong(), anyInt());
+        verify(history, never()).conversationPage(anyLong(), anyLong(), anyInt());
+        verify(history, never()).recentSummaries(anyLong(), anyInt());
         var command = org.mockito.ArgumentCaptor.forClass(
                 cumt.zongzuo.community.ai.provider.AiChatCommand.class);
         verify(gateway).generate(command.capture());
@@ -331,6 +334,124 @@ class GroundedAnswerServiceTest {
         when(retrieval.retrieve(any(ArticleRetrievalQuery.class))).thenReturn(new ArticleRetrievalResult(
                 chunks.size(), chunks.size(), true, true, chunks,
                 chunks.stream().map(chunk -> new RankedArticleChunk(chunk, .03, 1, 1)).toList()));
+    }
+
+    /** 验证生产回答链路真的向前翻页，而不是仅让独立组装器具备翻页能力。 */
+    @Test
+    void sendsMoreThanTwentyFourTurnsThroughTheActualAnswerPipeline() {
+        retrievalResult(List.of());
+        var newest = new java.util.ArrayList<AgentConversationHistoryHit>();
+        var oldest = new java.util.ArrayList<AgentConversationHistoryHit>();
+        for (int turn = 1; turn <= 36; turn++) {
+            var target = turn <= 12 ? oldest : newest;
+            target.add(new AgentConversationHistoryHit(turn * 2, turn, 9, "USER", "问题" + turn,
+                    LocalDateTime.parse("2026-08-12T00:00:00")));
+            target.add(new AgentConversationHistoryHit(turn * 2 + 1, turn, 9, "ASSISTANT", "回答" + turn,
+                    LocalDateTime.parse("2026-08-12T00:00:01")));
+        }
+        when(history.conversationPage(9, Long.MAX_VALUE, 24)).thenReturn(
+                new cumt.zongzuo.community.ai.agent.history.AgentConversationPage(newest, 13, false));
+        when(history.conversationPage(9, 13, 24)).thenReturn(
+                new cumt.zongzuo.community.ai.agent.history.AgentConversationPage(oldest, 1, true));
+        when(gateway.generate(any())).thenAnswer(invocation -> {
+            var command = invocation.getArgument(0, cumt.zongzuo.community.ai.provider.AiChatCommand.class);
+            String json = command.messages().getLast().text().split("\\n", 2)[1];
+            var messages = new ObjectMapper().readTree(json).path("recentConversation");
+            assertThat(messages).hasSize(72);
+            assertThat(messages.get(0).path("content").asText()).isEqualTo("问题1");
+            assertThat(messages.get(71).path("content").asText()).isEqualTo("回答36");
+            return new AiChatResult("{\"answer\":\"根据之前的讨论继续\",\"citations\":[]}",
+                    "stop", 5000, 100, "test", "deepseek-test");
+        });
+        assertThat(service().answer(9, "paged-answer", "继续",
+                Instant.parse("2026-08-12T00:00:30Z")).historyUses()).hasSize(72);
+    }
+
+    /** Planner 即使只选文章，第三个/继续等追问仍必须看到上一轮原始问答。 */
+    @Test
+    void followUpAlwaysCarriesRecentTurnsWithoutAHistoryToolCall() {
+        retrievalResult(List.of());
+        when(webSearch.search(any(), any())).thenReturn(AgentWebSearchResult.empty());
+        var planner = mock(AgentReadOnlyPlanProvider.class);
+        when(planner.plan(anyLong(), any(), any(), anyBoolean(), anyBoolean(), anyInt(),
+                anySet(), any(), any())).thenReturn(new AgentPlannerRound(
+                        List.of(AgentReadOnlyTool.COMMUNITY_ARTICLES), false));
+        when(history.conversationPage(9L, Long.MAX_VALUE, 24)).thenReturn(
+                new cumt.zongzuo.community.ai.agent.history.AgentConversationPage(List.of(
+                new AgentConversationHistoryHit(10, 1, 9, "USER", "给三个事务优化方案",
+                        LocalDateTime.parse("2026-08-12T00:00:00")),
+                new AgentConversationHistoryHit(11, 1, 9, "ASSISTANT", "第一缩短事务；第二加索引；第三异步化",
+                        LocalDateTime.parse("2026-08-12T00:00:01"))), 1, true));
+        when(gateway.generate(any())).thenAnswer(invocation -> {
+            var command = invocation.getArgument(0,
+                    cumt.zongzuo.community.ai.provider.AiChatCommand.class);
+            assertThat(command.messages().toString()).contains("recentConversation",
+                    "给三个事务优化方案", "第三异步化", "把第三个展开");
+            assertThat(command.maxOutputTokens()).isPositive();
+            return new AiChatResult("{\"answer\":\"第三项是异步化\",\"citations\":[]}",
+                    "stop", 200, 30, "test", "deepseek-test");
+        });
+        var answer = service(true, planner).answer(9L, "follow-up", "把第三个展开", true,
+                Instant.parse("2026-08-12T00:00:30Z"));
+        assertThat(answer.answer()).contains("第三项是异步化");
+        assertThat(answer.historyUses()).extracting(AgentHistoryUse::messageId).containsExactly(10L, 11L);
+        var query = org.mockito.ArgumentCaptor.forClass(ArticleRetrievalQuery.class);
+        verify(retrieval).retrieve(query.capture());
+        assertThat(query.getValue().query()).contains("给三个事务优化方案", "把第三个展开");
+        verify(webSearch).search("把第三个展开", Instant.parse("2026-08-12T00:00:30Z"));
+    }
+
+    /** 检索结果再多也不能无限扩大最终请求；裁掉的文章不得继续充当引用依据。 */
+    @Test
+    void oversizedEvidenceIsRemovedBeforeSendingThePrompt() {
+        var huge = new ResolvedArticleChunk(32L, 302L, 3002L, 0, "巨大资料",
+                List.of(), "低相关资料。".repeat(30_000), "a".repeat(64), "b".repeat(64));
+        retrievalResult(List.of(huge));
+        when(gateway.generate(any())).thenAnswer(invocation -> {
+            var command = invocation.getArgument(0,
+                    cumt.zongzuo.community.ai.provider.AiChatCommand.class);
+            assertThat(command.messages().stream().mapToInt(m -> m.text().length()).sum())
+                    .isLessThan(100_000);
+            assertThat(command.messages().toString()).contains("解释事务").doesNotContain("巨大资料");
+            return new AiChatResult("{\"answer\":\"事务是一组原子操作\",\"citations\":[]}",
+                    "stop", 100, 20, "test", "deepseek-test");
+        });
+        assertThat(service().answer(9L, "budget-test", "解释事务",
+                Instant.parse("2026-08-12T00:00:30Z")).citations()).isEmpty();
+    }
+
+    /** 摘要是可选资料，数据库超时不能使已经取得原文和文章证据的整轮回答失败。 */
+    @Test
+    void summaryTimeoutKeepsRecentDialogueAndArticleEvidence() {
+        retrievalResult(List.of(source));
+        var planner = mock(AgentReadOnlyPlanProvider.class);
+        when(planner.plan(anyLong(), any(), any(), anyBoolean(), anyBoolean(), anyInt(),
+                anySet(), any(), any())).thenReturn(new AgentPlannerRound(
+                        List.of(AgentReadOnlyTool.COMMUNITY_ARTICLES), false));
+        when(history.conversationPage(9L, Long.MAX_VALUE, 24)).thenReturn(
+                new cumt.zongzuo.community.ai.agent.history.AgentConversationPage(List.of(
+                        new AgentConversationHistoryHit(10, 1, 9, "USER", "解释行锁",
+                                LocalDateTime.parse("2026-08-12T00:00:00")),
+                        new AgentConversationHistoryHit(11, 1, 9, "ASSISTANT", "行锁保护当前记录",
+                                LocalDateTime.parse("2026-08-12T00:00:01"))), 1, true));
+        when(history.recentSummaries(9L, 3))
+                .thenThrow(new org.springframework.dao.QueryTimeoutException("summary unavailable"));
+        when(gateway.generate(any())).thenAnswer(invocation -> {
+            var command = invocation.getArgument(0,
+                    cumt.zongzuo.community.ai.provider.AiChatCommand.class);
+            var data = new ObjectMapper().readTree(command.messages().getLast().text().split("\\n", 2)[1]);
+            assertThat(data.path("recentConversation")).hasSize(2);
+            assertThat(data.path("sources")).hasSize(1);
+            assertThat(data.path("episodeSummaries")).isEmpty();
+            return new AiChatResult("{\"answer\":\"继续解释行锁\",\"citations\":[]}",
+                    "stop", 200, 30, "test", "deepseek-test");
+        });
+        var result = new java.util.concurrent.atomic.AtomicReference<GroundedAgentAnswer>();
+        org.assertj.core.api.Assertions.assertThatCode(() -> result.set(
+                service(true, planner).answer(9L, "summary-timeout", "继续",
+                        Instant.parse("2026-08-12T00:00:30Z")))).doesNotThrowAnyException();
+        assertThat(result.get().historyUses()).extracting(AgentHistoryUse::messageId)
+                .containsExactly(10L, 11L);
     }
 
     private GroundedAnswerService service() {

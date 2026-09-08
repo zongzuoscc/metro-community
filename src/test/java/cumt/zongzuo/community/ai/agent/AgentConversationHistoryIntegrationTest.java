@@ -118,6 +118,15 @@ class AgentConversationHistoryIntegrationTest extends IntegrationTestSupport {
                 "其他账号的问题", "{}", "COMMUNITY_QA"));
         completeTurn(OTHER, foreign.turnId(), "其他账号的回答");
 
+        // 模型上下文页同样只属于当前用户，并使用排他的 turn 游标而非消息游标。
+        var contextFirst = history.conversationPage(OWNER, Long.MAX_VALUE, 1);
+        assertThat(contextFirst.messages()).extracting(hit -> hit.turnId())
+                .containsExactly(newer.turnId(), newer.turnId());
+        var contextSecond = history.conversationPage(OWNER, contextFirst.nextBeforeTurnId(), 1);
+        assertThat(contextSecond.messages()).extracting(hit -> hit.turnId())
+                .containsExactly(older.turnId(), older.turnId());
+        assertThat(history.conversationPage(OWNER, contextSecond.nextBeforeTurnId(), 1).exhausted()).isTrue();
+
         var firstPage = turnQueries.history(OWNER, null, 1);
         assertThat(firstPage.items()).singleElement().satisfies(item -> {
             assertThat(item.turnId()).isEqualTo(newer.turnId());
@@ -198,6 +207,7 @@ class AgentConversationHistoryIntegrationTest extends IntegrationTestSupport {
         completeTurn(OWNER, oldTurn.turnId(), "我已经看到蓝色风筝。");
         releaseGuard(OWNER);
         assertThat(history.search(OWNER, "蓝色风筝", 5)).isNotEmpty();
+        assertThat(history.recentConversation(OWNER, 24)).hasSize(2);
 
         HttpHeaders headers = new HttpHeaders();
         headers.setBearerAuth(jwtService.generate(OWNER));
@@ -208,14 +218,36 @@ class AgentConversationHistoryIntegrationTest extends IntegrationTestSupport {
         assertThat(turnQueries.history(OWNER, null, 10).items()).singleElement()
                 .extracting(item -> item.turnId()).isEqualTo(oldTurn.turnId());
         assertThat(history.search(OWNER, "蓝色风筝", 5)).isEmpty();
+        assertThat(history.recentConversation(OWNER, 24)).isEmpty();
+        // 旧段摘要即使随后生成完成，也不能穿过用户主动清空的边界。
+        jdbcTemplate.update("UPDATE agent_episode SET state='READY',summary_text='蓝色风筝' WHERE user_id=? AND state='SEALED'", OWNER);
+        assertThat(history.recentSummaries(OWNER, 3)).isEmpty();
         assertThat(jdbcTemplate.queryForObject("""
                 SELECT COUNT(*) FROM agent_episode
                 WHERE user_id=? AND state='ACTIVE'
                 """, Integer.class, OWNER)).isOne();
         assertThat(jdbcTemplate.queryForObject("""
                 SELECT COUNT(*) FROM agent_episode
-                WHERE user_id=? AND state='SEALED'
+                WHERE user_id=? AND state='READY'
                 """, Integer.class, OWNER)).isOne();
+    }
+
+    @Test
+    void automaticEpisodeRollKeepsPreviousCompletedTurnsButNotForeignOrRunningOnes() {
+        var previous = admissions.admit(new AgentTurnCreateCommand(OWNER, UUID.randomUUID(),
+                "三个方案", "{}", "COMMUNITY_QA"));
+        completeTurn(OWNER, previous.turnId(), "第一加锁，第二排队，第三异步");
+        releaseGuard(OWNER);
+        jdbcTemplate.update("UPDATE agent_episode SET state='SEALED' WHERE user_id=?", OWNER);
+        jdbcTemplate.update("""
+                INSERT INTO agent_episode(user_id,conversation_id,episode_no,state,opened_at,created_at,updated_at)
+                SELECT user_id,id,2,'ACTIVE',NOW(6),NOW(6),NOW(6) FROM agent_conversation WHERE user_id=?
+                """, OWNER);
+        admissions.admit(new AgentTurnCreateCommand(OWNER, UUID.randomUUID(), "第三个", "{}", "COMMUNITY_QA"));
+        var foreign = admissions.admit(new AgentTurnCreateCommand(OTHER, UUID.randomUUID(), "他人问题", "{}", "COMMUNITY_QA"));
+        completeTurn(OTHER, foreign.turnId(), "他人回答");
+        assertThat(history.recentConversation(OWNER, 24)).extracting(hit -> hit.content())
+                .containsExactly("三个方案", "第一加锁，第二排队，第三异步");
     }
 
     /** 把 admission 产生的 USER 消息补成一个可见的成功问答事实。 */

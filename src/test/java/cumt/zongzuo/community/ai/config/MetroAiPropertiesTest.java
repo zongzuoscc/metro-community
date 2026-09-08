@@ -31,7 +31,7 @@ class MetroAiPropertiesTest {
             assertThat(properties.getPlatform().getProvider()).isEqualTo("qwen");
             assertThat(properties.getPlatform().getModel()).isEqualTo("qwen-plus");
             assertThat(properties.getOllama().getModel()).isEqualTo("bge-m3");
-            assertThat(properties.getAgent().getMaxInputCharacters()).isEqualTo(4_000);
+            assertThat(properties.getAgent().getMaxInputCharacters()).isEqualTo(400_000);
             assertThat(properties.getAgent().getPerMinute()).isEqualTo(8);
             assertThat(properties.getAgent().getPerDay()).isEqualTo(100);
             assertThat(properties.getAgent().getQuotaWindow()).isEqualTo(Duration.ofMinutes(1));

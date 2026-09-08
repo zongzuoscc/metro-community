@@ -62,6 +62,9 @@ public final class UserOpenAiCompatibleGateway {
         if (command.responseMode() == AiResponseMode.JSON_OBJECT) {
             request.putObject("response_format").put("type", "json_object");
         }
+        if (command.maxOutputTokens() != null) {
+            request.put("max_tokens", command.maxOutputTokens());
+        }
         Map<String, String> headers = new LinkedHashMap<>();
         headers.put("Authorization", "Bearer " + apiKey);
         headers.put("Content-Type", "application/json");

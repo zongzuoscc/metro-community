@@ -778,6 +778,7 @@ CREATE TABLE agent_conversation (
     last_message_id BIGINT      NULL,
     memory_epoch    BIGINT      NOT NULL DEFAULT 1,
     web_search_enabled TINYINT(1) NOT NULL DEFAULT 1,
+    context_start_episode_no INT NOT NULL DEFAULT 1 COMMENT '主动清空后的上下文读取起点，自动滚段不推进',
     created_at      DATETIME(6) NOT NULL,
     updated_at      DATETIME(6) NOT NULL,
     lock_version    BIGINT      NOT NULL DEFAULT 0,
@@ -837,6 +838,7 @@ CREATE TABLE agent_turn (
     UNIQUE KEY uk_agent_turn_request (conversation_id,client_request_id),
     UNIQUE KEY uk_agent_turn_id_user (id,user_id),
     KEY idx_agent_turn_recovery (state,lease_until,id),
+    KEY idx_agent_turn_recent (user_id,state,id),
     CONSTRAINT fk_agent_turn_conversation FOREIGN KEY (conversation_id,user_id)
         REFERENCES agent_conversation(id,user_id),
     CONSTRAINT fk_agent_turn_episode FOREIGN KEY (episode_id,user_id)
