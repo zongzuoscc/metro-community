@@ -12,6 +12,7 @@ import java.util.Set;
 /**
  * 长期记忆的用户所有者 CRUD 边界，并管理“是否允许记忆”开关。
  * 所有查询与更新 SQL 都同时绑定 userId，避免仅凭 memoryId 跨用户访问。
+ * 修改事务先锁 conversation，再锁 setting/item，与回答前压缩统一锁序，防止 epoch 更新死锁。
  */
 @Service
 public class AgentMemoryManagementService {
@@ -44,16 +45,17 @@ public class AgentMemoryManagementService {
     }
 
     /**
-     * 手动添加与自动捕获共用相同的敏感信息拦截、内容去重和不可变版本结构。
+     * 手动添加与 LLM 提取共用相同的敏感信息拦截、内容去重和不可变版本结构。
      * 手动来源不伪造 conversation message；界面依据“是否存在 source 行”展示来源。
      */
     public AgentMemoryView create(long userId, String category, String content,
                                   LocalDateTime expiresAt) {
-        String normalized = AgentMemoryCaptureService.normalize(content);
+        String normalized = AgentMemoryText.normalize(content);
         validateManual(category, content, normalized, expiresAt);
         return transactions.execute(status -> {
+            mapper.lockConversationForMemory(userId);
             mapper.ensureSetting(userId);
-            if (mapper.contentHashCount(userId, AgentMemoryCaptureService.sha256(normalized)) > 0) {
+            if (mapper.contentHashCount(userId, AgentMemoryText.sha256(normalized)) > 0) {
                 throw AiApiException.idempotencyConflict();
             }
             AgentMemoryMapper.MemoryInsert item = new AgentMemoryMapper.MemoryInsert();
@@ -67,7 +69,7 @@ public class AgentMemoryManagementService {
             version.versionNo = 1;
             version.content = content.strip();
             version.normalizedContent = normalized;
-            version.contentHash = AgentMemoryCaptureService.sha256(normalized);
+            version.contentHash = AgentMemoryText.sha256(normalized);
             mapper.insertVersion(version);
             if (mapper.activateVersion(item.id, userId, version.id) != 1) {
                 throw new IllegalStateException("Manual memory activation lost its owner binding");
@@ -83,6 +85,7 @@ public class AgentMemoryManagementService {
                                         LocalDateTime expiresAt, long expectedVersion) {
         validateExpiry(expiresAt);
         return transactions.execute(status -> {
+            mapper.lockConversationForMemory(userId);
             Long lockVersion = mapper.itemLockVersion(memoryId, userId);
             if (lockVersion == null) throw AiApiException.resourceNotFound();
             AgentMemoryView current = mapper.find(memoryId, userId);
@@ -116,17 +119,18 @@ public class AgentMemoryManagementService {
      * 旧版本转为 SUPERSEDED，对应向量投影进入删除流程，新版本使用 expectedVersion 防止丢失更新。
      */
     public AgentMemoryView edit(long userId, long memoryId, String content, long expectedVersion) {
-        String normalized = AgentMemoryCaptureService.normalize(content);
+        String normalized = AgentMemoryText.normalize(content);
         if (!safety.canStore(content) || normalized.isBlank()) {
             throw AiApiException.validationFailed();
         }
         return transactions.execute(status -> {
+            mapper.lockConversationForMemory(userId);
             Long lockVersion = mapper.itemLockVersion(memoryId, userId);
             if (lockVersion == null) throw AiApiException.resourceNotFound();
             AgentMemoryView current = mapper.find(memoryId, userId);
             if (current == null) throw AiApiException.resourceNotFound();
             if (current.version() != expectedVersion) throw AiApiException.optimisticLockConflict();
-            if (mapper.contentHashCount(userId, AgentMemoryCaptureService.sha256(normalized)) > 0) {
+            if (mapper.contentHashCount(userId, AgentMemoryText.sha256(normalized)) > 0) {
                 throw AiApiException.idempotencyConflict();
             }
             AgentMemoryMapper.MemoryVersionInsert version = new AgentMemoryMapper.MemoryVersionInsert();
@@ -135,7 +139,7 @@ public class AgentMemoryManagementService {
             version.versionNo = Math.addExact(expectedVersion, 1);
             version.content = content.strip();
             version.normalizedContent = normalized;
-            version.contentHash = AgentMemoryCaptureService.sha256(normalized);
+            version.contentHash = AgentMemoryText.sha256(normalized);
             mapper.supersedeCurrent(memoryId, userId);
             mapper.deleteSupersededProjections(memoryId, userId);
             mapper.insertVersion(version);
@@ -151,6 +155,7 @@ public class AgentMemoryManagementService {
     /** 删除用户可见记忆内容，并将所有派生投影置为待删除，防止向量索引继续召回已删除数据。 */
     public void delete(long userId, long memoryId) {
         transactions.executeWithoutResult(status -> {
+            mapper.lockConversationForMemory(userId);
             if (mapper.itemLockVersion(memoryId, userId) == null) {
                 throw AiApiException.resourceNotFound();
             }
@@ -170,6 +175,7 @@ public class AgentMemoryManagementService {
     public AgentMemoryView updateState(long userId, long memoryId, boolean paused,
                                        long expectedVersion) {
         return transactions.execute(status -> {
+            mapper.lockConversationForMemory(userId);
             Long lockVersion = mapper.itemLockVersion(memoryId, userId);
             if (lockVersion == null) throw AiApiException.resourceNotFound();
             AgentMemoryView current = mapper.find(memoryId, userId);
@@ -192,6 +198,7 @@ public class AgentMemoryManagementService {
     /** 首次读取也创建默认设置行，使前端总能获得可用于后续更新的确定版本。 */
     public MemorySettingView setting(long userId) {
         return transactions.execute(status -> {
+            mapper.lockConversationForMemory(userId);
             mapper.ensureSetting(userId);
             Boolean enabled = mapper.enabled(userId);
             Long version = mapper.settingVersion(userId);
@@ -201,6 +208,7 @@ public class AgentMemoryManagementService {
 
     public MemorySettingView updateSetting(long userId, boolean enabled, long expectedVersion) {
         return transactions.execute(status -> {
+            mapper.lockConversationForMemory(userId);
             mapper.ensureSetting(userId);
             if (mapper.updateSetting(userId, enabled, expectedVersion) != 1) {
                 throw AiApiException.optimisticLockConflict();

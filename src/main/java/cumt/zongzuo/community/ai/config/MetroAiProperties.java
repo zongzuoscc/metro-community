@@ -10,7 +10,7 @@ import java.time.Duration;
 public class MetroAiProperties {
 
     private boolean enabled;
-    private CapabilityProperties agent = capability(false, 400_000, 600, 8, 100,
+    private CapabilityProperties agent = capability(false, 400_000, 600, 24, 100,
             Duration.ofMinutes(1), Duration.ofSeconds(45), Duration.ofSeconds(45), 8);
     private PlannerProperties planner = new PlannerProperties();
     private CapabilityProperties articleSummary = capability(false, 100_000, 0, 5, 30,
@@ -194,15 +194,15 @@ public class MetroAiProperties {
     }
 
     /**
-     * Planner v1 的限制属于安全边界而不是普通调优参数，因此启动时必须拒绝放大边界。
-     * 后续若要支持深度研究模式，应建立独立配置与用户显式入口，不能偷偷修改这里。
+     * ReAct 的最大步数和调用数是故障保护，允许部署调优，但拒绝无限循环配置。
+     * 保留 planner 配置前缀以兼容已有部署；不再限制同一工具只能执行一次。
      */
     public void validatePlanner() {
         if (planner == null || planner.getTimeout() == null || planner.getTimeout().isZero()
                 || planner.getTimeout().isNegative()
                 || planner.getTimeout().compareTo(Duration.ofSeconds(10)) > 0
-                || planner.getMaxRounds() < 1 || planner.getMaxRounds() > 2
-                || planner.getMaxToolCalls() < 2 || planner.getMaxToolCalls() > 4) {
+                || planner.getMaxRounds() < 1 || planner.getMaxRounds() > 16
+                || planner.getMaxToolCalls() < 2 || planner.getMaxToolCalls() > 24) {
             throw new IllegalStateException("Invalid metro.ai.planner safety configuration");
         }
     }
@@ -342,11 +342,11 @@ public class MetroAiProperties {
         }
     }
 
-    /** 普通 Agent 模式使用的受限只读 Planner 配置。 */
+    /** ReAct 决策预算；字段名沿用旧 planner 配置以保持部署兼容。 */
     public static class PlannerProperties {
         private boolean enabled = true;
-        private int maxRounds = 2;
-        private int maxToolCalls = 4;
+        private int maxRounds = 6;
+        private int maxToolCalls = 8;
         private Duration timeout = Duration.ofSeconds(6);
 
         public boolean isEnabled() { return enabled; }

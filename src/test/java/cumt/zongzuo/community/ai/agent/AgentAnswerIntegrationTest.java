@@ -69,6 +69,16 @@ class AgentAnswerIntegrationTest extends IntegrationTestSupport {
     private long chunkId;
     private Long previousParserGeneration;
 
+    /** 同一个网关分别返回动作协议和回答协议，避免把最终回答误当成决策 JSON。 */
+    private void stubAnswer(AiChatResult answer) {
+        when(gateway.generate(any())).thenAnswer(invocation -> {
+            var command=invocation.getArgument(0,cumt.zongzuo.community.ai.provider.AiChatCommand.class);
+            return command.messages().toString().contains("ReAct 决策器")
+                    ? new AiChatResult("{\"action\":\"FINISH\"}","stop",20,10,answer.provider(),answer.model())
+                    : answer;
+        });
+    }
+
     @BeforeEach
     void seedCurrentPublishedKnowledge() {
         cleanupAgentTimeline();
@@ -157,7 +167,7 @@ class AgentAnswerIntegrationTest extends IntegrationTestSupport {
     @Test
     void authenticatedRequestRunsRealBm25MysqlRevalidationAndGroundedAnswerValidation() {
         String sourceId = "A" + ARTICLE_ID + ":R" + REVISION_ID + ":C" + chunkId;
-        when(gateway.generate(any())).thenReturn(new AiChatResult("""
+        stubAnswer(new AiChatResult("""
                 {"answer":"Use a row lock around the writer transaction.[1]","citations":[
                   {"marker":1,"sourceId":"%s",
                    "quote":"Use SELECT FOR UPDATE to serialize writers"}]}
@@ -179,7 +189,7 @@ class AgentAnswerIntegrationTest extends IntegrationTestSupport {
                 cumt.zongzuo.community.ai.provider.AiChatCommand.class);
         verify(gateway, org.mockito.Mockito.atLeast(2)).generate(commands.capture());
         assertThat(commands.getAllValues()).anySatisfy(command -> assertThat(command.messages()
-                .toString()).contains("read-only retrieval planner"));
+                .toString()).contains("ReAct 决策器"));
         assertThat(commands.getAllValues()).anySatisfy(command -> assertThat(command.messages()
                 .toString()).contains("UNTRUSTED_COMMUNITY_DATA_JSON"));
     }
@@ -190,7 +200,7 @@ class AgentAnswerIntegrationTest extends IntegrationTestSupport {
                 UPDATE article SET is_deleted=1,visibility_state='RECYCLED',status=0,
                   lifecycle_epoch=lifecycle_epoch+1,lock_version=lock_version+1 WHERE id=?
                 """, ARTICLE_ID);
-        when(gateway.generate(any())).thenReturn(new AiChatResult("""
+        stubAnswer(new AiChatResult("""
                 {"answer":"【模型通用知识】可以使用事务与行锁协调并发写入。","citations":[]}
                 """, "stop", 100, 20, "test", "deepseek-v4-flash"));
         HttpHeaders headers = new HttpHeaders();
@@ -206,10 +216,10 @@ class AgentAnswerIntegrationTest extends IntegrationTestSupport {
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getBody()).contains("【模型通用知识】", "\"citations\":[]");
         // 低召回问题还会调用 HyDE；这里只分别锁定 Planner 与最终回答各执行一次，
-        // 防止未来重试或循环规划悄悄突破 2/4 预算。
+        // 验证模型选择 FINISH 后不继续产生额外决策。
         verify(gateway).generate(org.mockito.ArgumentMatchers.argThat(command ->
                 command.capability() == cumt.zongzuo.community.ai.provider.AiCapability.AGENT
-                        && command.messages().toString().contains("read-only retrieval planner")));
+                        && command.messages().toString().contains("ReAct 决策器")));
         verify(gateway).generate(org.mockito.ArgumentMatchers.argThat(command ->
                 command.capability() == cumt.zongzuo.community.ai.provider.AiCapability.AGENT
                         && command.messages().toString().contains("UNTRUSTED_COMMUNITY_DATA_JSON")));
@@ -218,7 +228,7 @@ class AgentAnswerIntegrationTest extends IntegrationTestSupport {
     @Test
     void persistentTurnRunsInBackgroundAndPublishesOnlyTheCommittedGroundedResult() throws Exception {
         String sourceId = "A" + ARTICLE_ID + ":R" + REVISION_ID + ":C" + chunkId;
-        when(gateway.generate(any())).thenReturn(new AiChatResult("""
+        stubAnswer(new AiChatResult("""
                 {"answer":"Use a row lock around the writer transaction.[1]","citations":[
                   {"marker":1,"sourceId":"%s",
                    "quote":"Use SELECT FOR UPDATE to serialize writers"}]}
@@ -271,7 +281,7 @@ class AgentAnswerIntegrationTest extends IntegrationTestSupport {
     void persistentTurnsAutomaticallySaveAndRecallLowRiskMemory() throws Exception {
         // 第一轮也会真实走回答生成，因此必须显式给出严格 JSON，
         // 不依赖 Mockito 默认 null 或其它用例留下的 stub。
-        when(gateway.generate(any())).thenReturn(new AiChatResult("""
+        stubAnswer(new AiChatResult("""
                 {"answer":"我会记住你偏好简洁的回答。","citations":[]}
                 """, "stop", 80, 18, "test", "deepseek-v4-flash"));
         HttpHeaders headers = new HttpHeaders();
@@ -289,7 +299,7 @@ class AgentAnswerIntegrationTest extends IntegrationTestSupport {
         assertThat(jdbcTemplate.queryForObject("""
                 SELECT COUNT(*) FROM agent_memory_item WHERE user_id=? AND state='ACTIVE'
                 """, Integer.class, USER_ID)).isOne();
-        when(gateway.generate(any())).thenReturn(new AiChatResult("""
+        stubAnswer(new AiChatResult("""
                 {"answer":"你喜欢简洁的回答风格。","citations":[]}
                 """, "stop", 100, 20, "test", "deepseek-v4-flash"));
 

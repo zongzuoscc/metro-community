@@ -185,7 +185,7 @@ metro:
       turn-recovery-delay-ms: ${METRO_AI_AGENT_TURN_RECOVERY_DELAY_MS:10000}
       # 字符上限只作最终防护；实际提示词先按 context 的 Token 预算自动裁减。
       max-input-characters: ${METRO_AI_AGENT_MAX_INPUT_CHARACTERS:400000}
-      per-minute: 8
+      per-minute: 24 # 按模型调用计数，包含 ReAct 决策和 HyDE，不是用户提问次数
       per-day: 100
       quota-window: PT1M
       timeout: PT45S
@@ -202,11 +202,11 @@ metro:
       history-load-timeout: ${METRO_AI_CONTEXT_HISTORY_LOAD_TIMEOUT:PT2S}
       # 支持 model-windows[精确模型名] 覆盖单个模型容量，再与工作预算取较小值。
       model-windows: {}
-    # Planner 只选择只读检索来源；轮数、工具数和单轮耗时都是不可放大的安全上限。
+    # ReAct 循环预算（兼容旧 planner 键名）：允许读取结果、改写查询和重复工具。
     planner:
       enabled: ${METRO_AI_PLANNER_ENABLED:true}
-      max-rounds: ${METRO_AI_PLANNER_MAX_ROUNDS:2}
-      max-tool-calls: ${METRO_AI_PLANNER_MAX_TOOL_CALLS:4}
+      max-rounds: ${METRO_AI_PLANNER_MAX_ROUNDS:6}
+      max-tool-calls: ${METRO_AI_PLANNER_MAX_TOOL_CALLS:8}
       timeout: ${METRO_AI_PLANNER_TIMEOUT:PT6S}
     article-summary:
       max-input-characters: 100000
@@ -248,12 +248,12 @@ metro:
       recovery-initial-delay-ms: ${METRO_AI_MODERATION_RECOVERY_INITIAL_DELAY_MS:30000}
     memory:
       enabled: ${METRO_AI_MEMORY_ENABLED:false}
-      semantic-enabled: ${METRO_AI_MEMORY_SEMANTIC_ENABLED:false}
-      summary-enabled: ${METRO_AI_MEMORY_SUMMARY_ENABLED:false}
-      summary-turn-threshold: ${METRO_AI_MEMORY_SUMMARY_TURN_THRESHOLD:20}
-      summary-max-characters: ${METRO_AI_MEMORY_SUMMARY_MAX_CHARACTERS:2000}
-      summary-delay-ms: ${METRO_AI_MEMORY_SUMMARY_DELAY_MS:15000}
-      summary-initial-delay-ms: ${METRO_AI_MEMORY_SUMMARY_INITIAL_DELAY_MS:15000}
+      # 长期记忆统一使用持久向量索引；旧 semantic-enabled/summary-enabled 环境变量不再控制新流水线。
+      milvus:
+        collection: ${METRO_AI_MEMORY_MILVUS_COLLECTION:metro_user_memories_v1}
+        initialize-schema: ${METRO_AI_MEMORY_MILVUS_INITIALIZE_SCHEMA:false}
+        page-size: ${METRO_AI_MEMORY_MILVUS_PAGE_SIZE:32}
+        minimum-score: ${METRO_AI_MEMORY_MILVUS_MINIMUM_SCORE:0.35}
       timeout: PT20S
       bulkhead: 2
     embedding:

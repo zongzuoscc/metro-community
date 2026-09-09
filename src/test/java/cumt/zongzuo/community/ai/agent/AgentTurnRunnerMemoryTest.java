@@ -30,7 +30,7 @@ import static org.mockito.Mockito.when;
 class AgentTurnRunnerMemoryTest {
 
     @Test
-    void successfulPersistentTurnAutomaticallyCapturesTheUserMessage() {
+    void successfulPersistentTurnUsesPreAnswerContextPreparation() {
         GroundedAnswerService answers = mock(GroundedAnswerService.class);
         AgentTurnFinalizer finalizer = mock(AgentTurnFinalizer.class);
         AgentTurnFailureService failures = mock(AgentTurnFailureService.class);
@@ -49,8 +49,8 @@ class AgentTurnRunnerMemoryTest {
         doReturn(heartbeatFuture).when(heartbeat).scheduleAtFixedRate(
                 any(Runnable.class), anyLong(), anyLong(), any());
         when(leases.renew(41L, 9L, runId, 7L)).thenReturn(true);
-        when(answers.answer(eq(9L), eq(runId.toString()), eq("我喜欢简洁回答"),
-                eq(true), any()))
+        when(answers.answerPersistent(eq(9L), eq(runId), eq("我喜欢简洁回答"),
+                eq(true), any(), any()))
                 .thenReturn(answer);
         when(finalizer.complete(41L, runId, 7L, answer)).thenReturn(true);
 
@@ -84,7 +84,7 @@ class AgentTurnRunnerMemoryTest {
         doReturn(heartbeatFuture).when(heartbeat).scheduleAtFixedRate(
                 any(Runnable.class), anyLong(), anyLong(), any());
         when(leases.renew(42L, 9L, runId, 8L)).thenReturn(true);
-        when(answers.answer(eq(9L), eq(runId.toString()), eq("question"), eq(true), any()))
+        when(answers.answerPersistent(eq(9L), eq(runId), eq("question"), eq(true), any(), any()))
                 .thenReturn(answer);
         when(finalizer.complete(42L, runId, 8L, answer)).thenReturn(true);
         new AgentTurnRunner(answers, finalizer, failures, events, executor, heartbeat, leases,

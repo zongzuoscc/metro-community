@@ -7,6 +7,7 @@ import cumt.zongzuo.community.ai.provider.EmbeddingResult;
 import cumt.zongzuo.community.ai.runtime.AiCapabilityExecutor;
 import cumt.zongzuo.community.ai.userprovider.UserAiFundingSource;
 import cumt.zongzuo.community.ai.userprovider.UserAiRoutedResult;
+import cumt.zongzuo.community.ai.userprovider.PreparedUserAiChat;
 import cumt.zongzuo.community.article.projection.chunk.ArticleChunkSearchHit;
 import cumt.zongzuo.community.article.projection.chunk.ArticleChunkSearchRepository;
 import cumt.zongzuo.community.article.projection.vector.ArticleVectorHit;
@@ -23,6 +24,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -37,6 +39,131 @@ class HybridArticleRetrievalServiceTest {
 
     HybridArticleRetrievalServiceTest() {
         when(resolver.activeParserGeneration()).thenReturn(3L);
+    }
+
+    @Test
+    void cancellationFromAnArticleDependencyMustNotBecomeSuccessfulFallback() {
+        when(lexical.searchActive("cancelled", 40)).thenThrow(
+                new java.util.concurrent.CancellationException("run revoked"));
+
+        assertThatThrownBy(() -> service().retrieve(new ArticleRetrievalQuery(
+                7L, "cancelled", "cancelled", Instant.parse("2026-08-12T00:00:30Z"))))
+                .isInstanceOf(java.util.concurrent.CancellationException.class);
+    }
+
+    @Test
+    void hydeUsesTheFrozenTurnRouteInsteadOfReloadingTheMutableRouter() {
+        List<AiCapability> routed = new CopyOnWriteArrayList<>();
+        PreparedUserAiChat frozen = new PreparedUserAiChat("frozen-model", UserAiFundingSource.USER,
+                command -> {
+                    routed.add(command.capability());
+                    return new UserAiRoutedResult(new AiChatResult("冻结路由生成的检索文档", "stop",
+                            10, 10, "user", "frozen-model"), UserAiFundingSource.USER);
+                });
+        RecordingExecutor executor = new RecordingExecutor();
+
+        guardedService(executor, embedding).retrieve(new ArticleRetrievalQuery(7L, "frozen", "锁",
+                Instant.parse("2026-08-12T00:00:30Z"), frozen, () -> { }));
+
+        assertThat(routed).containsExactly(AiCapability.HYDE);
+        assertThat(executor.capabilities()).containsExactly(
+                AiCapability.EMBEDDING, AiCapability.HYDE, AiCapability.EMBEDDING);
+    }
+
+    @Test
+    void revokedDuringLexicalLookupCannotStartEmbedding() {
+        AtomicBoolean active = new AtomicBoolean(true);
+        AtomicBoolean embedded = new AtomicBoolean();
+        when(lexical.searchActive("锁", 40)).thenAnswer(invocation -> {
+            active.set(false);
+            return List.of();
+        });
+
+        assertThatThrownBy(() -> guardedService(new RecordingExecutor(), command -> {
+            embedded.set(true);
+            return embedding.embed(command);
+        }).retrieve(guardedQuery(active, harmlessRoute())))
+                .isInstanceOf(java.util.concurrent.CancellationException.class);
+
+        assertThat(embedded).isFalse();
+    }
+
+    @Test
+    void revokedWhileEmbeddingIsQueuedCannotSendTheQueryToTheProvider() {
+        AtomicBoolean active = new AtomicBoolean(true);
+        AtomicBoolean embedded = new AtomicBoolean();
+        RecordingExecutor executor = new RecordingExecutor();
+        executor.beforeOperation = capability -> active.set(false);
+
+        assertThatThrownBy(() -> guardedService(executor, command -> {
+            embedded.set(true);
+            return embedding.embed(command);
+        }).retrieve(guardedQuery(active, harmlessRoute())))
+                .isInstanceOf(java.util.concurrent.CancellationException.class);
+
+        assertThat(embedded).isFalse();
+    }
+
+    @Test
+    void revokedWhileHydeIsQueuedCannotStartTheFrozenModel() {
+        AtomicBoolean active = new AtomicBoolean(true);
+        AtomicBoolean generated = new AtomicBoolean();
+        RecordingExecutor executor = new RecordingExecutor();
+        executor.beforeOperation = capability -> {
+            if (capability == AiCapability.HYDE) active.set(false);
+        };
+        PreparedUserAiChat route = new PreparedUserAiChat("frozen-model", UserAiFundingSource.USER,
+                command -> {
+                    generated.set(true);
+                    return harmlessRoute().generate(command);
+                });
+
+        assertThatThrownBy(() -> guardedService(executor, embedding).retrieve(guardedQuery(active, route)))
+                .isInstanceOf(java.util.concurrent.CancellationException.class);
+
+        assertThat(generated).isFalse();
+    }
+
+    @Test
+    void revokedDuringHydeDoesNotStartTheSecondEmbedding() {
+        AtomicBoolean active = new AtomicBoolean(true);
+        List<String> embedded = new CopyOnWriteArrayList<>();
+        PreparedUserAiChat route = new PreparedUserAiChat("frozen-model", UserAiFundingSource.USER,
+                command -> {
+                    active.set(false);
+                    return harmlessRoute().generate(command);
+                });
+
+        assertThatThrownBy(() -> guardedService(new RecordingExecutor(), command -> {
+            embedded.add(command.inputs().getFirst());
+            return embedding.embed(command);
+        }).retrieve(guardedQuery(active, route)))
+                .isInstanceOf(java.util.concurrent.CancellationException.class);
+
+        assertThat(embedded).containsExactly("锁");
+    }
+
+    private ArticleRetrievalQuery guardedQuery(AtomicBoolean active, PreparedUserAiChat route) {
+        return new ArticleRetrievalQuery(7L, "guarded", "锁", Instant.parse("2026-08-12T00:00:30Z"),
+                route, () -> {
+                    if (!active.get()) throw new java.util.concurrent.CancellationException("run or memory revoked");
+                });
+    }
+
+    private PreparedUserAiChat harmlessRoute() {
+        return new PreparedUserAiChat("frozen-model", UserAiFundingSource.USER,
+                command -> new UserAiRoutedResult(new AiChatResult("冻结路由生成的检索文档", "stop",
+                        10, 10, "user", "frozen-model"), UserAiFundingSource.USER));
+    }
+
+    private HybridArticleRetrievalService guardedService(RecordingExecutor executor,
+                                                          EmbeddingGateway gateway) {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-12T00:00:00Z"), ZoneOffset.UTC);
+        HydeHypotheticalDocumentService hyde = new HydeHypotheticalDocumentService(executor,
+                (userId, command) -> { throw new AssertionError("Mutable router must not be consulted"); },
+                clock, Duration.ofSeconds(8), 600);
+        return new HybridArticleRetrievalService(lexical, vectors, resolver, executor, gateway,
+                clock, "metro_article_chunks_read", "bge-m3", 40, 8, Duration.ofSeconds(20), hyde, 18, 3);
     }
 
     @Test
@@ -247,13 +374,17 @@ class HybridArticleRetrievalServiceTest {
 
     private static final class RecordingExecutor implements AiCapabilityExecutor {
         private final List<AiCapability> capabilities = new CopyOnWriteArrayList<>();
+        private java.util.function.Consumer<AiCapability> beforeOperation = capability -> { };
 
         @Override
         public <T> T execute(cumt.zongzuo.community.ai.runtime.AiInvocationContext context,
                              CheckedSupplier<T> operation) {
             capabilities.add(context.capability());
             try {
+                beforeOperation.accept(context.capability());
                 return operation.get();
+            } catch (RuntimeException error) {
+                throw error;
             } catch (Throwable error) {
                 throw new IllegalStateException(error);
             }

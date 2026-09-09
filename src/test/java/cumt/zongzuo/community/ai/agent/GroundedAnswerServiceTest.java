@@ -10,8 +10,8 @@ import cumt.zongzuo.community.ai.agent.history.AgentConversationHistoryHit;
 import cumt.zongzuo.community.ai.agent.history.AgentConversationHistorySearchService;
 import cumt.zongzuo.community.ai.agent.memory.AgentMemoryRecallService;
 import cumt.zongzuo.community.ai.agent.memory.AgentMemoryView;
-import cumt.zongzuo.community.ai.agent.planner.AgentPlannerRound;
-import cumt.zongzuo.community.ai.agent.planner.AgentReadOnlyPlanProvider;
+import cumt.zongzuo.community.ai.agent.react.*;
+
 import cumt.zongzuo.community.ai.agent.planner.AgentReadOnlyTool;
 import cumt.zongzuo.community.ai.agent.websearch.AgentWebSearchGateway;
 import cumt.zongzuo.community.ai.agent.websearch.AgentWebSearchResult;
@@ -135,14 +135,15 @@ class GroundedAnswerServiceTest {
                 Instant.parse("2026-08-12T00:00:30Z"));
 
         assertThat(answer.finishReason()).isEqualTo("stop");
-        verify(memories, never()).recall(any(Long.class), any(), any(Integer.class));
+        verify(memories, never()).recall(any(Long.class), any(), any(Integer.class), any());
         verify(gateway).generate(any());
     }
 
     @Test
     void answersFromOwnerMemoryAndOldConversationWithoutCommunityCitations() {
         retrievalResult(List.of());
-        when(memories.recall(9L, "你记得我喜欢什么，以及我说过的重话吗？", 6))
+        when(memories.recall(9L, "你记得我喜欢什么，以及我说过的重话吗？", 6,
+                Instant.parse("2026-08-12T00:00:30Z")))
                 .thenReturn(List.of(new AgentMemoryView(71L, "PREFERENCE",
                         "我喜欢简洁的回答风格", 2L, "ACTIVE", null,
                         "CONVERSATION")));
@@ -181,7 +182,7 @@ class GroundedAnswerServiceTest {
                 "我刚才说喜欢什么？", List.of("USER\t我喜欢红色"),
                 Instant.parse("2026-08-12T00:00:30Z"));
 
-        verify(memories, never()).recall(any(Long.class), any(), any(Integer.class));
+        verify(memories, never()).recall(any(Long.class), any(), any(Integer.class), any());
         verify(history, never()).search(any(Long.class), any(), any(Integer.class));
         verify(history, never()).recentConversation(anyLong(), anyInt());
         verify(history, never()).conversationPage(anyLong(), anyLong(), anyInt());
@@ -284,50 +285,227 @@ class GroundedAnswerServiceTest {
         assertThat(answer.webSources()).extracting(AgentWebSource::index).containsExactly(2);
     }
 
+    /** 若执行器忽略观察、禁止二次文章检索或覆盖旧依据，本测试就会失败。 */
     @Test
-    void executesAtMostTwoPlannerRoundsAndFourUniqueReadOnlyTools() {
-        AgentReadOnlyPlanProvider planner = mock(AgentReadOnlyPlanProvider.class);
-        when(planner.maxRounds()).thenReturn(2);
-        when(planner.maxToolCalls()).thenReturn(4);
-        when(planner.plan(anyLong(), any(), any(), anyBoolean(), anyBoolean(), anyInt(),
-                anySet(), any(), any())).thenReturn(
-                new AgentPlannerRound(List.of(AgentReadOnlyTool.COMMUNITY_ARTICLES,
-                        AgentReadOnlyTool.LONG_TERM_MEMORY), true),
-                // 第二轮故意重复前两项，回答服务仍必须做独立的去重与预算校验。
-                new AgentPlannerRound(List.of(AgentReadOnlyTool.COMMUNITY_ARTICLES,
-                        AgentReadOnlyTool.LONG_TERM_MEMORY,
-                        AgentReadOnlyTool.CONVERSATION_HISTORY,
-                        AgentReadOnlyTool.WEB_SEARCH), true));
-        retrievalResult(List.of());
-        when(memories.recall(9L, "综合一下我的旧问题", 6)).thenReturn(List.of(
-                new AgentMemoryView(72L, "PREFERENCE", "用户喜欢先看结论", 1L,
-                        "ACTIVE", null, "CONVERSATION")));
-        when(history.search(9L, "综合一下我的旧问题", 6)).thenReturn(List.of(
-                new AgentConversationHistoryHit(82L, 802L, 9L, "USER", "旧问题内容",
-                        LocalDateTime.parse("2026-01-02T03:04:05"))));
-        when(webSearch.search(any(), any())).thenReturn(new AgentWebSearchResult(
-                "外部补充资料。[W1]", List.of(new AgentWebSource(1, "外部资料",
-                "https://example.com/source", "Example"))));
-        when(gateway.generate(any())).thenReturn(new AiChatResult("""
-                {"answer":"【记忆与历史】你喜欢先看结论。\\n\\n【联网搜索】还有外部补充。[W1]",
-                 "citations":[]}
-                """, "stop", 80, 20, "test", "deepseek-test"));
+    void reactsToMemoryContentAndSearchesAgainWithNewQuery() {
+        retrievalResult(List.of(source));
+        when(memories.recall(anyLong(),any(),anyInt(),any())).thenReturn(List.of(
+                new AgentMemoryView(72L,"PREFERENCE","用户正在学习 MVCC",1L,"ACTIVE",null,"CONVERSATION")));
+        var planner = decisionProvider();
+        when(planner.decide(anyLong(),any(),any(),any(),anyBoolean(),anyBoolean(),anyInt(),anyInt(),any(),any(),any()))
+                .thenAnswer(invocation -> {
+                    int step=invocation.getArgument(6);
+                    List<AgentToolObservation> observations=invocation.getArgument(8);
+                    if (step==1) return action(AgentReadOnlyTool.LONG_TERM_MEMORY,"目前学习进度");
+                    if (step==2) {
+                        assertThat(observations.toString()).contains("用户正在学习 MVCC");
+                        return action(AgentReadOnlyTool.COMMUNITY_ARTICLES,"MVCC 入门");
+                    }
+                    assertThat(observations.toString()).contains("Use SELECT FOR UPDATE");
+                    return new AgentReactDecision(null);
+                });
+        simpleAnswer();
+        var answer=service(true,planner).answer(9,"react","推荐下一步学习的文章",false,DEADLINE);
+        var queries=org.mockito.ArgumentCaptor.forClass(ArticleRetrievalQuery.class);
+        verify(retrieval,org.mockito.Mockito.times(2)).retrieve(queries.capture());
+        assertThat(queries.getAllValues()).extracting(ArticleRetrievalQuery::query)
+                .containsExactly("推荐下一步学习的文章","MVCC 入门");
+        assertThat(answer.memoryUses()).extracting(AgentMemoryUse::content).containsExactly("用户正在学习 MVCC");
+    }
 
-        GroundedAgentAnswer answer = service(true, planner).answer(9L, "request-planned",
-                "综合一下我的旧问题", true,
-                Instant.parse("2026-08-12T00:00:30Z"));
+    @Test
+    void duplicateActionsStopWithoutHittingToolAgain() {
+        retrievalResult(List.of()); simpleAnswer();
+        var planner=decisionProvider();
+        when(planner.decide(anyLong(),any(),any(),any(),anyBoolean(),anyBoolean(),anyInt(),anyInt(),any(),any(),any()))
+                .thenReturn(action(AgentReadOnlyTool.COMMUNITY_ARTICLES,"问题"));
+        service(true,planner).answer(9,"duplicate","问题",false,DEADLINE);
+        verify(retrieval).retrieve(any());
+        verify(planner,org.mockito.Mockito.times(2)).decide(anyLong(),any(),any(),any(),anyBoolean(),anyBoolean(),
+                anyInt(),anyInt(),any(),any(),any());
+    }
 
-        verify(planner, org.mockito.Mockito.times(2)).plan(anyLong(), any(), any(),
-                anyBoolean(), anyBoolean(), anyInt(), anySet(), any(), any());
-        verify(retrieval).retrieve(any(ArticleRetrievalQuery.class));
-        verify(memories).recall(9L, "综合一下我的旧问题", 6);
-        verify(history).search(9L, "综合一下我的旧问题", 6);
-        verify(webSearch).search("综合一下我的旧问题",
-                Instant.parse("2026-08-12T00:00:30Z"));
+    @Test
+    void toolFailureIsObservedAndAnotherSourceCanBeChosen() {
+        when(retrieval.retrieve(any())).thenThrow(new IllegalStateException("private SQL details"));
+        when(history.search(9L,"事务",6)).thenReturn(List.of(new AgentConversationHistoryHit(
+                82,802,9,"USER","之前问过事务隔离",LocalDateTime.parse("2026-01-02T03:04:05"))));
+        var planner=decisionProvider();
+        when(planner.decide(anyLong(),any(),any(),any(),anyBoolean(),anyBoolean(),anyInt(),anyInt(),any(),any(),any()))
+                .thenAnswer(invocation -> {
+                    List<AgentToolObservation> observations=invocation.getArgument(8);
+                    assertThat(observations.toString()).contains("ERROR").doesNotContain("private SQL details");
+                    return (int)invocation.getArgument(6)==1
+                            ? action(AgentReadOnlyTool.CONVERSATION_HISTORY,"事务") : new AgentReactDecision(null);
+                });
+        simpleAnswer();
+        assertThat(service(true,planner).answer(9,"failed-tool","问题",false,DEADLINE).historyUses()).hasSize(1);
+    }
+
+    @Test
+    void maliciousProviderCannotReadPersistentDataInTemporaryModeOrSearchWhenDisabled() {
+        retrievalResult(List.of(source)); simpleAnswer();
+        var planner=decisionProvider();
+        when(planner.decide(anyLong(),any(),any(),any(),anyBoolean(),anyBoolean(),anyInt(),anyInt(),any(),any(),any()))
+                .thenReturn(action(AgentReadOnlyTool.LONG_TERM_MEMORY,"秘密"),
+                        action(AgentReadOnlyTool.WEB_SEARCH,"秘密"));
+        service(true,planner).answerTemporary(9,"temporary-denied","问题",List.of("当前临时上下文"),false,DEADLINE);
+        org.mockito.Mockito.verifyNoInteractions(memories,history,webSearch);
+    }
+
+    @Test
+    void disabledMemoryCannotBeReenabledByTheDecisionModel() {
+        retrievalResult(List.of()); simpleAnswer();
+        var planner=decisionProvider();
+        when(planner.decide(anyLong(),any(),any(),any(),anyBoolean(),anyBoolean(),anyInt(),anyInt(),any(),any(),any()))
+                .thenReturn(action(AgentReadOnlyTool.LONG_TERM_MEMORY,"偏好"));
+        service(false,planner).answer(9,"memory-off","问题",false,DEADLINE);
+        org.mockito.Mockito.verifyNoInteractions(memories);
+    }
+
+    @Test
+    void modelCanFinishWithoutConsumingAllConfiguredSteps() {
+        retrievalResult(List.of()); simpleAnswer();
+        var planner=decisionProvider();
+        service(true,planner).answer(9,"finish","问题",false,DEADLINE);
+        verify(planner).decide(anyLong(),any(),any(),any(),anyBoolean(),anyBoolean(),anyInt(),anyInt(),any(),any(),any());
+        verify(retrieval).retrieve(any());
+    }
+
+    private static final Instant DEADLINE=Instant.parse("2026-08-12T00:00:30Z");
+
+    @Test
+    void wrappedToolCancellationCannotBecomeAnErrorObservationAndContinue() {
+        var cancelled = new cumt.zongzuo.community.ai.runtime.AiExecutionException(
+                cumt.zongzuo.community.ai.runtime.AiExecutionErrorReason.CANCELLED,"cancelled");
+        when(retrieval.retrieve(any())).thenThrow(cancelled);
+        simpleAnswer();
+        var planner=decisionProvider();
+        assertThatThrownBy(()->service(true,planner).answer(9,"cancelled-tool","问题",false,DEADLINE))
+                .isSameAs(cancelled);
+        verify(planner,never()).decide(anyLong(),any(),any(),any(),anyBoolean(),anyBoolean(),anyInt(),anyInt(),any(),any(),any());
+        verify(gateway,never()).generate(any());
+    }
+
+    @Test
+    void memoryChangeDuringRetrievalPreventsSendingStaleContextToTheModel() {
+        var epoch=new java.util.concurrent.atomic.AtomicLong(1);
+        when(memories.epoch(9L)).thenAnswer(invocation -> epoch.get());
+        when(retrieval.retrieve(any())).thenAnswer(invocation -> {
+            epoch.incrementAndGet(); // 模拟另一个请求删除或暂停记忆。
+            return new ArticleRetrievalResult(0,0,true,true,List.of(),List.of());
+        });
+        simpleAnswer();
+        assertThatThrownBy(()->service(true).answer(9,"epoch","问题",false,DEADLINE))
+                .isInstanceOf(java.util.concurrent.CancellationException.class);
+        verify(gateway,never()).generate(any());
+    }
+
+    @Test
+    void externalSearchQueryIsGeneratedWithoutPrivateMemoryOrPrivateProposedQuery() {
+        retrievalResult(List.of()); simpleAnswer();
+        when(memories.recall(anyLong(),any(),anyInt(),any())).thenReturn(List.of(
+                new AgentMemoryView(72,"PROFILE","秘密喜好与联系方式",1,"ACTIVE",null,"CONVERSATION")));
+        when(webSearch.search(any(),any())).thenReturn(new AgentWebSearchResult(
+                "MVCC 公开说明[W1]",List.of(new AgentWebSource(1,"公开资料","https://example.com/mvcc","站点"))));
+        var provider=decisionProvider();
+        when(provider.decide(anyLong(),any(),any(),any(),anyBoolean(),anyBoolean(),anyInt(),anyInt(),any(),any(),any()))
+                .thenReturn(action(AgentReadOnlyTool.LONG_TERM_MEMORY,"学习情况"),
+                        action(AgentReadOnlyTool.WEB_SEARCH,"秘密喜好与联系方式"),new AgentReactDecision(null));
+        when(provider.publicWebQuery(anyLong(),any(),any(),any(),any(),any())).thenAnswer(invocation -> {
+            assertThat(invocation.getArgument(2,String.class)).isEqualTo("解释 MVCC");
+            List<AgentToolObservation> publicData=invocation.getArgument(3);
+            assertThat(publicData.toString()).doesNotContain("秘密喜好","联系方式","学习情况");
+            assertThat(publicData).allMatch(o->o.call().query().equals("解释 MVCC"));
+            return "MVCC 公开说明";
+        });
+        service(true,provider).answer(9,"public-query","解释 MVCC",true,DEADLINE);
+        var queries=org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(webSearch,org.mockito.Mockito.times(2)).search(queries.capture(),any());
+        assertThat(queries.getAllValues()).containsExactly("解释 MVCC","MVCC 公开说明");
+    }
+
+    /** 连真实决策适配器一起测，不仅用一个会返回固定动作的 Planner 替身。 */
+    @Test
+    void actualDecisionGatewayAndAnswerServiceCompleteTheObservationLoop() {
+        retrievalResult(List.of(source));
+        when(memories.recall(anyLong(),any(),anyInt(),any())).thenReturn(List.of(
+                new AgentMemoryView(72,"GOAL","正在学习 MVCC",1,"ACTIVE",null,"CONVERSATION")));
+        when(gateway.generate(any())).thenAnswer(invocation -> {
+            var command=invocation.getArgument(0,cumt.zongzuo.community.ai.provider.AiChatCommand.class);
+            if (command.messages().getFirst().text().contains("ReAct 决策器")) {
+                var data=new ObjectMapper().readTree(command.messages().getLast().text());
+                int step=data.path("step").asInt();
+                String json;
+                if (step==1) json="{\"action\":\"CALL\",\"tool\":\"LONG_TERM_MEMORY\",\"query\":\"学习目标\"}";
+                else if (step==2) {
+                    assertThat(data.path("observations").toString()).contains("正在学习 MVCC");
+                    json="{\"action\":\"CALL\",\"tool\":\"COMMUNITY_ARTICLES\",\"query\":\"MVCC 入门\"}";
+                } else json="{\"action\":\"FINISH\"}";
+                return new AiChatResult(json,"stop",80,20,"test","deepseek-test");
+            }
+            return new AiChatResult("""
+                    {"answer":"【站内文章】可以先看这一篇。[1]","citations":[
+                    {"marker":1,"sourceId":"A301:R3001:C31","quote":"Use SELECT FOR UPDATE to serialize writers"}]}
+                    ""","stop",100,30,"test","deepseek-test");
+        });
+        var provider=new GatewayReActDecisionProvider(new DirectExecutor(),new ObjectMapper(),
+                Clock.fixed(Instant.parse("2026-08-12T00:00:00Z"),ZoneOffset.UTC),Duration.ofSeconds(6),6,8,
+                new cumt.zongzuo.community.ai.agent.context.AgentPromptBudget(
+                        new cumt.zongzuo.community.ai.agent.context.AgentContextProperties()),400_000);
+        var answer=service(true,provider).answer(9,"actual-react","下一步学什么",false,DEADLINE);
+        assertThat(answer.citations()).extracting(AgentCitation::sourceId).containsExactly("A301:R3001:C31");
         assertThat(answer.memoryUses()).hasSize(1);
-        assertThat(answer.historyUses()).hasSize(1);
-        assertThat(answer.webSources()).hasSize(1);
-        assertThat(calls).hasValue(1);
+        assertThat(calls).hasValue(4); // 三次决策，一次最终回答。
+    }
+
+    @Test
+    void executionLayerEnforcesToolBudgetEvenWhenModelKeepsFindingNewEvidence() {
+        retrievalResult(List.of()); simpleAnswer();
+        var counter=new AtomicInteger();
+        when(history.search(anyLong(),any(),anyInt())).thenAnswer(invocation -> List.of(
+                new AgentConversationHistoryHit(counter.incrementAndGet(),802,9,"USER","旧历史",
+                        LocalDateTime.parse("2026-01-02T03:04:05"))));
+        var provider=decisionProvider();
+        when(provider.maxToolCalls()).thenReturn(3);
+        when(provider.maxRounds()).thenReturn(1000);
+        when(provider.decide(anyLong(),any(),any(),any(),anyBoolean(),anyBoolean(),anyInt(),anyInt(),any(),any(),any()))
+                .thenAnswer(invocation -> action(AgentReadOnlyTool.CONVERSATION_HISTORY,"查询"+invocation.getArgument(6)));
+        var answer=service(true,provider).answer(9,"budget","问题",false,DEADLINE);
+        assertThat(counter).hasValue(2); // 加上初始文章检索，恰好三次工具调用。
+        assertThat(answer.historyUses()).hasSize(2);
+    }
+
+    @Test
+    void cancelledTurnCannotStartAnotherDecisionOrFinalAnswer() {
+        var running=new java.util.concurrent.atomic.AtomicBoolean(true);
+        when(retrieval.retrieve(any())).thenAnswer(invocation -> {
+            running.set(false);
+            return new ArticleRetrievalResult(1,0,true,false,List.of(source),List.of());
+        });
+        var provider=decisionProvider();
+        assertThatThrownBy(()->service(true,provider).answerTemporary(9,"cancel","问题",List.of(),false,
+                DEADLINE,running::get)).isInstanceOf(java.util.concurrent.CancellationException.class);
+        org.mockito.Mockito.verifyNoInteractions(gateway);
+        verify(provider,never()).decide(anyLong(),any(),any(),any(),anyBoolean(),anyBoolean(),anyInt(),anyInt(),any(),any(),any());
+    }
+
+    private AgentReactDecisionProvider decisionProvider() {
+        var provider=mock(AgentReactDecisionProvider.class);
+        when(provider.maxRounds()).thenReturn(6);
+        when(provider.maxToolCalls()).thenReturn(8);
+        when(provider.decide(anyLong(),any(),any(),any(),anyBoolean(),anyBoolean(),anyInt(),anyInt(),any(),any(),any()))
+                .thenReturn(new AgentReactDecision(null));
+        return provider;
+    }
+
+    private AgentReactDecision action(AgentReadOnlyTool tool,String query) {
+        return new AgentReactDecision(new AgentToolCall(tool,query));
+    }
+
+    private void simpleAnswer() {
+        when(gateway.generate(any())).thenReturn(new AiChatResult(
+                "{\"answer\":\"整理好了\",\"citations\":[]}", "stop",80,20,"test","deepseek-test"));
     }
 
     private void retrievalResult(List<ResolvedArticleChunk> chunks) {
@@ -372,10 +550,7 @@ class GroundedAnswerServiceTest {
     void followUpAlwaysCarriesRecentTurnsWithoutAHistoryToolCall() {
         retrievalResult(List.of());
         when(webSearch.search(any(), any())).thenReturn(AgentWebSearchResult.empty());
-        var planner = mock(AgentReadOnlyPlanProvider.class);
-        when(planner.plan(anyLong(), any(), any(), anyBoolean(), anyBoolean(), anyInt(),
-                anySet(), any(), any())).thenReturn(new AgentPlannerRound(
-                        List.of(AgentReadOnlyTool.COMMUNITY_ARTICLES), false));
+        var planner = decisionProvider();
         when(history.conversationPage(9L, Long.MAX_VALUE, 24)).thenReturn(
                 new cumt.zongzuo.community.ai.agent.history.AgentConversationPage(List.of(
                 new AgentConversationHistoryHit(10, 1, 9, "USER", "给三个事务优化方案",
@@ -398,7 +573,8 @@ class GroundedAnswerServiceTest {
         var query = org.mockito.ArgumentCaptor.forClass(ArticleRetrievalQuery.class);
         verify(retrieval).retrieve(query.capture());
         assertThat(query.getValue().query()).contains("给三个事务优化方案", "把第三个展开");
-        verify(webSearch).search("把第三个展开", Instant.parse("2026-08-12T00:00:30Z"));
+        // 检索只使用前 20 秒，为最终回答保留 10 秒，而不是耗尽整个请求。
+        verify(webSearch).search("把第三个展开", Instant.parse("2026-08-12T00:00:20Z"));
     }
 
     /** 检索结果再多也不能无限扩大最终请求；裁掉的文章不得继续充当引用依据。 */
@@ -424,10 +600,7 @@ class GroundedAnswerServiceTest {
     @Test
     void summaryTimeoutKeepsRecentDialogueAndArticleEvidence() {
         retrievalResult(List.of(source));
-        var planner = mock(AgentReadOnlyPlanProvider.class);
-        when(planner.plan(anyLong(), any(), any(), anyBoolean(), anyBoolean(), anyInt(),
-                anySet(), any(), any())).thenReturn(new AgentPlannerRound(
-                        List.of(AgentReadOnlyTool.COMMUNITY_ARTICLES), false));
+        var planner = decisionProvider();
         when(history.conversationPage(9L, Long.MAX_VALUE, 24)).thenReturn(
                 new cumt.zongzuo.community.ai.agent.history.AgentConversationPage(List.of(
                         new AgentConversationHistoryHit(10, 1, 9, "USER", "解释行锁",
@@ -463,14 +636,86 @@ class GroundedAnswerServiceTest {
     }
 
     private GroundedAnswerService service(boolean memoryEnabled,
-                                          AgentReadOnlyPlanProvider planner) {
-        UserAiChatRouter router = (userId, command) -> new UserAiRoutedResult(
-                gateway.generate(command), UserAiFundingSource.USER);
+                                          AgentReactDecisionProvider planner) {
+        return service(memoryEnabled,planner,null);
+    }
+
+    private GroundedAnswerService service(boolean memoryEnabled, AgentReactDecisionProvider planner,
+            cumt.zongzuo.community.ai.agent.context.AgentCompactionGraph compaction) {
+        UserAiChatRouter router = new UserAiChatRouter() {
+            @Override public UserAiRoutedResult generate(long userId,
+                    cumt.zongzuo.community.ai.provider.AiChatCommand command) {
+                return new UserAiRoutedResult(gateway.generate(command),UserAiFundingSource.USER);
+            }
+            @Override public cumt.zongzuo.community.ai.userprovider.PreparedUserAiChat prepare(long userId,String model) {
+                // 与真实 BYOK 路由一致：预算所见的资金来源和实际请求来源必须相同。
+                return new cumt.zongzuo.community.ai.userprovider.PreparedUserAiChat(
+                        model,UserAiFundingSource.USER,command->generate(userId,command));
+            }
+        };
         return new GroundedAnswerService(retrieval, new DirectExecutor(), router,
                 new GroundedAnswerParser(new ObjectMapper()),
                 Clock.fixed(Instant.parse("2026-08-12T00:00:00Z"), ZoneOffset.UTC),
                 "deepseek-test", Duration.ofSeconds(30), memories, history, memoryEnabled,
-                webSearch, planner);
+                webSearch, planner,
+                new cumt.zongzuo.community.ai.agent.context.AgentPromptBudget(
+                        new cumt.zongzuo.community.ai.agent.context.AgentContextProperties()),400_000,compaction);
+    }
+
+    @Test
+    void persistentAnswerUsesPreparedContextBeforeRetrievalAndGeneration() {
+        var graph=mock(cumt.zongzuo.community.ai.agent.context.AgentCompactionGraph.class);
+        var run=java.util.UUID.randomUUID();
+        when(graph.prepare(anyLong(),any(),any(),any(),any())).thenReturn(
+                new cumt.zongzuo.community.ai.agent.context.AgentCompactionGraph.Prepared(
+                        cumt.zongzuo.community.ai.agent.history.AgentConversationPage.empty(),
+                        List.of(new cumt.zongzuo.community.ai.agent.history.AgentEpisodeSummaryView(
+                                1,1,"用户正在学习数据库事务",LocalDateTime.parse("2026-08-12T00:00:00")))));
+        retrievalResult(List.of());
+        when(gateway.generate(any())).thenAnswer(call -> {
+            var command=call.getArgument(0,cumt.zongzuo.community.ai.provider.AiChatCommand.class);
+            assertThat(command.messages().toString()).contains("用户正在学习数据库事务");
+            return new AiChatResult("{\"answer\":\"继续讲解事务\",\"citations\":[]}","stop",100,20,"test","deepseek-test");
+        });
+        service(false,null,graph).answerPersistent(9,run,"继续",false,Instant.parse("2026-08-12T00:00:30Z"));
+        var order=org.mockito.Mockito.inOrder(graph,retrieval,gateway);
+        order.verify(graph).prepare(anyLong(),any(),any(),any(),any());
+        order.verify(retrieval).retrieve(any());
+        order.verify(gateway).generate(any());
+        verify(history,never()).conversationPage(anyLong(),anyLong(),anyInt());
+        verify(history,never()).recentSummaries(anyLong(),anyInt());
+    }
+
+    @Test
+    void compactionFailurePreventsRetrievalAndFinalModelCall() {
+        var graph=mock(cumt.zongzuo.community.ai.agent.context.AgentCompactionGraph.class);
+        when(graph.prepare(anyLong(),any(),any(),any(),any())).thenThrow(new IllegalStateException("Memory index unavailable"));
+        assertThatThrownBy(()->service(true,null,graph).answerPersistent(9,java.util.UUID.randomUUID(),
+                "继续",false,Instant.parse("2026-08-12T00:00:30Z"))).hasMessageContaining("index unavailable");
+        org.mockito.Mockito.verifyNoInteractions(retrieval,gateway,memories);
+    }
+
+    @Test
+    void temporaryAnswerNeverEntersPersistentCompaction() {
+        var graph=mock(cumt.zongzuo.community.ai.agent.context.AgentCompactionGraph.class);
+        retrievalResult(List.of());
+        when(gateway.generate(any())).thenReturn(new AiChatResult("{\"answer\":\"临时回答\",\"citations\":[]}",
+                "stop",100,20,"test","deepseek-test"));
+        service(true,null,graph).answerTemporary(9,"temporary","问题",List.of(),false,
+                Instant.parse("2026-08-12T00:00:30Z"));
+        org.mockito.Mockito.verifyNoInteractions(graph,memories,history);
+    }
+
+    @Test
+    void memoryToolFailureIsNotSilentlyDowngradedToModelKnowledge() {
+        var planner=decisionProvider();
+        retrievalResult(List.of(source));
+        when(planner.decide(anyLong(),any(),any(),any(),anyBoolean(),anyBoolean(),anyInt(),anyInt(),any(),any(),any()))
+                .thenReturn(action(AgentReadOnlyTool.LONG_TERM_MEMORY,"偏好"));
+        when(memories.recall(anyLong(),any(),anyInt(),any())).thenThrow(new IllegalStateException("Embedding unavailable"));
+        assertThatThrownBy(()->service(true,planner).answer(9,"memory-failure","偏好",false,
+                Instant.parse("2026-08-12T00:00:30Z"))).hasMessageContaining("Embedding unavailable");
+        verify(gateway,never()).generate(any());
     }
 
     private final class DirectExecutor implements AiCapabilityExecutor {

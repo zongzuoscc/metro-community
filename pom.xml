@@ -30,6 +30,7 @@
 		<java.version>21</java.version>
 		<elasticsearch-client.version>8.18.1</elasticsearch-client.version>
 		<milvus-sdk.version>2.6.22</milvus-sdk.version>
+		<spring-ai-alibaba.version>1.1.2.0</spring-ai-alibaba.version>
 	</properties>
 
 	<dependencyManagement>
@@ -45,6 +46,12 @@
 	</dependencyManagement>
 
 	<dependencies>
+		<!-- Alibaba Graph 管理回答前的状态流转；模型传输仍复用经过 SSRF 和预算校验的项目网关。 -->
+		<dependency>
+			<groupId>com.alibaba.cloud.ai</groupId>
+			<artifactId>spring-ai-alibaba-graph-core</artifactId>
+			<version>${spring-ai-alibaba.version}</version>
+		</dependency>
 		<!-- 用户自定义 AI 端点必须固定到安全校验得到的 DNS 地址；OkHttp 允许保留原域名 TLS 校验并替换单次请求的解析结果。 -->
 		<dependency>
 			<groupId>com.squareup.okhttp3</groupId>

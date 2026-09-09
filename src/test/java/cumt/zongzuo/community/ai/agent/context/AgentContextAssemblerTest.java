@@ -85,6 +85,29 @@ class AgentContextAssemblerTest {
     }
 
     @Test
+    void preparedContextProtectsThreeTurnsBeforeRetrievedArticles() {
+        var recent=List.of(row(1,1,"USER","第一问题"),row(2,1,"ASSISTANT","解释".repeat(120)),
+                row(3,2,"USER","第二问题"),row(4,2,"ASSISTANT","解释".repeat(120)),
+                row(5,3,"USER","第三问题"),row(6,3,"ASSISTANT","解释".repeat(120)));
+        var baseline=assembler.assemble("系统","继续",List.of(),List.of(),List.of(),List.of(),recent,
+                List.of(),AgentWebSearchResult.empty(),new AgentPromptBudget.Limits(10000,100));
+        var source=new ResolvedArticleChunk(1,1,1,0,"补充文章",List.of(),"资料".repeat(60),"a".repeat(64),"b".repeat(64));
+        var result=assembler.assemblePrepared("系统","继续",List.of(source),List.of(),List.of(),List.of(),
+                new AgentConversationPage(recent,Long.MAX_VALUE,true),AgentWebSearchResult.empty(),
+                new AgentPromptBudget.Limits(baseline.estimatedInputTokens()+10,100));
+        assertThat(result.history()).hasSize(6);
+        assertThat(result.sources()).isEmpty();
+    }
+
+    @Test
+    void preparedContextFailsInsteadOfSilentlyDroppingMandatoryRecentTurn() {
+        var rows=List.of(row(1,1,"USER","原文"),row(2,1,"ASSISTANT","非常长的内容".repeat(300)));
+        assertThatThrownBy(()->assembler.assemblePrepared("系统","继续",List.of(),List.of(),List.of(),List.of(),
+                new AgentConversationPage(rows,Long.MAX_VALUE,true),AgentWebSearchResult.empty(),
+                new AgentPromptBudget.Limits(300,100))).isInstanceOf(AiExecutionException.class);
+    }
+
+    @Test
     void loadsPastTwentyFourTurnsAndRestoresChronologicalOrder() {
         var calls = new java.util.ArrayList<Long>();
         var first = new AgentConversationPage(turns(25, 48), 25, false);

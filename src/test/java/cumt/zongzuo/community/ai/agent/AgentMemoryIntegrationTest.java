@@ -1,11 +1,8 @@
 package cumt.zongzuo.community.ai.agent;
 
 import cumt.zongzuo.community.IntegrationTestSupport;
-import cumt.zongzuo.community.ai.agent.memory.AgentMemoryCaptureService;
+import cumt.zongzuo.community.ai.agent.memory.AgentMemoryManagementService;
 import cumt.zongzuo.community.ai.agent.memory.AgentMemoryRecallService;
-import cumt.zongzuo.community.ai.agent.turn.AgentTurnAdmission;
-import cumt.zongzuo.community.ai.agent.turn.AgentTurnAdmissionService;
-import cumt.zongzuo.community.ai.agent.turn.AgentTurnCreateCommand;
 import cumt.zongzuo.community.ai.agent.turn.AgentTurnRunner;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -21,10 +18,9 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
-import java.util.UUID;
-
 import static org.assertj.core.api.Assertions.assertThat;
 
+/** 仅验证 MySQL 手动记忆管理，不把关闭 embedding 的测试环境当成自动提取或向量召回证明。 */
 @TestPropertySource(properties = {
         "metro.ai.enabled=true",
         "metro.ai.agent.enabled=true",
@@ -36,8 +32,7 @@ class AgentMemoryIntegrationTest extends IntegrationTestSupport {
     private static final long OWNER = 98_001L;
     private static final long OTHER = 98_002L;
 
-    @Autowired AgentTurnAdmissionService admissions;
-    @Autowired AgentMemoryCaptureService capture;
+    @Autowired AgentMemoryManagementService management;
     @Autowired AgentMemoryRecallService recall;
     @Autowired StringRedisTemplate redis;
     @MockitoBean AgentTurnRunner runner;
@@ -75,16 +70,13 @@ class AgentMemoryIntegrationTest extends IntegrationTestSupport {
     }
 
     @Test
-    void explicitLowRiskFactIsSavedWithoutConfirmationAndRecalledAcrossTurns() {
-        AgentTurnAdmission first = admit(OWNER, "我喜欢简洁的回答风格");
-
-        assertThat(capture.captureUserMessage(OWNER, first.turnId())).isOne();
-        assertThat(capture.captureUserMessage(OWNER, first.turnId())).isZero();
-
-        var memories = recall.recall(OWNER, "你记得我喜欢什么样的回答吗？", 8);
+    void ownerCanCreateAndReadALowRiskManualMemory() {
+        management.create(OWNER, "PREFERENCE", "我喜欢简洁的回答风格", null);
+        var memories = management.list(OWNER);
         assertThat(memories).singleElement().satisfies(memory -> {
             assertThat(memory.category()).isEqualTo("PREFERENCE");
             assertThat(memory.content()).isEqualTo("我喜欢简洁的回答风格");
+            assertThat(memory.sourceType()).isEqualTo("MANUAL");
         });
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT state FROM agent_memory_item WHERE user_id=?", String.class, OWNER))
@@ -92,22 +84,20 @@ class AgentMemoryIntegrationTest extends IntegrationTestSupport {
     }
 
     @Test
-    void credentialsAndSensitiveFactsAreNeverSaved() {
-        AgentTurnAdmission password = admit(OWNER, "请记住我的密码是 hunter2");
-        assertThat(capture.captureUserMessage(OWNER, password.turnId())).isZero();
-        jdbcTemplate.update("UPDATE agent_run_guard SET active_run_id=NULL,active_run_type=NULL,lease_until=NULL WHERE user_id=?", OWNER);
-        AgentTurnAdmission health = admit(OWNER, "我患有糖尿病，请记住");
-        assertThat(capture.captureUserMessage(OWNER, health.turnId())).isZero();
+    void manualMemoryRejectsCredentialsAndSensitiveFacts() {
+        assertThat(exchange(HttpMethod.POST, "/api/agent/memories",
+                "{\"category\":\"PROFILE\",\"content\":\"请记住我的密码是 hunter2\"}", OWNER)
+                .getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(exchange(HttpMethod.POST, "/api/agent/memories",
+                "{\"category\":\"PROFILE\",\"content\":\"我患有糖尿病，请记住\"}", OWNER)
+                .getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM agent_memory_item WHERE user_id=?", Integer.class, OWNER)).isZero();
     }
 
     @Test
-    void ownerCanListEditDeleteAndDisableAutomaticMemory() {
-        AgentTurnAdmission turn = admit(OWNER, "我的目标是学会 MySQL 事务");
-        capture.captureUserMessage(OWNER, turn.turnId());
-        long memoryId = jdbcTemplate.queryForObject(
-                "SELECT id FROM agent_memory_item WHERE user_id=?", Long.class, OWNER);
+    void ownerCanListEditDeleteAndDisableMemory() {
+        long memoryId = management.create(OWNER, "GOAL", "我的目标是学会 MySQL 事务", null).id();
 
         ResponseEntity<String> listed = exchange(HttpMethod.GET, "/api/agent/memories", null, OWNER);
         assertThat(listed.getStatusCode()).isEqualTo(HttpStatus.OK);
@@ -127,9 +117,7 @@ class AgentMemoryIntegrationTest extends IntegrationTestSupport {
 
         assertThat(exchange(HttpMethod.PUT, "/api/agent/memory-settings",
                 "{\"enabled\":false,\"expectedVersion\":0}", OWNER).getStatusCode()).isEqualTo(HttpStatus.OK);
-        jdbcTemplate.update("UPDATE agent_run_guard SET active_run_id=NULL,active_run_type=NULL,lease_until=NULL WHERE user_id=?", OWNER);
-        AgentTurnAdmission ignored = admit(OWNER, "我喜欢详细的回答");
-        assertThat(capture.captureUserMessage(OWNER, ignored.turnId())).isZero();
+        assertThat(recall.recall(OWNER, "MySQL", 8)).isEmpty();
 
         assertThat(exchange(HttpMethod.DELETE, "/api/agent/memories/" + memoryId, null, OWNER)
                 .getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
@@ -143,10 +131,7 @@ class AgentMemoryIntegrationTest extends IntegrationTestSupport {
 
     @Test
     void ownerCanReadSettingsAndPauseThenResumeAMemoryWithoutLosingItsContent() {
-        AgentTurnAdmission turn = admit(OWNER, "我喜欢先给结论再解释");
-        capture.captureUserMessage(OWNER, turn.turnId());
-        long memoryId = jdbcTemplate.queryForObject(
-                "SELECT id FROM agent_memory_item WHERE user_id=?", Long.class, OWNER);
+        long memoryId = management.create(OWNER, "PREFERENCE", "我喜欢先给结论再解释", null).id();
 
         ResponseEntity<String> initialSettings = exchange(
                 HttpMethod.GET, "/api/agent/memory-settings", null, OWNER);
@@ -158,7 +143,7 @@ class AgentMemoryIntegrationTest extends IntegrationTestSupport {
                 "{\"paused\":true,\"expectedVersion\":1}", OWNER);
         assertThat(paused.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(paused.getBody()).contains("\"state\":\"PAUSED\"", "先给结论再解释");
-        assertThat(recall.recall(OWNER, "回答风格", 8)).isEmpty();
+        assertThat(recall.list(OWNER)).isEmpty();
         assertThat(exchange(HttpMethod.GET, "/api/agent/memories", null, OWNER).getBody())
                 .contains("\"state\":\"PAUSED\"", "先给结论再解释");
 
@@ -167,16 +152,13 @@ class AgentMemoryIntegrationTest extends IntegrationTestSupport {
                 "{\"paused\":false,\"expectedVersion\":1}", OWNER);
         assertThat(resumed.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(resumed.getBody()).contains("\"state\":\"ACTIVE\"");
-        assertThat(recall.recall(OWNER, "你还记得我的偏好吗", 8)).singleElement()
+        assertThat(recall.list(OWNER)).singleElement()
                 .satisfies(memory -> assertThat(memory.content()).isEqualTo("我喜欢先给结论再解释"));
     }
 
     @Test
     void manualEditCannotTurnALowRiskMemoryIntoSensitiveData() {
-        AgentTurnAdmission turn = admit(OWNER, "我喜欢简洁的回答");
-        capture.captureUserMessage(OWNER, turn.turnId());
-        long memoryId = jdbcTemplate.queryForObject(
-                "SELECT id FROM agent_memory_item WHERE user_id=?", Long.class, OWNER);
+        long memoryId = management.create(OWNER, "PREFERENCE", "我喜欢简洁的回答", null).id();
 
         ResponseEntity<String> rejected = exchange(HttpMethod.PUT,
                 "/api/agent/memories/" + memoryId,
@@ -202,7 +184,7 @@ class AgentMemoryIntegrationTest extends IntegrationTestSupport {
                 "\"expiresAt\":\"2099-08-13T10:30:00\"");
         long memoryId = jdbcTemplate.queryForObject(
                 "SELECT id FROM agent_memory_item WHERE user_id=?", Long.class, OWNER);
-        assertThat(recall.recall(OWNER, "请给我可执行的步骤", 8)).singleElement()
+        assertThat(management.list(OWNER)).singleElement()
                 .satisfies(memory -> assertThat(memory.content())
                         .isEqualTo("回答时优先给我可执行的步骤"));
         assertThat(jdbcTemplate.queryForObject(
@@ -230,11 +212,6 @@ class AgentMemoryIntegrationTest extends IntegrationTestSupport {
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM agent_memory_item WHERE user_id=?",
                 Integer.class, OWNER)).isZero();
-    }
-
-    private AgentTurnAdmission admit(long userId, String message) {
-        return admissions.admit(new AgentTurnCreateCommand(userId, UUID.randomUUID(), message,
-                "{}", "COMMUNITY_QA"));
     }
 
     private ResponseEntity<String> exchange(HttpMethod method, String path, String body, long userId) {

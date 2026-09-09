@@ -133,6 +133,21 @@ public final class AgentContextAssembler {
         return fit(system, question, selected, limits, reduced || !exhausted);
     }
 
+    public Assembled assemblePrepared(String system, String question, List<ResolvedArticleChunk> sources,
+                                      List<AgentMemoryView> memories, List<AgentConversationHistoryHit> history,
+                                      List<AgentEpisodeSummaryView> summaries, AgentConversationPage page,
+                                      AgentWebSearchResult web, AgentPromptBudget.Limits limits) {
+        if (!page.exhausted()) throw new IllegalArgumentException("Prepared context must have a closed history boundary");
+        var selected=new Selection(sources,memories,history,summaries,page.messages(),List.of(),web);
+        // 已完成压缩的摘要替代了旧原文，不能像可选旧 episode 摘要一样随手删掉。
+        // 先裁减检索资料；最近三轮与新摘要仍超限时明确失败，而不是悄悄退回一轮。
+        selected.protectedRecentTurns=page.messages().stream().map(AgentConversationHistoryHit::turnId)
+                .distinct().sorted(java.util.Comparator.reverseOrder()).limit(3)
+                .collect(java.util.stream.Collectors.toSet());
+        selected.protectSummaries=true;
+        return fit(system,question,selected,limits,false);
+    }
+
     private boolean fits(String system, String question, Selection selected, AgentPromptBudget.Limits limits) {
         var messages = prompt(system, question, selected, true);
         return messages.stream().mapToInt(m -> m.text().length()).sum() <= maxCharacters
@@ -202,6 +217,8 @@ public final class AgentContextAssembler {
         final ArrayList<AgentConversationHistoryHit> recent;
         final ArrayList<String> temporary;
         AgentWebSearchResult web;
+        java.util.Set<Long> protectedRecentTurns=java.util.Set.of();
+        boolean protectSummaries;
 
         Selection(List<ResolvedArticleChunk> sources, List<AgentMemoryView> memories,
                   List<AgentConversationHistoryHit> history, List<AgentEpisodeSummaryView> summaries,
@@ -232,11 +249,13 @@ public final class AgentContextAssembler {
             if (!web.summary().isEmpty() || !web.sources().isEmpty()) {
                 web = AgentWebSearchResult.empty(); return true;
             }
-            if (!summaries.isEmpty()) { summaries.removeFirst(); return true; }
+            if (!protectSummaries && !summaries.isEmpty()) { summaries.removeFirst(); return true; }
             if (!recent.isEmpty()) {
                 long oldest = recent.getFirst().turnId();
-                recent.removeIf(row -> row.turnId() == oldest);
-                return true;
+                if (!protectedRecentTurns.contains(oldest)) {
+                    recent.removeIf(row -> row.turnId() == oldest);
+                    return true;
+                }
             }
             if (!temporary.isEmpty()) {
                 temporary.removeFirst();

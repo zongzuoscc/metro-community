@@ -27,6 +27,10 @@ public interface AgentMemoryMapper {
     @Select("SELECT enabled FROM agent_memory_setting WHERE user_id=#{userId}")
     Boolean enabled(long userId);
 
+    /** 轻量读取记忆代际；网络调用前比较，不持有行锁或数据库长事务。 */
+    @Select("SELECT memory_epoch FROM agent_conversation WHERE user_id=#{userId}")
+    Long memoryEpoch(long userId);
+
     @Select("SELECT lock_version FROM agent_memory_setting WHERE user_id=#{userId}")
     Long settingVersion(long userId);
 
@@ -207,6 +211,155 @@ public interface AgentMemoryMapper {
             WHERE user_id=#{userId}
             """)
     int incrementEpoch(long userId);
+
+    /** 与压缩事务保持 conversation → setting/item 的全局锁顺序。 */
+    @Select("SELECT id FROM agent_conversation WHERE user_id=#{userId} FOR UPDATE")
+    Long lockConversationForMemory(long userId);
+
+    /** 主键游标分页，覆盖全部待投影记忆；模型变化时已投影版本也必须重建。 */
+    @Select("""
+            SELECT p.memory_version_id,p.user_id,v.memory_id,m.category,m.sensitivity,v.content,
+              v.content_hash,m.expires_at,p.state,p.lock_version
+            FROM agent_memory_projection p
+            JOIN agent_memory_version v ON v.id=p.memory_version_id AND v.user_id=p.user_id
+            JOIN agent_memory_item m ON m.id=v.memory_id AND m.user_id=v.user_id
+            WHERE p.user_id=#{userId} AND p.memory_version_id>#{afterId}
+              AND (p.state='DELETING' OR (
+                (p.state IN ('PENDING','FAILED') OR
+                  (p.state='PROJECTED' AND (p.embedding_model IS NULL OR BINARY p.embedding_model<>BINARY #{model})))
+                AND m.current_version_id=v.id AND v.state='ACTIVE' AND m.state='ACTIVE'
+                AND (m.expires_at IS NULL OR m.expires_at>CURRENT_TIMESTAMP(6))))
+            ORDER BY p.memory_version_id LIMIT #{limit}
+            """)
+    List<cumt.zongzuo.community.ai.agent.memory.index.MemoryProjectionRow> listVectorWork(
+            @Param("userId") long userId, @Param("model") String model,
+            @Param("afterId") long afterId, @Param("limit") int limit);
+
+    /** 外部 RPC 完成后才 CAS；绝不重新激活已替换、暂停或删除的版本。 */
+    @Update("""
+            UPDATE agent_memory_projection p
+            JOIN agent_memory_version v ON v.id=p.memory_version_id AND v.user_id=p.user_id
+            JOIN agent_memory_item m ON m.id=v.memory_id AND m.user_id=v.user_id
+            JOIN agent_memory_setting s ON s.user_id=p.user_id AND s.enabled=1
+            SET p.state='PROJECTED',p.embedding_model=#{model},p.projected_at=CURRENT_TIMESTAMP(6),
+              p.last_error_code=NULL,p.lock_version=p.lock_version+1
+            WHERE p.memory_version_id=#{versionId} AND p.user_id=#{userId}
+              AND p.lock_version=#{expectedLockVersion} AND p.state IN ('PENDING','FAILED','PROJECTED')
+              AND m.current_version_id=v.id AND v.state='ACTIVE' AND m.state='ACTIVE'
+              AND (m.expires_at IS NULL OR m.expires_at>CURRENT_TIMESTAMP(6))
+            """)
+    int markVectorProjected(@Param("versionId") long versionId, @Param("userId") long userId,
+                            @Param("expectedLockVersion") long expectedLockVersion,
+                            @Param("model") String model);
+
+    @Update("""
+            UPDATE agent_memory_projection SET state='FAILED',last_error_code=#{errorCode},
+              lock_version=lock_version+1
+            WHERE memory_version_id=#{versionId} AND user_id=#{userId}
+              AND lock_version=#{expectedLockVersion} AND state IN ('PENDING','FAILED','PROJECTED')
+            """)
+    int markVectorFailed(@Param("versionId") long versionId, @Param("userId") long userId,
+                        @Param("expectedLockVersion") long expectedLockVersion,
+                        @Param("errorCode") String errorCode);
+
+    @Update("""
+            UPDATE agent_memory_projection SET state='DELETED',last_error_code=NULL,
+              lock_version=lock_version+1
+            WHERE memory_version_id=#{versionId} AND user_id=#{userId}
+              AND lock_version=#{expectedLockVersion} AND state='DELETING'
+            """)
+    int markVectorDeleted(@Param("versionId") long versionId, @Param("userId") long userId,
+                         @Param("expectedLockVersion") long expectedLockVersion);
+
+    /** 只读删除队列，不要求账号仍启用记忆，也不会触发新的 Embedding。 */
+    @Select("""
+            SELECT p.memory_version_id,p.user_id,v.memory_id,m.category,m.sensitivity,v.content,
+              v.content_hash,m.expires_at,p.state,p.lock_version
+            FROM agent_memory_projection p
+            JOIN agent_memory_version v ON v.id=p.memory_version_id AND v.user_id=p.user_id
+            JOIN agent_memory_item m ON m.id=v.memory_id AND m.user_id=v.user_id
+            WHERE p.user_id=#{userId} AND p.state='DELETING' AND p.memory_version_id>#{afterId}
+            ORDER BY p.memory_version_id LIMIT #{limit}
+            """)
+    List<cumt.zongzuo.community.ai.agent.memory.index.MemoryProjectionRow> listVectorDeletes(
+            @Param("userId") long userId, @Param("afterId") long afterId, @Param("limit") int limit);
+
+    @Select("""
+            SELECT DISTINCT user_id FROM agent_memory_projection
+            WHERE state='DELETING' AND user_id>#{afterUserId} ORDER BY user_id LIMIT #{limit}
+            """)
+    List<Long> listVectorDeletionUsers(@Param("afterUserId") long afterUserId, @Param("limit") int limit);
+
+    /** 跨模型并发写失败后撤销对另一模型的过早认证，强迫后续同步重建而不是永久假成功。 */
+    @Update("""
+            UPDATE agent_memory_projection SET state='FAILED',last_error_code='VECTOR_MODEL_CONFLICT',
+              lock_version=lock_version+1
+            WHERE memory_version_id=#{versionId} AND user_id=#{userId}
+              AND state='PROJECTED' AND BINARY embedding_model<>BINARY #{attemptedModel}
+            """)
+    int invalidateVectorModelConflict(@Param("versionId") long versionId, @Param("userId") long userId,
+                                     @Param("attemptedModel") String attemptedModel);
+
+    /**
+     * 将迟到写入对应的已退役版本重新放入删除队列，不能仅根据旧快照判断是否退役。
+     * 当前有效版本（包括可恢复的暂停版本）不匹配；DELETING 也必须加锁版本，
+     * 防止另一实例用迟到写入之前取得的强读结果把队列再次确认成 DELETED。
+     */
+    @Update("""
+            UPDATE agent_memory_projection p
+            JOIN agent_memory_version v ON v.id=p.memory_version_id AND v.user_id=p.user_id
+            JOIN agent_memory_item m ON m.id=v.memory_id AND m.user_id=v.user_id
+            SET p.state='DELETING',p.last_error_code='STALE_VECTOR_WRITE',p.lock_version=p.lock_version+1
+            WHERE p.memory_version_id=#{versionId} AND p.user_id=#{userId}
+              AND (m.state='DELETED' OR v.state IN ('SUPERSEDED','DELETED')
+                OR m.current_version_id<>v.id)
+            """)
+    int requeueRetiredVector(@Param("versionId") long versionId, @Param("userId") long userId);
+
+    /** 主键游标只扫描已退役的删除墓碑，不读取正文，也不依赖账号仍启用记忆。 */
+    @Select("""
+            SELECT p.memory_version_id,p.user_id,p.lock_version
+            FROM agent_memory_projection p
+            JOIN agent_memory_version v ON v.id=p.memory_version_id AND v.user_id=p.user_id
+            JOIN agent_memory_item m ON m.id=v.memory_id AND m.user_id=v.user_id
+            WHERE p.state='DELETED' AND p.memory_version_id>#{afterVersionId}
+              AND (m.state='DELETED' OR v.state IN ('SUPERSEDED','DELETED')
+                OR m.current_version_id<>v.id)
+            ORDER BY p.memory_version_id LIMIT #{limit}
+            """)
+    List<cumt.zongzuo.community.ai.agent.memory.index.MemoryVectorTombstone> listRetiredVectorTombstones(
+            @Param("afterVersionId") long afterVersionId, @Param("limit") int limit);
+
+    /** 墓碑扫描之后仍须重验状态、锁版本和退役条件，不能把当前有效版本误入删除队列。 */
+    @Update("""
+            UPDATE agent_memory_projection p
+            JOIN agent_memory_version v ON v.id=p.memory_version_id AND v.user_id=p.user_id
+            JOIN agent_memory_item m ON m.id=v.memory_id AND m.user_id=v.user_id
+            SET p.state='DELETING',p.last_error_code='VECTOR_TOMBSTONE_SWEEP',p.lock_version=p.lock_version+1
+            WHERE p.memory_version_id=#{versionId} AND p.user_id=#{userId}
+              AND p.state='DELETED' AND p.lock_version=#{expectedLockVersion}
+              AND (m.state='DELETED' OR v.state IN ('SUPERSEDED','DELETED')
+                OR m.current_version_id<>v.id)
+            """)
+    int requeueRetiredVectorTombstone(@Param("versionId") long versionId, @Param("userId") long userId,
+                                    @Param("expectedLockVersion") long expectedLockVersion);
+
+    /** Milvus 仅提供候选版本 ID；所有者、设置、版本、状态及到期均以本条 SQL 为准。 */
+    @Select("""
+            SELECT m.id,m.category,v.content,v.version_no AS version,m.state,m.expires_at,
+              CASE WHEN EXISTS(SELECT 1 FROM agent_memory_source source
+                WHERE source.memory_id=m.id AND source.user_id=m.user_id)
+                THEN 'CONVERSATION' ELSE 'MANUAL' END AS source_type
+            FROM agent_memory_version v
+            JOIN agent_memory_item m ON m.id=v.memory_id AND m.user_id=v.user_id AND m.current_version_id=v.id
+            JOIN agent_memory_setting s ON s.user_id=m.user_id AND s.enabled=1
+            JOIN agent_memory_projection p ON p.memory_version_id=v.id AND p.user_id=v.user_id
+            WHERE v.id=#{versionId} AND v.user_id=#{userId} AND v.state='ACTIVE' AND m.state='ACTIVE'
+              AND m.sensitivity='LOW' AND p.state='PROJECTED' AND BINARY p.embedding_model=BINARY #{model}
+              AND (m.expires_at IS NULL OR m.expires_at>CURRENT_TIMESTAMP(6))
+            """)
+    AgentMemoryView findVectorRecall(@Param("versionId") long versionId, @Param("userId") long userId,
+                                     @Param("model") String model);
 
     final class MemoryInsert {
         public Long id; public long userId; public String category;

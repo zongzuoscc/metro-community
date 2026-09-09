@@ -18,7 +18,7 @@ import java.util.concurrent.TimeUnit;
 /**
  * 在共享有界线程池中执行持久 Agent turn。
  *
- * <p>本类只负责心跳、检索/生成阶段和 SSE 进度。回答、引用、记忆捕获与 SUCCEEDED
+ * <p>本类负责心跳、回答前压缩、检索/生成阶段和 SSE 进度。回答、引用与 SUCCEEDED
  * 状态由 AgentTurnFinalizer 统一事务提交，避免查询线程看到半完成结果。</p>
  */
 @Service
@@ -67,13 +67,14 @@ public class AgentTurnRunner {
                     () -> turnLeases.renew(admission.turnId(), userId, admission.runId(),
                             admission.runFence()), 30, 30, TimeUnit.SECONDS);
             events.append(admission.turnId(), userId, admission.runId(), admission.runFence(),
-                    "retrieving", Map.of("strategy", "HYBRID", "queryCount", 1,
+                    "retrieving", Map.of("phase", "agent_retrieval",
                             "webSearchEnabled", admission.webSearchEnabled()));
             events.append(admission.turnId(), userId, admission.runId(), admission.runFence(),
                     "generating", Map.of("phase", "grounded_answer"));
-            GroundedAgentAnswer answer = answers.answer(userId,
-                    admission.runId().toString(), question, admission.webSearchEnabled(),
-                    clock.instant().plus(Duration.ofMinutes(2)));
+            GroundedAgentAnswer answer = answers.answerPersistent(userId,
+                    admission.runId(), question, admission.webSearchEnabled(),
+                    clock.instant().plus(Duration.ofMinutes(2)),
+                    () -> turnLeases.renew(admission.turnId(),userId,admission.runId(),admission.runFence()));
             if (!turnLeases.renew(admission.turnId(), userId, admission.runId(),
                     admission.runFence())) {
                 return;

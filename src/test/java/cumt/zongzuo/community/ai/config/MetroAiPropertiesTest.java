@@ -32,15 +32,15 @@ class MetroAiPropertiesTest {
             assertThat(properties.getPlatform().getModel()).isEqualTo("qwen-plus");
             assertThat(properties.getOllama().getModel()).isEqualTo("bge-m3");
             assertThat(properties.getAgent().getMaxInputCharacters()).isEqualTo(400_000);
-            assertThat(properties.getAgent().getPerMinute()).isEqualTo(8);
+            assertThat(properties.getAgent().getPerMinute()).isEqualTo(24);
             assertThat(properties.getAgent().getPerDay()).isEqualTo(100);
             assertThat(properties.getAgent().getQuotaWindow()).isEqualTo(Duration.ofMinutes(1));
             assertThat(properties.getAgent().getTimeout()).isEqualTo(Duration.ofSeconds(45));
             assertThat(properties.getAgent().getBulkhead()).isEqualTo(8);
-            // Planner v1 随 Agent 默认启用，避免出现“生产代码存在但环境没有打开”的假交付。
+            // ReAct 随 Agent 默认启用，避免出现“生产代码存在但环境没有打开”的假交付。
             assertThat(properties.getPlanner().isEnabled()).isTrue();
-            assertThat(properties.getPlanner().getMaxRounds()).isEqualTo(2);
-            assertThat(properties.getPlanner().getMaxToolCalls()).isEqualTo(4);
+            assertThat(properties.getPlanner().getMaxRounds()).isEqualTo(6);
+            assertThat(properties.getPlanner().getMaxToolCalls()).isEqualTo(8);
             assertThat(properties.getPlanner().getTimeout()).isEqualTo(Duration.ofSeconds(6));
             properties.validatePlanner();
             assertThat(properties.getArticleSummary().getMaxInputCharacters()).isEqualTo(100_000);

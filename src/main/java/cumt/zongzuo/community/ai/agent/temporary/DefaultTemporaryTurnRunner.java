@@ -70,7 +70,8 @@ public class DefaultTemporaryTurnRunner implements TemporaryTurnRunner {
             GroundedAgentAnswer answer = answers.answerTemporary(userId,
                     admission.runId().toString(), question,
                     turns.previousContext(userId, admission.sessionId(), question),
-                    admission.webSearchEnabled(), clock.instant().plus(Duration.ofMinutes(2)));
+                    admission.webSearchEnabled(), clock.instant().plus(Duration.ofMinutes(2)),
+                    () -> lifecycle.renew(userId,admission.runId(),admission.runFence()));
             if (!lifecycle.renew(userId, admission.runId(), admission.runFence())) return;
             // 先在栕栏事务内完成 turn，再发 done 事件；SSE 始终只是短期进度通道。
             if (!lifecycle.complete(admission, userId, answer)) return;

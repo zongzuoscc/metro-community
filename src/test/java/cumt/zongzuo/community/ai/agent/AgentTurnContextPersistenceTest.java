@@ -4,7 +4,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import cumt.zongzuo.community.ai.agent.turn.*;
 import cumt.zongzuo.community.ai.userprovider.UserAiFundingSource;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionStatus;
 import java.time.LocalDateTime;
@@ -15,7 +14,7 @@ import static org.mockito.Mockito.*;
 import static org.mockito.ArgumentMatchers.*;
 
 class AgentTurnContextPersistenceTest {
-    /** 原始历史可以很长，但使用记录的 VARCHAR(1000) 快照不能使最终回答事务失败。 */
+    /** 完成事务不依赖记忆提取服务；只提交已有记忆使用记录，长历史快照也不能使回答失败。 */
     @Test
     void persistsABoundedUnicodeExcerptAndAFullContentHashForLongHistory() {
         var mapper = mock(AgentTurnMapper.class);
@@ -46,15 +45,24 @@ class AgentTurnContextPersistenceTest {
                 .thenAnswer(invocation -> {
                     String excerpt = invocation.getArgument(6);
                     assertThat(excerpt.codePointCount(0, excerpt.length())).isLessThanOrEqualTo(1000);
-                    assertThat(excerpt).endsWith("🙂");
-                    assertThat(invocation.getArgument(7, String.class)).contains("contentHash", "contentCodePoints");
+                    if ("MEMORY".equals(invocation.getArgument(2))) {
+                        assertThat(excerpt).isEqualTo("请先给结论");
+                        assertThat(invocation.getArgument(7, String.class)).contains("version", "PREFERENCE");
+                    } else {
+                        assertThat(excerpt).endsWith("🙂");
+                        assertThat(invocation.getArgument(7, String.class)).contains("contentHash", "contentCodePoints");
+                    }
                     return 1;
                 });
-        var answer = new GroundedAgentAnswer("最终回答", List.of(), "stop", List.of(),
+        var answer = new GroundedAgentAnswer("最终回答", List.of(), "stop",
+                List.of(new AgentMemoryUse(71, 2, "PREFERENCE", "请先给结论")),
                 List.of(new AgentHistoryUse(1, 2, "ASSISTANT", "🙂".repeat(1500), LocalDateTime.now())),
                 List.of(), UserAiFundingSource.PLATFORM, "qwen", "model");
         var finalizer = new AgentTurnFinalizer(mapper, mock(AgentRunLeaseStore.class), transactions,
-                new ObjectMapper(), null, false, mock(ObjectProvider.class));
+                new ObjectMapper());
         assertThat(finalizer.complete(5, run, 1, answer)).isTrue();
+        verify(mapper).insertPersonalContextUse(eq(9L), eq(5L), eq("MEMORY"),
+                eq("memory:71:v2"), eq(71L), eq(1), eq("请先给结论"), anyString());
+        verify(transactions).commit(any());
     }
 }

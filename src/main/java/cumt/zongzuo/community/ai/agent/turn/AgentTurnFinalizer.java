@@ -3,12 +3,6 @@ package cumt.zongzuo.community.ai.agent.turn;
 import cumt.zongzuo.community.ai.agent.AgentCitation;
 import cumt.zongzuo.community.ai.agent.websearch.AgentWebSourceUrlPolicy;
 import cumt.zongzuo.community.ai.agent.GroundedAgentAnswer;
-import cumt.zongzuo.community.ai.agent.memory.AgentMemoryCaptureService;
-import cumt.zongzuo.community.ai.agent.history.AgentEpisodeRollService;
-import org.springframework.beans.factory.ObjectProvider;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -19,35 +13,24 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 /**
  * 在单个 MySQL 事务中提交持久 Agent 的回答、引用、个人上下文使用记录与终态。
  *
- * <p>低风险记忆捕获也在该事务的嵌套保存点内执行。因此查询方一旦看到 SUCCEEDED，
- * 就不会再遇到“记忆仍在异步写入”的中间状态；同时记忆子事务失败只回滚保存点，
- * 不会把已生成的有据回答改成失败。</p>
+ * <p>长期记忆由回答前的 LLM 压缩阶段提取并完成持久向量同步；本事务只记录本轮实际使用
+ * 的记忆，不再从回答后的用户原话做规则捕获，也不在数据库事务中触发模型或向量调用。</p>
  */
 @Service
 public class AgentTurnFinalizer {
-
-    private static final Logger log = LoggerFactory.getLogger(AgentTurnFinalizer.class);
 
     private final AgentTurnMapper mapper;
     private final AgentRunLeaseStore leases;
     private final TransactionTemplate transactions;
     private final ObjectMapper objectMapper;
-    private final AgentMemoryCaptureService memories;
-    private final boolean memoryEnabled;
-    private final ObjectProvider<AgentEpisodeRollService> episodeRolls;
 
     public AgentTurnFinalizer(AgentTurnMapper mapper, AgentRunLeaseStore leases,
                               PlatformTransactionManager transactionManager,
-                              ObjectMapper objectMapper, AgentMemoryCaptureService memories,
-                              @Value("${metro.ai.memory.enabled:false}") boolean memoryEnabled,
-                              ObjectProvider<AgentEpisodeRollService> episodeRolls) {
+                              ObjectMapper objectMapper) {
         this.mapper = mapper;
         this.leases = leases;
         this.transactions = new TransactionTemplate(transactionManager);
         this.objectMapper = objectMapper;
-        this.memories = memories;
-        this.memoryEnabled = memoryEnabled;
-        this.episodeRolls = episodeRolls;
     }
 
     public boolean complete(long turnId, UUID runId, long runFence, GroundedAgentAnswer answer) {
@@ -59,15 +42,6 @@ public class AgentTurnFinalizer {
                 userId, turnId, runId, runFence, answer));
         if (Boolean.TRUE.equals(completed)) {
             leases.release(userId, runId, runFence);
-            AgentEpisodeRollService rollService = episodeRolls.getIfAvailable();
-            if (rollService != null) {
-                try {
-                    rollService.rollIfThresholdReached(userId);
-                } catch (RuntimeException error) {
-                    // 回答已经成功提交；摘要滚动失败只能延后重试，不能反向把终态改成失败。
-                    log.warn("Agent episode roll failed after completed turn: turnId={}", turnId, error);
-                }
-            }
         }
         return Boolean.TRUE.equals(completed);
     }
@@ -115,15 +89,6 @@ public class AgentTurnFinalizer {
                             + AgentTurnAdmissionService.sha256(source.url()), ++contextRank,
                     source.title(), json(java.util.Map.of("index", source.index(),
                             "url", source.url(), "siteName", source.siteName())));
-        }
-        if (memoryEnabled) {
-            try {
-                memories.captureUserMessage(userId, turnId);
-            } catch (RuntimeException error) {
-                // 记忆是回答的可选增强。NESTED 传播已回滚它的保存点，外层仍可安全提交回答。
-                log.warn("Agent memory capture failed before completed turn: turnId={}", turnId,
-                        error);
-            }
         }
         if (mapper.completeTurn(turnId, userId, runId, runFence) != 1
                 || mapper.releaseGuard(userId, runId, runFence) != 1

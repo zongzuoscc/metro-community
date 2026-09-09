@@ -4,7 +4,7 @@
 
 ## 技术栈
 
-- Java 21、Spring Boot 3.5.16、Spring AI 1.1.8、MyBatis-Plus 3.5.17
+- Java 21、Spring Boot 3.5.16、Spring AI 1.1.8、Spring AI Alibaba Graph 1.1.2.0、MyBatis-Plus 3.5.17
 - Spring Security、Spring MVC、Resilience4j、Micrometer
 - MySQL 8、Redis、RabbitMQ、Elasticsearch 8 + IK 中文分词
 - WebSocket、阿里云 OSS、Spring AI（默认关闭，需显式配置）
@@ -23,31 +23,39 @@
 ### Agent 上下文窗口升级（2026-09）
 
 已有数据库在启动新版本前先备份并执行
-[上下文边界迁移](docs/database/migrations/2026-09-08-agent-context-window.sql)，新数据库直接用 `script.sql`。
+[上下文边界迁移](docs/database/migrations/2026-09-08-agent-context-window.sql)及
+[回答前压缩迁移](docs/database/migrations/2026-09-09-agent-context-compaction.sql)，新数据库直接用 `script.sql`。
 迁移不删除历史；旧数据无法区分此前的手动清空和自动滚段，所以首次迁移以当前活动段作为
-安全读取起点。后续自动摘要分段可连续读取，手动清空则在事务中推进边界，旧消息仍可在界面回看。
+安全读取起点。手动清空在事务中推进边界，旧消息仍可在界面回看。
 
 主对话以 turn ID 为排他游标，每页读取 24 轮成功问答；**24 是每页大小，不是总窗口上限**。
-先保留最新完整问答及可用的检索依据，再按剩余 Token 空间向前装载历史，按时间正序发送，
-与相关历史按消息 ID 去重。整页放不下时二分选取最新的连续若干轮，不为塞旧历史挤掉已保留的依据。
-安全过滤后即使一页为空也按原始游标继续读取。追加分页使用默认 2 秒的软加载预算：
-发起下一页前检查时间，单条 SQL 另有 2 秒超时；已经发起的查询及当页试装可能超过软预算，
-这不是整个历史流程的硬截止。时间耗尽或后续页查询失败时使用已装入的上下文，不无限扫描全库。
+持久 turn 使用 Alibaba Graph，在回答前按模型输入预算检查旧原文；接近 70% 水位时，
+模型同时生成内部摘要和带用户原文证据的记忆。MySQL 保存待生效批次与记忆版本，Milvus
+确认向量可见后才启用摘要。保留最近至少三轮原文，原始历史不修改；失败明确报错并支持批次恢复。
+不再使用句首规则提取或长期记忆词法兜底。临时会话完全绕开此持久流程。
+部署步骤、跨库一致性和已知边界见[记忆与压缩说明](docs/agent-memory-compaction.md)。
+
+检索采用 ReAct 动作—观察循环：模型读取真实工具结果，动态改写查询，也可换关键词再次调用同一工具；
+后端负责用户隔离、联网开关、重复/无进展停止和运行租约检查。默认最多 6 次决策、8 次工具尝试，
+提前结束不会用满预算。多次检索的文章与网页依据会合并、去重，网页引用统一编号。
+具体机制、模型调用成本和部署兼容项见 [ReAct 说明](docs/agent-react.md)。
 
 平台模型容量仍须部署者确认，默认配置为 32K；未知用户模型按 8K 回退。默认**业务安全上限**
 现为 256K，与所选模型容量取较小值，不再把已配置的 128K 模型压回 32K。
 预留最多 4096 输出 Token、1024 安全余量后计算输入空间；不会为了填满空间重复加入资料。
-参数见 `.env.example` 的 `METRO_AI_CONTEXT_*`；原 `RECENT_TURNS` 改为 `HISTORY_PAGE_TURNS`，
-新增 `HISTORY_LOAD_TIMEOUT`。已有环境若显式设了 `WORKING_WINDOW_TOKENS=32768`，需自行提高。
+参数见 `.env.example` 的 `METRO_AI_CONTEXT_*`。`HISTORY_PAGE_TURNS` 与 `HISTORY_LOAD_TIMEOUT`
+仍用于不创建持久 turn 的只读预览旧路径；持久 Graph 分页大小为 24，并受整轮 deadline 约束。
+已有环境若显式设了 `WORKING_WINDOW_TOKENS=32768`，需自行提高。
 后端可配置 `metro.ai.context.model-windows[模型名]` 覆盖具体容量，例如已确认某模型支持 128K 时
 设置 `model-windows: {"my-confirmed-model": 131072}`；不要根据名称猜测容量，也不要将 API Key 写入这里。
 
 估算采用 CL100K 加 15% 余量，并非所有供应商的精确 tokenizer；最终 usage 以供应商返回为准。
-资料过多时先裁减检索补充，再按完整轮次滑动近期窗口，原始问题不静默截断。
+资料过多时先裁减检索补充，再减少较老原文；持久路径的最新三轮、有效摘要和原始问题不静默截断。
 引用校验和保存的来源仅包含最终发给模型的资料。短追问使用近期用户话题辅助**站内**检索，
 不会自动将私有历史拼入联网搜索；这是轻量消歧，不是额外模型生成的完整查询改写。
-摘要沿用原有异步 episode 摘要机制，本次没有新增按 Token 压力实时生成摘要的模型任务。
-修改配置不需要删除聊天记录；本次最终回答的模型配置在预算计算前冻结，避免检索期间切换模型造成错配。
+持久主对话现已改为回答前按 Token 压力触发 Graph 压缩，替代原有异步 episode 摘要任务；
+只读预览仍可读取既有摘要，但不会创建压缩批次。修改配置不需要删除聊天记录；模型配置在
+本轮开始时冻结，并沿用于决策、HyDE 与最终回答，避免检索期间切换模型造成错配。
 
 ### 1. 准备依赖
 
@@ -184,7 +192,9 @@ METRO_AI_EMBEDDING_ENABLED=false
 
 因此未配置 Key 时应用仍可启动，不创建平台 Chat 或 Ollama Embedding 调用对象，Provider 服务默认不会被访问。普通社区、私信、搜索、推荐和人工审核不依赖 AI Key。
 
-当前还没有生产可用的 Agent API 或前端页面，也没有 Agent 对话、桌宠、RAG、HyDE、长期记忆或写作建议实现。不可变 revision 绑定、人工审核与通用 Outbox 已由 Stage B 提供；独立运行的 Ollama/Milvus、文章分块投影与 RAG 属于 Stage C；Agent API 与 SSE 属于 Stage D。
+上述 Stage A 描述是初期安全底座的交付边界，不代表当前功能状态。后续已加入文章分块、
+混合检索与 HyDE、Agent 对话与 SSE 事件、写作建议和长期记忆；当前 ReAct/压缩机制见本页
+前文及对应说明。代码存在不等于依赖与真实模型已部署，启用前仍需完成配置和部署验证。
 
 Spring AI/Ollama 依赖只是客户端与运行时基础，不表示本机已运行 Ollama 或已下载 `bge-m3`。`qwen-plus` 也只是可配置的平台默认模型名，在显式验收前不代表模型可用性或质量结论。Prometheus registry 的依赖存在也不代表已公开 scrape endpoint 或交付 Dashboard；当前 Actuator 只暴露 health。
 

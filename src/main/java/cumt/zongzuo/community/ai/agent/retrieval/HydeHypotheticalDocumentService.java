@@ -9,6 +9,7 @@ import cumt.zongzuo.community.ai.provider.AiResponseMode;
 import cumt.zongzuo.community.ai.runtime.AiCapabilityExecutor;
 import cumt.zongzuo.community.ai.runtime.AiInvocationContext;
 import cumt.zongzuo.community.ai.userprovider.UserAiChatRouter;
+import cumt.zongzuo.community.ai.userprovider.PreparedUserAiChat;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -21,8 +22,8 @@ import java.util.Objects;
  *
  * <p>该文档不是回答、不是事实，也不会保存到历史或长期记忆。它唯一的
  * 用途是产生一个与长文档表达形式更接近的向量，从而改善“短问题对长文档”
- * 的语义检索。为了防止个人数据或已检索文章污染查询，本服务只接收当前
- * 规范化问题，调用方无法传入记忆、历史或文章正文。</p>
+ * 的语义检索。调用方只提供检索文字，不提供整个历史。Agent 的检索文字可能由
+ * 私有上下文生成，因此必须沿用冻结路由与每次网络调用前后的运行权/代际检查。</p>
  */
 final class HydeHypotheticalDocumentService {
 
@@ -55,9 +56,15 @@ final class HydeHypotheticalDocumentService {
     }
 
     String generate(long userId, String requestId, String normalizedQuery, Instant requestDeadline) {
+        return generate(userId, requestId, normalizedQuery, requestDeadline, null, () -> { });
+    }
+
+    String generate(long userId, String requestId, String normalizedQuery, Instant requestDeadline,
+                    PreparedUserAiChat route, Runnable validate) {
         Objects.requireNonNull(requestId, "requestId");
         Objects.requireNonNull(normalizedQuery, "normalizedQuery");
         Objects.requireNonNull(requestDeadline, "requestDeadline");
+        Objects.requireNonNull(validate, "validate").run();
         String query = normalizedQuery.strip();
         if (query.isEmpty()) {
             throw new IllegalArgumentException("HyDE query must not be blank");
@@ -76,8 +83,14 @@ final class HydeHypotheticalDocumentService {
 
         AiChatResult generated = executor.execute(new AiInvocationContext(AiCapability.HYDE, userId,
                         requestId + ":hyde", inputCharacters, deadline, false),
-                () -> router.generate(userId, new AiChatCommand(AiCapability.HYDE, prompt,
-                        AiResponseMode.TEXT)).result());
+                () -> {
+                    validate.run();
+                    var command = new AiChatCommand(AiCapability.HYDE, prompt, AiResponseMode.TEXT);
+                    var routed = route == null ? router.generate(userId, command) : route.generate(command);
+                    validate.run();
+                    return routed.result();
+                });
+        validate.run();
         // 被过滤、截断或其它非正常终止的文本不是可用的假设文档，不应浪费第二次向量调用。
         if (generated.finishReason() == null
                 || !"stop".equalsIgnoreCase(generated.finishReason().strip())) {

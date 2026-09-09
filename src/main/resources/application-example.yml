@@ -116,17 +116,17 @@ metro:
       turn-recovery-delay-ms: ${METRO_AI_AGENT_TURN_RECOVERY_DELAY_MS:10000}
     planner:
       enabled: ${METRO_AI_PLANNER_ENABLED:true}
-      max-rounds: ${METRO_AI_PLANNER_MAX_ROUNDS:2}
-      max-tool-calls: ${METRO_AI_PLANNER_MAX_TOOL_CALLS:4}
+      max-rounds: ${METRO_AI_PLANNER_MAX_ROUNDS:6}
+      max-tool-calls: ${METRO_AI_PLANNER_MAX_TOOL_CALLS:8}
       timeout: ${METRO_AI_PLANNER_TIMEOUT:PT6S}
     memory:
       enabled: ${METRO_AI_MEMORY_ENABLED:false}
-      semantic-enabled: ${METRO_AI_MEMORY_SEMANTIC_ENABLED:false}
-      summary-enabled: ${METRO_AI_MEMORY_SUMMARY_ENABLED:false}
-      summary-turn-threshold: ${METRO_AI_MEMORY_SUMMARY_TURN_THRESHOLD:20}
-      summary-max-characters: ${METRO_AI_MEMORY_SUMMARY_MAX_CHARACTERS:2000}
-      summary-delay-ms: ${METRO_AI_MEMORY_SUMMARY_DELAY_MS:15000}
-      summary-initial-delay-ms: ${METRO_AI_MEMORY_SUMMARY_INITIAL_DELAY_MS:15000}
+      # 新流水线在回答前按 token 水位压缩，启用记忆需要 Embedding 与独立 Milvus collection。
+      milvus:
+        collection: ${METRO_AI_MEMORY_MILVUS_COLLECTION:metro_user_memories_v1}
+        initialize-schema: ${METRO_AI_MEMORY_MILVUS_INITIALIZE_SCHEMA:false}
+        page-size: ${METRO_AI_MEMORY_MILVUS_PAGE_SIZE:32}
+        minimum-score: ${METRO_AI_MEMORY_MILVUS_MINIMUM_SCORE:0.35}
     writing:
       enabled: ${METRO_AI_WRITING_ENABLED:false}
     moderation:

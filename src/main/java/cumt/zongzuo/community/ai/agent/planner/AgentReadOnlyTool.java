@@ -1,10 +1,10 @@
 package cumt.zongzuo.community.ai.agent.planner;
 
 /**
- * Planner v1 可以调度的只读工具白名单。
+ * ReAct 可以调度的只读工具白名单；保留包路径，避免无意义移动工具实现。
  *
  * <p>这里故意使用封闭枚举，而不是让模型返回类名、URL 或脚本。这样即使模型输出了
- * {@code DELETE_ARTICLE} 一类越权指令，也只会触发安全降级，不可能进入业务执行层。</p>
+ * {@code DELETE_ARTICLE} 一类越权指令，也只会被拒绝，不可能进入业务执行层。</p>
  */
 public enum AgentReadOnlyTool {
     /** 站内公开文章的 BM25、Dense 与 HyDE 混合检索。 */

@@ -133,6 +133,8 @@ public class AccountDeletionService {
         jdbc.update("UPDATE agent_retrieval_hit SET excerpt_snapshot=NULL,metadata_json=JSON_OBJECT() WHERE user_id=?", userId);
         jdbc.update("UPDATE agent_answer_citation SET quote_snapshot='[账号已注销]',quote_hash=SHA2(CONCAT('deleted-citation:',id),256),state='REDACTED',redacted_at=CURRENT_TIMESTAMP(6) WHERE user_id=?", userId);
         jdbc.update("UPDATE agent_episode SET summary_text=NULL,summary_hash=NULL,updated_at=CURRENT_TIMESTAMP(6) WHERE user_id=?", userId);
+        // 新的工作摘要也是个人自由文本，注销时必须与旧 episode 摘要一起擦除。
+        jdbc.update("UPDATE agent_context_compaction SET summary_text='[账号已注销]',state='REDACTED' WHERE user_id=?", userId);
 
         // 记忆事实保留不可逆的删除审计；向量投影转为 DELETING，交给投影恢复流程收敛外部存储。
         jdbc.update("UPDATE agent_memory_setting SET enabled=0,updated_at=CURRENT_TIMESTAMP(6),lock_version=lock_version+1 WHERE user_id=?", userId);
