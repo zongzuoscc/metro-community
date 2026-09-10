@@ -198,6 +198,22 @@ METRO_AI_EMBEDDING_ENABLED=false
 
 Spring AI/Ollama 依赖只是客户端与运行时基础，不表示本机已运行 Ollama 或已下载 `bge-m3`。`qwen-plus` 也只是可配置的平台默认模型名，在显式验收前不代表模型可用性或质量结论。Prometheus registry 的依赖存在也不代表已公开 scrape endpoint 或交付 Dashboard；当前 Actuator 只暴露 health。
 
+### 对话正文的真实增量输出
+
+主对话与临时对话的最终回答调用 OpenAI 兼容接口的 `stream=true`，逐个读取模型 SSE 事件，
+在完整 JSON 尚未生成结束时提取顶层 `answer` 正文。压缩、ReAct 决策及工具参数不对外流出。
+不支持 SSE 的供应商明确失败，不退回“完整生成后切片”的伪流式。
+
+正文先写入有界 Redis Stream，再通过现有 SSE 通道发给桌宠与独立 Agent 页面。
+`answer_start` 清空旧执行前缀，`delta` 携带正文增量，事件 ID 去重且运行栅栏隔离旧任务。
+首段立即发送，后续短批合并以控制事件写入频率。最终答案和引用校验、保存成功后才发 `done`；
+主对话保存到 MySQL，临时对话仍只保存到 Redis，沿用 session 绝对过期时间。
+
+生成中的文本会标记“尚未保存、引用待校验”；失败或取消后的部分内容不是已完成答案。
+Redis 事件用于短期重放，不承诺 Redis 故障后所有已显示片段仍可恢复，也不恢复模型推理现场。
+流式请求不透明重试；超时或取消会关闭上游连接，保留既有能力并发、配额和熔断控制。
+本地 HTTP 测试会故意阻塞供应商尾段，并断言首段已经到达，防止全量切片回归。
+
 ### 隔离环境的 Provider 验证
 
 仅在非生产、隔离的验收环境中，才可把所需的 `METRO_AI_*_ENABLED` 开关显式改为 `true`，并注入 `METRO_AI_PLATFORM_PROVIDER`、`METRO_AI_PLATFORM_BASE_URL`、`METRO_AI_PLATFORM_API_KEY`、`METRO_AI_PLATFORM_MODEL`、`OLLAMA_BASE_URL` 和 `OLLAMA_EMBEDDING_MODEL`。本地开发可以把这些值写入已被 Git 忽略的 `.env`；生产环境必须使用部署平台的 Secret。密钥不得写入 YAML、Git 或测试报告。平台配置不会返回浏览器，用户自带 API 则走独立的加密数据库记录。

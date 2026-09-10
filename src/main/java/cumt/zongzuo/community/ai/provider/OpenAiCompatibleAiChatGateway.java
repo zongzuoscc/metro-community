@@ -32,6 +32,11 @@ public final class OpenAiCompatibleAiChatGateway implements AiChatGateway {
 
     public interface HttpTransport {
         HttpResponse post(URI uri, Map<String, String> headers, String body) throws Exception;
+
+        default AiChatResult stream(URI uri, Map<String, String> headers, String body,
+                                    String provider, String model, AiStreamObserver observer) throws Exception {
+            throw new UnsupportedOperationException("Streaming transport is unavailable");
+        }
     }
 
     public record HttpResponse(int status, String body) { }
@@ -86,6 +91,24 @@ public final class OpenAiCompatibleAiChatGateway implements AiChatGateway {
             throw error;
         }
         catch (Exception error) {
+            throw AiProviderException.fromTransport(error);
+        }
+    }
+
+    /** 直接使用流式传输，保留同步 generate 供审核、压缩和检索决策使用。 */
+    @Override
+    public AiChatResult stream(AiChatCommand command, AiStreamObserver observer) {
+        HttpTransport transport = transports.get(command.capability());
+        if (transport == null) throw new AiProviderException(AiProviderErrorReason.AI_DISABLED, "AI capability is disabled");
+        try {
+            return transport.stream(chatCompletionsEndpoint,
+                    Map.of("Authorization", "Bearer " + apiKey, "Content-Type", "application/json"),
+                    mapper.writeValueAsString(request(command).put("stream", true)), provider, model, observer);
+        } catch (java.util.concurrent.CancellationException error) {
+            throw error;
+        } catch (AiProviderException error) {
+            throw error;
+        } catch (Exception error) {
             throw AiProviderException.fromTransport(error);
         }
     }
@@ -156,12 +179,18 @@ public final class OpenAiCompatibleAiChatGateway implements AiChatGateway {
         OkHttpClient client = new OkHttpClient.Builder()
                 .connectTimeout(connectTimeout)
                 .callTimeout(requestTimeout)
+                .readTimeout(requestTimeout)
                 .followRedirects(false)
                 .followSslRedirects(false)
                 .proxy(Proxy.NO_PROXY)
                 .build();
         MediaType json = MediaType.get("application/json; charset=utf-8");
-        return (uri, headers, body) -> {
+        return new HttpTransport() {
+        @Override public AiChatResult stream(URI uri, Map<String, String> headers, String body,
+                                             String provider, String model, AiStreamObserver observer) throws Exception {
+            return OpenAiChatStream.read(client, uri, headers, body, provider, model, observer);
+        }
+        @Override public HttpResponse post(URI uri, Map<String, String> headers, String body) throws Exception {
             Request.Builder request = new Request.Builder().url(uri.toString())
                     .post(RequestBody.create(body, json));
             headers.forEach(request::header);
@@ -169,6 +198,7 @@ public final class OpenAiCompatibleAiChatGateway implements AiChatGateway {
                 String responseBody = response.body() == null ? "" : response.body().string();
                 return new HttpResponse(response.code(), responseBody);
             }
+        }
         };
     }
 

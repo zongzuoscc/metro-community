@@ -71,10 +71,12 @@ public class AgentTurnRunner {
                             "webSearchEnabled", admission.webSearchEnabled()));
             events.append(admission.turnId(), userId, admission.runId(), admission.runFence(),
                     "generating", Map.of("phase", "grounded_answer"));
+            var stream = new AgentAnswerStream(events, admission.turnId(), userId, admission.runId(), admission.runFence());
             GroundedAgentAnswer answer = answers.answerPersistent(userId,
                     admission.runId(), question, admission.webSearchEnabled(),
                     clock.instant().plus(Duration.ofMinutes(2)),
-                    () -> turnLeases.renew(admission.turnId(),userId,admission.runId(),admission.runFence()));
+                    () -> turnLeases.renew(admission.turnId(),userId,admission.runId(),admission.runFence()), stream);
+            stream.flush();
             if (!turnLeases.renew(admission.turnId(), userId, admission.runId(),
                     admission.runFence())) {
                 return;

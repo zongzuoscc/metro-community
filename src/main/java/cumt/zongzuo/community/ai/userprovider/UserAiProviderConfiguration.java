@@ -46,10 +46,8 @@ public class UserAiProviderConfiguration {
                                       UserAiProviderService settings,
                                       UserOpenAiCompatibleGateway userGateway,
                                       UserAiProviderProperties properties) {
-        if (!properties.isEnabled()) {
-            return (userId, command) -> new UserAiRoutedResult(platformGateway.generate(command),
-                    UserAiFundingSource.PLATFORM);
-        }
+        // BYOK 关闭时 settings 已由 DisabledUserAiProviderService 返回空配置。
+        // 两种部署模式共用完整路由，避免同步 lambda 的默认 prepare 丢失流式能力。
         return new DefaultUserAiChatRouter(platformGateway, settings, userGateway);
     }
 

@@ -47,6 +47,18 @@ class AiCapabilityExecutorTest {
     }
 
     @Test
+    void streamingInvocationDoesNotRetryTransientFailure() {
+        var attempts = new AtomicInteger();
+        executor = executor(defaultPolicies(), ignored -> {}, runtimeDefaults());
+        assertThatThrownBy(() -> executor.execute(new AiInvocationContext(AiCapability.AGENT,
+                9L,"stream",10,Instant.now().plusSeconds(5),false,true), () -> {
+                    attempts.incrementAndGet();
+                    throw new AiProviderException(AiProviderErrorReason.CONNECTION_FAILURE,"connection lost");
+                })).isInstanceOf(AiProviderException.class);
+        assertThat(attempts).hasValue(1);
+    }
+
+    @Test
     void rejectsOversizeAndExpiredInvocationBeforeQuotaOrOperation() {
         AtomicInteger quotaCalls = new AtomicInteger();
         AtomicInteger operationCalls = new AtomicInteger();

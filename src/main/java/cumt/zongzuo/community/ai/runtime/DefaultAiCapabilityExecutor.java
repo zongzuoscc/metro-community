@@ -209,6 +209,8 @@ public final class DefaultAiCapabilityExecutor implements AiCapabilityExecutor, 
                         RetryDeadlineGuard retryDeadlineGuard) {
         int attempts = context.background()
                 ? runtime.getBackgroundMaxAttempts() : runtime.getInteractiveMaxAttempts();
+        // 流中可能已经有可见正文，不透明重试；保留原异常分类以正确计入熔断和监控。
+        if (context.streaming()) attempts = 1;
         RetryConfig config = RetryConfig.<Object>custom()
                 .maxAttempts(attempts)
                 .intervalBiFunction((attempt, outcome) -> guardedRetryIntervalMillis(

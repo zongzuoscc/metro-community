@@ -650,7 +650,8 @@ class GroundedAnswerServiceTest {
             @Override public cumt.zongzuo.community.ai.userprovider.PreparedUserAiChat prepare(long userId,String model) {
                 // 与真实 BYOK 路由一致：预算所见的资金来源和实际请求来源必须相同。
                 return new cumt.zongzuo.community.ai.userprovider.PreparedUserAiChat(
-                        model,UserAiFundingSource.USER,command->generate(userId,command));
+                        model,UserAiFundingSource.USER,command->generate(userId,command), () -> {},
+                        (command,observer) -> new UserAiRoutedResult(gateway.stream(command,observer), UserAiFundingSource.USER));
             }
         };
         return new GroundedAnswerService(retrieval, new DirectExecutor(), router,
@@ -660,6 +661,26 @@ class GroundedAnswerServiceTest {
                 webSearch, planner,
                 new cumt.zongzuo.community.ai.agent.context.AgentPromptBudget(
                         new cumt.zongzuo.community.ai.agent.context.AgentContextProperties()),400_000,compaction);
+    }
+
+    @Test
+    void streamsOnlyAnswerBeforeFullJsonExistsAndStillRejectsInvalidFinalCitation() {
+        retrievalResult(List.of(source));
+        var pieces = new java.util.ArrayList<String>();
+        when(gateway.stream(any(), any())).thenAnswer(call -> {
+            var observer = call.getArgument(1, cumt.zongzuo.community.ai.provider.AiStreamObserver.class);
+            observer.onDelta("{\"answer\":\"提前出现的正文");
+            assertThat(String.join("", pieces)).isEqualTo("提前出现的正文");
+            observer.onDelta("[1]\",\"citations\":[{\"marker\":1,\"sourceId\":\"invented\",\"quote\":\"secret\"}]}");
+            return new AiChatResult("{\"answer\":\"提前出现的正文[1]\",\"citations\":[{\"marker\":1,\"sourceId\":\"invented\",\"quote\":\"secret\"}]}",
+                    "stop", 10, 10, "test", "deepseek-test");
+        });
+        assertThatThrownBy(() -> service(false).answerTemporary(9,"streaming","问题",List.of(),false,
+                Instant.parse("2026-08-12T00:00:30Z"), () -> true, pieces::add))
+                .isInstanceOf(InvalidAgentAnswerException.class);
+        assertThat(String.join("", pieces)).isEqualTo("提前出现的正文[1]");
+        verify(gateway, never()).generate(any());
+        org.mockito.Mockito.verifyNoInteractions(memories,history);
     }
 
     @Test

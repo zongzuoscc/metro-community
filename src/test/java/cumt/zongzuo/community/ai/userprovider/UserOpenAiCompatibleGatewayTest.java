@@ -15,6 +15,39 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class UserOpenAiCompatibleGatewayTest {
+    @Test
+    void streamingStillUsesValidatedAddressesAndNeverCallsWholeResponseTransport() throws Exception {
+        var publicIp = InetAddress.getByName("203.0.113.20");
+        var parts = new java.util.ArrayList<String>();
+        var transport = new UserOpenAiCompatibleGateway.HttpTransport() {
+            public UserOpenAiCompatibleGateway.HttpResponse post(URI uri, List<InetAddress> ips,
+                                                                  Map<String,String> headers, String body) {
+                throw new AssertionError("Whole response transport must not be called");
+            }
+            public cumt.zongzuo.community.ai.provider.AiChatResult stream(URI uri, List<InetAddress> ips,
+                    Map<String,String> headers, String body, String provider, String model,
+                    cumt.zongzuo.community.ai.provider.AiStreamObserver observer) {
+                assertThat(ips).containsExactly(publicIp);
+                assertThat(uri.toString()).isEqualTo("https://example.com/v1/chat/completions");
+                assertThat(body).contains("\"stream\":true", "\"max_tokens\":2048");
+                assertThat(headers).containsEntry("Authorization","Bearer secret");
+                observer.onDelta("第一段");
+                assertThat(parts).containsExactly("第一段");
+                return new cumt.zongzuo.community.ai.provider.AiChatResult("第一段","stop",1,1,provider,model);
+            }
+        };
+        var gateway = new UserOpenAiCompatibleGateway(new AiProviderEndpointPolicy(host -> List.of(publicIp)),transport);
+        var result = gateway.stream(setting("https://example.com/v1","custom"),"secret",
+                new AiChatCommand(AiCapability.AGENT,List.of(new AiPromptMessage(AiPromptRole.USER,"问题")),AiResponseMode.TEXT,2048), parts::add);
+        assertThat(result.text()).isEqualTo("第一段");
+        assertThat(result.toString()).doesNotContain("secret");
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                new UserOpenAiCompatibleGateway(new AiProviderEndpointPolicy(host -> List.of(InetAddress.getLoopbackAddress())), transport)
+                        .stream(setting("https://example.com/v1","custom"),"secret",
+                                new AiChatCommand(AiCapability.AGENT,List.of(new AiPromptMessage(AiPromptRole.USER,"问题")),AiResponseMode.TEXT),parts::add))
+                .isInstanceOf(RuntimeException.class);
+        assertThat(parts).hasSize(1);
+    }
 
     @Test
     void sendsACompatibleRequestWithoutLoggingOrReturningTheApiKey() throws Exception {

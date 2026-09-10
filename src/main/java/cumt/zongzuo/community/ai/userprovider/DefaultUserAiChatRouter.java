@@ -39,9 +39,13 @@ public final class DefaultUserAiChatRouter implements UserAiChatRouter {
             frozen.setEnabled(record.isEnabled());
             return new PreparedUserAiChat(frozen.getModel(), UserAiFundingSource.USER,
                     command -> new UserAiRoutedResult(userGateway.generate(frozen,
-                            settings.decryptApiKey(frozen), command), UserAiFundingSource.USER));
+                            settings.decryptApiKey(frozen), command), UserAiFundingSource.USER), () -> {},
+                    (command, observer) -> new UserAiRoutedResult(userGateway.stream(frozen,
+                            settings.decryptApiKey(frozen), command, observer), UserAiFundingSource.USER));
         }).orElseGet(() -> new PreparedUserAiChat(platformModel, UserAiFundingSource.PLATFORM,
                 command -> new UserAiRoutedResult(platformGateway.generate(command),
+                        UserAiFundingSource.PLATFORM), () -> {},
+                (command, observer) -> new UserAiRoutedResult(platformGateway.stream(command, observer),
                         UserAiFundingSource.PLATFORM)));
     }
 }

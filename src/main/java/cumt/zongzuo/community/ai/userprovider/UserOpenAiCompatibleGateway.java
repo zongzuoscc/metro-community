@@ -9,6 +9,8 @@ import cumt.zongzuo.community.ai.provider.AiChatResult;
 import cumt.zongzuo.community.ai.provider.AiProviderErrorReason;
 import cumt.zongzuo.community.ai.provider.AiProviderException;
 import cumt.zongzuo.community.ai.provider.AiResponseMode;
+import cumt.zongzuo.community.ai.provider.AiStreamObserver;
+import cumt.zongzuo.community.ai.provider.OpenAiChatStream;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
@@ -36,6 +38,12 @@ public final class UserOpenAiCompatibleGateway {
     public interface HttpTransport {
         HttpResponse post(URI uri, List<InetAddress> approvedAddresses,
                           Map<String, String> headers, String body) throws Exception;
+
+        default AiChatResult stream(URI uri, List<InetAddress> approvedAddresses,
+                                    Map<String, String> headers, String body, String provider,
+                                    String model, AiStreamObserver observer) throws Exception {
+            throw new UnsupportedOperationException("Streaming transport is unavailable");
+        }
     }
 
     public record HttpResponse(int status, String body) { }
@@ -51,6 +59,20 @@ public final class UserOpenAiCompatibleGateway {
 
     public AiChatResult generate(UserAiProviderRecord setting, String apiKey,
                                  AiChatCommand command) {
+        return request(setting, apiKey, command, null);
+    }
+
+    /** BYOK 流式请求仍先重验公网地址，不因启用流式而绕开 SSRF 防线。 */
+    public AiChatResult stream(UserAiProviderRecord setting, String apiKey,
+                               AiChatCommand command, AiStreamObserver observer) {
+        try {
+            return request(setting, apiKey, command, java.util.Objects.requireNonNull(observer));
+        } catch (java.util.concurrent.CancellationException error) { throw error; }
+        catch (AiProviderException error) { throw error; }
+    }
+
+    private AiChatResult request(UserAiProviderRecord setting, String apiKey,
+                                 AiChatCommand command, AiStreamObserver observer) {
         AiProviderEndpointPolicy.ValidatedEndpoint validated =
                 endpoints.validateAndResolve(setting.getBaseUrl());
         URI endpoint = URI.create(validated.normalizedBaseUrl() + "/chat/completions");
@@ -69,6 +91,12 @@ public final class UserOpenAiCompatibleGateway {
         headers.put("Authorization", "Bearer " + apiKey);
         headers.put("Content-Type", "application/json");
         try {
+            if (observer != null) {
+                request.put("stream", true);
+                return transport.stream(endpoint, validated.approvedAddresses(), headers,
+                        mapper.writeValueAsString(request), setting.getProvider().toLowerCase(Locale.ROOT),
+                        setting.getModel(), observer);
+            }
             HttpResponse response = transport.post(endpoint, validated.approvedAddresses(), headers,
                     mapper.writeValueAsString(request));
             if (response.status() < 200 || response.status() >= 300) {
@@ -87,6 +115,9 @@ public final class UserOpenAiCompatibleGateway {
             long output = nonNegative(root.path("usage").path("completion_tokens").asLong(0));
             return new AiChatResult(text, finishReason, input, output,
                     setting.getProvider().toLowerCase(Locale.ROOT), actualModel);
+        }
+        catch (java.util.concurrent.CancellationException error) {
+            throw error;
         }
         catch (AiProviderException error) {
             throw error;
@@ -108,22 +139,33 @@ public final class UserOpenAiCompatibleGateway {
         OkHttpClient baseClient = new OkHttpClient.Builder()
                 .connectTimeout(connectTimeout)
                 .callTimeout(requestTimeout)
+                .readTimeout(requestTimeout)
                 .followRedirects(false)
                 .followSslRedirects(false)
                 .proxy(Proxy.NO_PROXY)
                 .build();
         MediaType json = MediaType.get("application/json; charset=utf-8");
-        return (uri, approvedAddresses, headers, body) -> {
+        return new HttpTransport() {
+        private OkHttpClient client(URI uri, List<InetAddress> approvedAddresses) throws UnknownHostException {
             if (approvedAddresses == null || approvedAddresses.isEmpty()) {
                 throw new UnknownHostException("No approved address is available");
             }
             String approvedHost = uri.getHost();
-            OkHttpClient requestClient = baseClient.newBuilder().dns(hostname -> {
+            return baseClient.newBuilder().dns(hostname -> {
                 if (!hostname.equalsIgnoreCase(approvedHost)) {
                     throw new UnknownHostException("Unexpected DNS lookup");
                 }
                 return List.copyOf(approvedAddresses);
             }).build();
+        }
+        @Override public AiChatResult stream(URI uri, List<InetAddress> approvedAddresses,
+                                             Map<String, String> headers, String body, String provider,
+                                             String model, AiStreamObserver observer) throws Exception {
+            return OpenAiChatStream.read(client(uri, approvedAddresses), uri, headers, body, provider, model, observer);
+        }
+        @Override public HttpResponse post(URI uri, List<InetAddress> approvedAddresses,
+                                           Map<String, String> headers, String body) throws Exception {
+            OkHttpClient requestClient = client(uri, approvedAddresses);
             Request.Builder request = new Request.Builder().url(uri.toString())
                     .post(RequestBody.create(body, json));
             headers.forEach(request::header);
@@ -131,6 +173,7 @@ public final class UserOpenAiCompatibleGateway {
                 String responseBody = response.body() == null ? "" : response.body().string();
                 return new HttpResponse(response.code(), responseBody);
             }
+        }
         };
     }
 

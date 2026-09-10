@@ -24,6 +24,8 @@ import java.util.concurrent.TimeUnit;
 @ConditionalOnProperty(name = {"metro.ai.enabled", "metro.ai.agent.enabled"}, havingValue = "true")
 public class DefaultTemporaryTurnRunner implements TemporaryTurnRunner {
 
+    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(DefaultTemporaryTurnRunner.class);
+
     private final GroundedAnswerService answers;
     private final TemporaryTurnStore turns;
     private final TemporaryTurnLifecycleService lifecycle;
@@ -67,11 +69,14 @@ public class DefaultTemporaryTurnRunner implements TemporaryTurnRunner {
                     30, 30, TimeUnit.SECONDS);
             events.append(admission.turnId(), userId, admission.runId(), admission.runFence(),
                     "generating", Map.of("phase", "temporary_grounded_answer"));
+            var stream = new cumt.zongzuo.community.ai.agent.turn.AgentAnswerStream(events,
+                    admission.turnId(), userId, admission.runId(), admission.runFence());
             GroundedAgentAnswer answer = answers.answerTemporary(userId,
                     admission.runId().toString(), question,
                     turns.previousContext(userId, admission.sessionId(), question),
                     admission.webSearchEnabled(), clock.instant().plus(Duration.ofMinutes(2)),
-                    () -> lifecycle.renew(userId,admission.runId(),admission.runFence()));
+                    () -> lifecycle.renew(userId,admission.runId(),admission.runFence()), stream);
+            stream.flush();
             if (!lifecycle.renew(userId, admission.runId(), admission.runFence())) return;
             // 先在栕栏事务内完成 turn，再发 done 事件；SSE 始终只是短期进度通道。
             if (!lifecycle.complete(admission, userId, answer)) return;
@@ -87,6 +92,12 @@ public class DefaultTemporaryTurnRunner implements TemporaryTurnRunner {
             events.append(admission.turnId(), userId, admission.runId(), admission.runFence(),
                     "done", done);
         } catch (RuntimeException error) {
+            // 临时正文不能进入日志；仅记录异常类型与代码位置，定位异步失败而不保存问答或供应商错误体。
+            Throwable root = error;
+            for (int i = 0; i < 16 && root.getCause() != null && root.getCause() != root; i++) root = root.getCause();
+            StackTraceElement location = root.getStackTrace().length == 0 ? null : root.getStackTrace()[0];
+            LOG.warn("Temporary turn failed turnId={} exceptionType={} rootCauseType={} location={}",
+                    admission.turnId(), error.getClass().getName(), root.getClass().getName(), location);
             if (lifecycle.fail(admission, userId, "AGENT_EXECUTION_FAILED")) {
                 events.append(admission.turnId(), userId, admission.runId(), admission.runFence(),
                         "error", Map.of("code", "AI_UNAVAILABLE", "retryable", true,

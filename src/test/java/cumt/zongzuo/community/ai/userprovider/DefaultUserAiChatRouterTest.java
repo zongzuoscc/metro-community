@@ -86,10 +86,20 @@ class DefaultUserAiChatRouterTest {
                     UserAiProviderRecord frozen = invocation.getArgument(0);
                     return new AiChatResult("完成", "stop", 1, 1, "openai", frozen.getModel());
                 });
+        when(userGateway.stream(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any())).thenAnswer(invocation -> {
+            UserAiProviderRecord frozen = invocation.getArgument(0);
+            invocation.<cumt.zongzuo.community.ai.provider.AiStreamObserver>getArgument(3).onDelta("增量");
+            return new AiChatResult("增量","stop",1,1,"openai",frozen.getModel());
+        });
         var router = new DefaultUserAiChatRouter(platform, settings, userGateway);
         var prepared = router.prepare(7L, "platform");
         row.setModel("new-small-model");
         assertThat(prepared.model()).isEqualTo("gpt-4.1-mini");
         assertThat(prepared.generate(COMMAND).result().model()).isEqualTo("gpt-4.1-mini");
+        var pieces = new java.util.ArrayList<String>();
+        assertThat(prepared.stream(COMMAND,pieces::add).result().model()).isEqualTo("gpt-4.1-mini");
+        assertThat(pieces).containsExactly("增量");
+        org.mockito.Mockito.verifyNoInteractions(platform);
     }
 }

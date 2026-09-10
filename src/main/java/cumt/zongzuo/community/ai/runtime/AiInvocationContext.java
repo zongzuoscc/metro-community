@@ -6,7 +6,12 @@ import java.time.Instant;
 import java.util.Objects;
 
 public record AiInvocationContext(AiCapability capability, Long userId, String requestId,
-                                  int inputCharacters, Instant deadline, boolean background) {
+                                  int inputCharacters, Instant deadline, boolean background, boolean streaming) {
+
+    public AiInvocationContext(AiCapability capability, Long userId, String requestId,
+                                int inputCharacters, Instant deadline, boolean background) {
+        this(capability,userId,requestId,inputCharacters,deadline,background,false);
+    }
 
     public AiInvocationContext {
         Objects.requireNonNull(capability, "capability");

@@ -185,7 +185,7 @@ public class GroundedAnswerService {
                 webSearchEnabled, route, decisionContext(firstPage, List.of(), List.of()), deadline, () -> true);
         return generate(userId, requestId, question, deadline, context.articles,
                 context.memories, context.history, summaries(userId), firstPage,
-                List.of(), context.web, route, false,context.status);
+                List.of(), context.web, route, false,context.status, null);
     }
 
     /**
@@ -201,6 +201,14 @@ public class GroundedAnswerService {
     public GroundedAgentAnswer answerPersistent(long userId, java.util.UUID runId, String question,
                                                 boolean webSearchEnabled, Instant deadline,
                                                 java.util.function.BooleanSupplier running) {
+        return answerPersistent(userId,runId,question,webSearchEnabled,deadline,running,null);
+    }
+
+    /** 持久对话的正文增量只来自最终模型调用，压缩和检索决策仍然内部执行。 */
+    public GroundedAgentAnswer answerPersistent(long userId, java.util.UUID runId, String question,
+                                                boolean webSearchEnabled, Instant deadline,
+                                                java.util.function.BooleanSupplier running,
+                                                java.util.function.Consumer<String> delta) {
         checkActive(deadline,running);
         if (compaction == null) throw new IllegalStateException("Persistent context preparation is not configured");
         PreparedUserAiChat route=router.prepare(userId,expectedModel);
@@ -212,7 +220,7 @@ public class GroundedAnswerService {
                 decisionContext(prepared.recent(),prepared.summaries(),List.of()),deadline,running);
         checkActive(deadline,running);
         return generate(userId,requestId,question,deadline,context.articles,context.memories,context.history,
-                prepared.summaries(),prepared.recent(),List.of(),context.web,route,true,context.status);
+                prepared.summaries(),prepared.recent(),List.of(),context.web,route,true,context.status,delta);
     }
 
     /**
@@ -237,13 +245,20 @@ public class GroundedAnswerService {
     public GroundedAgentAnswer answerTemporary(long userId,String requestId,String question,
                                                List<String> temporaryContext,boolean webSearchEnabled,
                                                Instant deadline,java.util.function.BooleanSupplier running) {
+        return answerTemporary(userId,requestId,question,temporaryContext,webSearchEnabled,deadline,running,null);
+    }
+
+    public GroundedAgentAnswer answerTemporary(long userId,String requestId,String question,
+                                               List<String> temporaryContext,boolean webSearchEnabled,
+                                               Instant deadline,java.util.function.BooleanSupplier running,
+                                               java.util.function.Consumer<String> delta) {
         checkActive(deadline,running);
         PreparedUserAiChat route = protectedRoute(userId,router.prepare(userId,expectedModel),false,deadline,running);
         GatheredContext context = gather(userId, requestId, question, question, false,
                 webSearchEnabled, route, decisionContext(null,List.of(),temporaryContext), deadline,running);
         checkActive(deadline,running);
         return generate(userId, requestId, question, deadline, context.articles,
-                List.of(), List.of(), List.of(), null, temporaryContext, context.web, route, false,context.status);
+                List.of(), List.of(), List.of(), null, temporaryContext, context.web, route, false,context.status,delta);
     }
 
     /**
@@ -426,7 +441,7 @@ public class GroundedAnswerService {
             if (checkMemory && memories.epoch(userId)!=epoch)
                 throw new java.util.concurrent.CancellationException("Memory changed during Agent execution");
         };
-        return new PreparedUserAiChat(delegate.model(),delegate.fundingSource(),delegate::generate,validate);
+        return new PreparedUserAiChat(delegate.model(),delegate.fundingSource(),delegate::generate,validate,delegate::stream);
     }
 
     private static List<AgentToolObservation> publicObservations(List<AgentToolObservation> observations,
@@ -494,7 +509,8 @@ public class GroundedAnswerService {
                                          List<AgentEpisodeSummaryView> episodeSummaries,
                                          AgentConversationPage firstPage,
                                          List<String> temporaryContext,
-                                         AgentWebSearchResult web, PreparedUserAiChat route, boolean preparedContext,String retrievalStatus) {
+                                         AgentWebSearchResult web, PreparedUserAiChat route, boolean preparedContext,String retrievalStatus,
+                                         java.util.function.Consumer<String> delta) {
         String system=SYSTEM+"\n"+retrievalStatus;
         var limits = contextBudget.limits(route.model(), route.fundingSource());
         Instant historyDeadline = min(deadline, clock.instant().plus(contextBudget.historyLoadTimeout()));
@@ -516,9 +532,16 @@ public class GroundedAnswerService {
         int characters = prompt.stream().mapToInt(message -> message.text().length()).sum();
         Instant generationDeadline = min(deadline, clock.instant().plus(generationTimeout));
         UserAiRoutedResult routed = executor.execute(new AiInvocationContext(AiCapability.AGENT,
-                        userId, requestId + ":answer", characters, generationDeadline, false),
-                () -> route.generate(new AiChatCommand(AiCapability.AGENT, prompt,
-                        AiResponseMode.JSON_OBJECT, selected.maxOutputTokens())));
+                        userId, requestId + ":answer", characters, generationDeadline, false, delta != null),
+                () -> {
+                    var command = new AiChatCommand(AiCapability.AGENT, prompt,
+                            AiResponseMode.JSON_OBJECT, selected.maxOutputTokens());
+                    if (delta == null) return route.generate(command);
+                    var decoder = new StreamingAnswerText(delta);
+                    var resultStream = route.stream(command, decoder::accept);
+                    decoder.finish();
+                    return resultStream;
+                });
         AiChatResult generated = routed.result();
         // 平台调用必须仍匹配部署配置；用户调用由兼容网关先校验响应 model 与其已保存配置一致。
         String allowedModel = routed.fundingSource() == UserAiFundingSource.PLATFORM

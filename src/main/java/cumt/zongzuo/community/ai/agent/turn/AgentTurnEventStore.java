@@ -32,7 +32,8 @@ import java.util.UUID;
 public class AgentTurnEventStore {
 
     private static final Duration TTL = Duration.ofMinutes(30);
-    private static final int MAX_EVENTS = 500;
+    // 覆盖两分钟内按 200ms 合并的正文事件与状态事件，避免正常回答尚未结束就裁掉开头。
+    private static final int MAX_EVENTS = 2048;
     /**
      * 临时事件不能采用“先校验、再 XADD”的多命令写法。用户可能在两条命令之间删除 session，
      * 而迟到 worker 会重新创建包含最终回答的 Stream。该脚本把 session 存在性、sessionId 归属、
@@ -89,7 +90,11 @@ public class AgentTurnEventStore {
         values.put("type", type);
         values.put("occurredAt", Instant.now().toString());
         try {
-            values.put("payload", objectMapper.writeValueAsString(payload));
+            // SSE 是跨执行尝试的流；前端用 fence 拒绝迟到的旧尝试片段，不能只依赖事件 ID。
+            Map<String,Object> fencedPayload = new LinkedHashMap<>(payload);
+            fencedPayload.put("runId", runId.toString());
+            fencedPayload.put("runFence", runFence);
+            values.put("payload", objectMapper.writeValueAsString(fencedPayload));
         } catch (Exception error) {
             throw new IllegalArgumentException("Agent event payload cannot be encoded", error);
         }
