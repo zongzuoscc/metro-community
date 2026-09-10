@@ -153,6 +153,7 @@
                  class="agent-message" :class="`is-${message.role}`">
           <small>{{ message.role === 'user' ? '你' : 'Metro Agent' }}</small>
           <p>{{ message.content }}</p>
+          <small v-if="message.streamStatus">{{ message.streamStatus }}</small>
           <div v-if="message.citations?.length || message.webSources?.length" class="agent-message__sources">
             <section v-if="message.citations?.length">
               <strong>站内资料</strong>
@@ -252,6 +253,7 @@ import {
   createWritingSuggestion,
   getAgentWebSearchSetting,
   getAgentTurnHistory,
+  getAgentTurn,
   analyzeArticle,
   deleteTemporarySession,
   streamAgentTurnEvents,
@@ -557,6 +559,10 @@ async function sendChat(questionOverride = null) {
   draft.value = ''
   retryQuestion.value = ''
   let stopRequested = false
+  let terminalReceived = false
+  let lastEventId = ''
+  let activeStreamFence = 0
+  const receivedEvents = new Set()
   const pendingUserMessage = { id: `user-${Date.now()}`, role: 'user', content: question, turnId: null }
   messages.value.push(pendingUserMessage)
   selectedHistoryTurnId.value = null
@@ -578,21 +584,49 @@ async function sendChat(questionOverride = null) {
     activeTurnId.value = admission.turnId
     streamController?.abort()
     streamController = new AbortController()
-    await streamAgentTurnEvents(admission.turnId, {
+    const ensureStreamingMessage = () => {
+      let message = messages.value.find(item => item.id === `assistant-${admission.turnId}`)
+      if (!message) {
+        messages.value.push({ id: `assistant-${admission.turnId}`, role: 'assistant',
+          content: '', turnId: admission.turnId, streamStatus: '生成中，尚未保存；引用待校验' })
+        message = messages.value.at(-1)
+      }
+      return message
+    }
+    const options = {
       signal: streamController.signal,
       onEvent: event => {
         if (requestEpoch !== authenticationEpoch) return
+        if (terminalReceived) return
+        // 重连可能再次收到同一事件；只有新的执行 answer_start 才清空旧前缀。
+        if (event.id && receivedEvents.has(event.id)) return
+        if (event.id) { receivedEvents.add(event.id); lastEventId = event.id }
         const payload = event.data?.payload || {}
+        if (payload.runFence != null) {
+          if (Number(payload.runFence) < activeStreamFence) return
+          activeStreamFence = Number(payload.runFence)
+        }
         if (event.type === 'retrieving') taskStatus.value = '正在检索社区内容'
         if (event.type === 'generating') taskStatus.value = '正在组织回答'
+        if (event.type === 'answer_start') {
+          Object.assign(ensureStreamingMessage(), { content: '', citations: [], webSources: [],
+            streamStatus: '生成中，尚未保存；引用待校验' })
+        }
+        if (event.type === 'delta') {
+          ensureStreamingMessage().content += payload.textAppend || ''
+          taskStatus.value = '正在生成回答'
+          void scrollToLatest()
+        }
         if (event.type === 'done') {
-          messages.value.push({
+          terminalReceived = true
+          Object.assign(ensureStreamingMessage(), {
             id: `assistant-${admission.turnId}`,
             role: 'assistant',
             content: payload.finalMessage,
             turnId: admission.turnId,
             citations: payload.citations || [],
             webSources: payload.webSources || [],
+            streamStatus: payload.sourcesUnavailable ? '正文已保存，引用来源暂未恢复' : '',
           })
           if (payload.fundingSource) funding.value = payload
           // 新的持久问答完成后立即刷新权威主对话。刷新完成前保留当前历史数组，
@@ -602,14 +636,52 @@ async function sendChat(questionOverride = null) {
           }
         }
         if (event.type === 'cancelled') {
+          terminalReceived = true
           stopRequested = true
+          ensureStreamingMessage().streamStatus = '已停止，部分内容未保存'
           markCancelled(admission.turnId, question)
         }
+        if (event.type === 'error') {
+          terminalReceived = true
+          ensureStreamingMessage().streamStatus = '回答未完成校验或保存，请勿将部分内容视为最终结论'
+          retryQuestion.value = question
+        }
       },
-    })
+    }
+    // 浏览器断线不等于用户取消；只重新订阅原 turn，不重新创建收费任务。
+    for (let attempt = 0; !terminalReceived && attempt < 3; attempt++) {
+      try {
+        await streamAgentTurnEvents(admission.turnId, { ...options, after: lastEventId || undefined })
+      } catch (error) {
+        if (error?.name === 'AbortError' || requestEpoch !== authenticationEpoch) throw error
+      }
+      if (terminalReceived || requestEpoch !== authenticationEpoch) break
+      const snapshot = await getAgentTurn(admission.turnId)
+      if (snapshot?.state === 'SUCCEEDED') {
+        // 快照只含最终正文；优先补收带完整引用的 done，临时对话不能依赖主对话历史恢复来源。
+        try {
+          await streamAgentTurnEvents(admission.turnId, { ...options, after: lastEventId || undefined })
+        } catch (error) {
+          if (error?.name === 'AbortError' || requestEpoch !== authenticationEpoch) throw error
+        }
+        if (!terminalReceived) {
+          options.onEvent({ type: 'done', data: { payload: { ...snapshot, sourcesUnavailable: true } } })
+        }
+      } else if (snapshot?.state === 'CANCELLED' || snapshot?.state === 'FAILED') {
+        options.onEvent({ type: snapshot.state === 'CANCELLED' ? 'cancelled' : 'error', data: { payload: {} } })
+      } else if (attempt < 2) {
+        await new Promise(resolve => setTimeout(resolve, 300 * (attempt + 1)))
+      }
+    }
+    if (!terminalReceived && requestEpoch === authenticationEpoch) {
+      ensureStreamingMessage().streamStatus = '连接已中断，当前显示内容尚未确认保存'
+      retryQuestion.value = question
+    }
     await scrollToLatest()
   } catch (error) {
     if (requestEpoch === authenticationEpoch && error?.name !== 'AbortError' && !stopRequested) {
+      const partial = messages.value.find(message => message.id === `assistant-${activeTurnId.value}`)
+      if (partial) partial.streamStatus = '回答未完成校验或保存，可复制当前内容'
       retryQuestion.value = question
       ElMessage.error('消息发送失败，可重试上一问')
     }
@@ -624,6 +696,8 @@ async function sendChat(questionOverride = null) {
 
 /** 取消事件可能同时从 SSE 和 POST 响应到达，使用稳定 ID 去重避免显示两次。 */
 function markCancelled(turnId, question) {
+  const partial = messages.value.find(message => message.id === `assistant-${turnId}`)
+  if (partial) partial.streamStatus = '已停止，部分内容未保存'
   retryQuestion.value = question
   const id = `cancelled-${turnId}`
   if (!messages.value.some(message => message.id === id)) {

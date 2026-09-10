@@ -91,6 +91,58 @@ afterEach(() => {
 })
 
 describe('Agent 临时对话页面', () => {
+  it.each(['cancelled', 'error', 'done'])('终态 %s 后的迟到正文不能重新激活任务', async terminal => {
+    mocks.createAgentTurn.mockResolvedValue({ turnId: 15, state: 'RUNNING' })
+    mocks.streamAgentTurnEvents.mockImplementation(async (_id, options) => {
+      const send = (id, type, payload) => options.onEvent({ id, type, data: { payload: { runFence: 1, ...payload } } })
+      send('1-0', 'delta', { textAppend: '已有前缀' })
+      send('2-0', terminal, { finalMessage: '最终正文' })
+      send('3-0', 'delta', { textAppend: '不应追加的迟到片段' })
+    })
+    mountAgent()
+    await flushPromises()
+    await wrapper.get('[data-test="agent-input"]').setValue('终态测试')
+    await wrapper.get('[data-test="send-agent-message"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain(terminal === 'done' ? '最终正文' : '已有前缀')
+    expect(wrapper.text()).not.toContain('不应追加的迟到片段')
+    expect(wrapper.text()).not.toContain('生成中，尚未保存')
+    expect(mocks.getAgentTurn).not.toHaveBeenCalled()
+  })
+
+  it('断线恢复保留已展示前缀，补发去重后追加后续正文', async () => {
+    vi.useFakeTimers()
+    let finish
+    try {
+      mocks.createAgentTurn.mockResolvedValue({ turnId: 15, state: 'RUNNING' })
+      const prefix = { id: '2-0', type: 'delta', data: { payload: { textAppend: '前半段' } } }
+      mocks.streamAgentTurnEvents.mockImplementationOnce(async (_id, options) => {
+        options.onEvent({ id: '1-0', type: 'answer_start', data: { payload: {} } })
+        options.onEvent(prefix)
+        throw new TypeError('网络断开')
+      }).mockImplementationOnce((_id, options) => {
+        options.onEvent(prefix)
+        options.onEvent({ id: '3-0', type: 'delta', data: { payload: { textAppend: '后半段' } } })
+        return new Promise(resolve => { finish = resolve })
+      })
+      mocks.getAgentTurn.mockResolvedValue({ turnId: 15, state: 'RUNNING', userMessage: '流式问题' })
+      mountAgent()
+      await flushPromises()
+      await wrapper.get('[data-test="agent-input"]').setValue('流式问题')
+      await wrapper.get('[data-test="send-agent-message"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.text()).toContain('前半段')
+      await vi.advanceTimersByTimeAsync(1000)
+      await flushPromises()
+      expect(wrapper.text()).toContain('前半段后半段')
+      expect(wrapper.text()).not.toContain('前半段前半段')
+      expect(wrapper.text()).toContain('尚未保存')
+    } finally {
+      wrapper?.unmount()
+      finish?.()
+      vi.useRealTimers()
+    }
+  })
   it('opens temporary mode with a persistent privacy notice and stores metadata only', async () => {
     mountAgent()
     await flushPromises()
@@ -272,6 +324,22 @@ describe('Agent 临时对话页面', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('刷新运行中的临时对话后重新订阅原任务，接收重放正文和终态', async () => {
+    mocks.getTemporarySession.mockResolvedValue({ sessionId: 'session-1' })
+    mocks.getAgentTurn.mockResolvedValue({ turnId: -8, state: 'RUNNING', userMessage: '临时问题' })
+    mocks.streamAgentTurnEvents.mockImplementation(async (_id, options) => {
+      options.onEvent({ id: '1-0', type: 'delta', data: { payload: { textAppend: '重放前缀' } } })
+      options.onEvent({ id: '2-0', type: 'done', data: { payload: { finalMessage: '完整临时回答' } } })
+    })
+    sessionStorage.setItem('metro.agent.temporary.session', 'session-1')
+    sessionStorage.setItem('metro.agent.temporary.turn', '-8')
+    mountAgent()
+    await flushPromises()
+    expect(mocks.streamAgentTurnEvents).toHaveBeenCalledWith(-8, expect.any(Object))
+    expect(wrapper.text()).toContain('完整临时回答')
+    expect(mocks.createAgentTurn).not.toHaveBeenCalled()
   })
 
   it('restores a failed temporary turn with a terminal explanation instead of a loading animation', async () => {

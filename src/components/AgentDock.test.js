@@ -79,6 +79,39 @@ function pointerEvent(type, values) {
 }
 
 describe('全局 Agent 桌宠小窗', () => {
+  it('模型尚未结束时显示正文，重放不重复，新执行会清空旧前缀', async () => {
+    mocks.createAgentTurn.mockResolvedValue({ turnId: 777 })
+    let send, finish
+    mocks.streamAgentTurnEvents.mockImplementation((_id, options) => {
+      send = options.onEvent
+      return new Promise(resolve => { finish = resolve })
+    })
+    const wrapper = mountDock()
+    await wrapper.get('[data-test="agent-pet"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('textarea').setValue('请逐步回答')
+    await wrapper.get('[aria-label="发送"]').trigger('click')
+    await flushPromises()
+    send({ id: '1-0', type: 'answer_start', data: { payload: { runId: 'r1' } } })
+    const piece = { id: '2-0', type: 'delta', data: { payload: { textAppend: '首段正文', runId: 'r1' } } }
+    send(piece)
+    send(piece)
+    await flushPromises()
+    expect(wrapper.get('[data-test="agent-conversation"]').text()).toContain('首段正文')
+    expect(wrapper.text()).not.toContain('首段正文首段正文')
+    expect(wrapper.text()).toContain('尚未保存')
+    send({ id: '3-0', type: 'answer_start', data: { payload: { runId: 'r2', runFence: 2 } } })
+    send({ id: '3-1', type: 'delta', data: { payload: { textAppend: '迟到旧内容', runId: 'r1', runFence: 1 } } })
+    send({ id: '4-0', type: 'delta', data: { payload: { textAppend: '重新生成', runId: 'r2', runFence: 2 } } })
+    send({ id: '5-0', type: 'error', data: { payload: {} } })
+    finish()
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('首段正文')
+    expect(wrapper.text()).not.toContain('迟到旧内容')
+    expect(wrapper.text()).toContain('重新生成')
+    expect(wrapper.text()).toContain('未完成校验或保存')
+    wrapper.unmount()
+  })
   it('默认显示桌宠，点击后打开小窗并可切换全屏', async () => {
     const wrapper = mountDock()
 
@@ -558,6 +591,32 @@ describe('全局 Agent 桌宠小窗', () => {
       temporarySessionId: 'temp-session-7',
     }))
     expect(wrapper.text()).toContain('本次使用你的 qwen API')
+  })
+
+  it('临时回答完成时断线，先重放终态事件以恢复引用而非只使用正文快照', async () => {
+    mocks.createTemporarySession.mockResolvedValue({ sessionId: 'temp-stream' })
+    mocks.createAgentTurn.mockResolvedValue({ turnId: -17 })
+    mocks.getAgentTurn.mockResolvedValue({ turnId: -17, state: 'SUCCEEDED', finalMessage: '结论[W1]' })
+    mocks.streamAgentTurnEvents.mockImplementationOnce(async (_id, options) => {
+      options.onEvent({ id: '1-0', type: 'delta', data: { payload: { textAppend: '结论' } } })
+      throw new TypeError('终态事件到达前断线')
+    }).mockImplementationOnce(async (_id, options) => {
+      options.onEvent({ id: '2-0', type: 'done', data: { payload: {
+        finalMessage: '结论[W1]',
+        webSources: [{ index: 1, title: '已校验来源', url: 'https://example.com/news', siteName: '示例站' }],
+      } } })
+    })
+    const wrapper = mountDock()
+    await wrapper.get('[data-test="agent-pet"]').trigger('click')
+    await wrapper.get('[data-test="temporary-toggle"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('textarea').setValue('测试断线')
+    await wrapper.get('[aria-label="发送"]').trigger('click')
+    await flushPromises()
+    expect(mocks.streamAgentTurnEvents).toHaveBeenCalledTimes(2)
+    expect(mocks.streamAgentTurnEvents.mock.calls[1][1].after).toBe('1-0')
+    expect(wrapper.get('a[href="https://example.com/news"]').text()).toContain('已校验来源')
+    expect(wrapper.text()).not.toContain('尚未保存')
   })
 
   it('主对话默认显示联网开关，关闭后持久保存并展示分组来源', async () => {

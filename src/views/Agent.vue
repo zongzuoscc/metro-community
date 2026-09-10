@@ -71,6 +71,7 @@
                 <span></span><span></span><span></span>
                 <em>{{ statusText }}</em>
               </div>
+              <small v-if="message.streamStatus">{{ message.streamStatus }}</small>
             </div>
           </li>
         </ol>
@@ -138,6 +139,7 @@ const turnStarting = ref(false)
 const activeTurnId = ref(null)
 const turnState = ref(null)
 const lastEventId = ref(null)
+let activeStreamFence = 0
 const draft = ref('')
 const messages = ref([])
 let streamController = null
@@ -273,22 +275,41 @@ function ensureAssistantMessage() {
 
 /** 将 SSE 业务事件映射为界面状态，终态一定生成可见文字，不会留下假加载动画。 */
 function applyStreamEvent(event) {
+  // 取消与事件写入可能并发；终态吸收后续片段，避免同代次迟到 delta 把任务重新变成生成中。
+  if (TERMINAL_STATES.has(turnState.value)) return
+  // 同一连接恢复重放时忽略已经处理的事件，Redis Stream ID 按数值单调递增。
+  if (event.id && lastEventId.value) {
+    const [a, b] = event.id.split('-').map(BigInt)
+    const [x, y] = lastEventId.value.split('-').map(BigInt)
+    if (a < x || (a === x && b <= y)) return
+  }
   if (event.id) lastEventId.value = event.id
   const payload = event.data?.payload || {}
+  if (payload.runFence != null) {
+    if (Number(payload.runFence) < activeStreamFence) return
+    activeStreamFence = Number(payload.runFence)
+  }
   if (event.type === 'retrieving') turnState.value = 'RETRIEVING'
   else if (event.type === 'generating') turnState.value = 'GENERATING'
-  else if (event.type === 'delta') {
+  else if (event.type === 'answer_start') {
+    turnState.value = 'GENERATING'
+    Object.assign(ensureAssistantMessage(), { content: '', streamStatus: '生成中，尚未保存；引用待校验' })
+  } else if (event.type === 'delta') {
     turnState.value = 'GENERATING'
     ensureAssistantMessage().content += payload.textAppend || ''
+    ensureAssistantMessage().streamStatus = '生成中，尚未保存；引用待校验'
   } else if (event.type === 'done') {
     turnState.value = 'SUCCEEDED'
+    ensureAssistantMessage().streamStatus = ''
     ensureAssistantMessage().content = payload.finalMessage || ensureAssistantMessage().content
   } else if (event.type === 'cancelled') {
     turnState.value = 'CANCELLED'
+    ensureAssistantMessage().streamStatus = '已停止，部分内容未保存'
     ensureAssistantMessage().content ||= '回答已停止。'
   } else if (event.type === 'error') {
     turnState.value = 'FAILED'
-    ensureAssistantMessage().content = '这次回答没有完成，请稍后重试。'
+    ensureAssistantMessage().content ||= '这次回答没有完成，请稍后重试。'
+    ensureAssistantMessage().streamStatus = '回答未完成校验或保存，请勿将部分内容视为最终结论'
   }
   syncPersistentTurnMetadata()
 }
@@ -334,13 +355,14 @@ async function connectEventStream(turnId) {
 
 /** 用后端权威快照整体替换界面，消除流丢帧或页面刷新带来的局部状态歧义。 */
 function applySnapshot(snapshot) {
+  const existingPartial = messages.value.find(message => message.id === `assistant-${snapshot.turnId}`)
   activeTurnId.value = snapshot.turnId
   turnState.value = snapshot.state
   const restored = []
   if (snapshot.userMessage) {
     restored.push({ id: `user-${snapshot.turnId}`, role: 'user', content: snapshot.userMessage })
   }
-  if (snapshot.finalMessage || snapshot.partialMessage || snapshot.state !== 'RUNNING') {
+  if (snapshot.finalMessage || snapshot.partialMessage || snapshot.state !== 'RUNNING' || existingPartial?.content) {
     // FAILED 快照可能只带内部错误码，不应将它直接暴露给用户，也不能留下空消息让界面误以为仍在生成。
     const terminalFallback = snapshot.state === 'CANCELLED'
       ? '回答已停止。'
@@ -350,7 +372,10 @@ function applySnapshot(snapshot) {
     restored.push({
       id: `assistant-${snapshot.turnId}`,
       role: 'assistant',
-      content: snapshot.finalMessage || snapshot.partialMessage || terminalFallback,
+      content: snapshot.finalMessage || snapshot.partialMessage || existingPartial?.content || terminalFallback,
+      streamStatus: snapshot.state === 'SUCCEEDED' ? ''
+        : snapshot.state === 'RUNNING' ? '生成中，尚未保存；引用待校验'
+          : existingPartial?.content ? '回答未完成校验或保存，请勿将部分内容视为最终结论' : '',
     })
   }
   messages.value = restored
@@ -406,8 +431,11 @@ async function sendMessage() {
       context: { page: 'agent' },
     })
     activeTurnId.value = admission.turnId
+    // 接纳后把占位气泡绑定权威 turnId，断线快照才能找到并保留已展示的前缀。
+    ensureAssistantMessage().id = `assistant-${admission.turnId}`
     turnState.value = admission.state
     lastEventId.value = null
+    activeStreamFence = 0
     persistTemporaryMetadata()
     syncPersistentTurnMetadata()
     await connectEventStream(admission.turnId)
@@ -441,7 +469,11 @@ async function restoreTemporaryMode() {
     temporaryEnabled.value = true
     persistTemporaryMetadata()
     const savedTurn = Number(sessionStorage.getItem(TEMPORARY_TURN_KEY))
-    if (Number.isSafeInteger(savedTurn) && savedTurn < 0) await recoverTurn(savedTurn)
+    if (Number.isSafeInteger(savedTurn) && savedTurn < 0) {
+      const running = await recoverTurn(savedTurn)
+      // 恢复快照不等于恢复实时连接；运行中的临时任务也要订阅原 turn 的事件重放。
+      if (running) void connectEventStream(savedTurn)
+    }
   } catch (error) {
     if (error?.response?.status !== 404) ElMessage.error('临时会话状态读取失败')
     clearTemporaryMetadata()
