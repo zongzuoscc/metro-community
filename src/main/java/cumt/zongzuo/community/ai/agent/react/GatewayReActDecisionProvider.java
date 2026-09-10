@@ -26,6 +26,8 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 
+import static cumt.zongzuo.community.ai.agent.react.ReActDecisionException.Code.*;
+
 /**
  * 通过已冻结的用户模型路由执行单步 ReAct 决策。
  *
@@ -173,11 +175,18 @@ public final class GatewayReActDecisionProvider implements AgentReactDecisionPro
         // 网关在截止时间后返回或调用期间收到取消时，结果已不能
         // 推动本轮状态；即使正文写着 FINISH 也必须显式失败。
         ensureActive(deadline);
-        if (routed == null || routed.result() == null
-                || !route.fundingSource().equals(routed.fundingSource())
-                || !route.model().equals(routed.result().model())
-                || !"stop".equalsIgnoreCase(routed.result().finishReason())) {
-            throw invalidResponse();
+        if (routed == null || routed.result() == null) {
+            throw new ReActDecisionException(REACT_INVALID_RESPONSE);
+        }
+        if (!route.fundingSource().equals(routed.fundingSource())
+                || !route.model().equals(routed.result().model())) {
+            throw new ReActDecisionException(REACT_ROUTE_MISMATCH);
+        }
+        if ("length".equalsIgnoreCase(routed.result().finishReason())) {
+            throw new ReActDecisionException(REACT_RESPONSE_TRUNCATED);
+        }
+        if (!"stop".equalsIgnoreCase(routed.result().finishReason())) {
+            throw new ReActDecisionException(REACT_RESPONSE_INCOMPLETE);
         }
         return routed.result().text();
     }
@@ -295,58 +304,64 @@ public final class GatewayReActDecisionProvider implements AgentReactDecisionPro
 
     private AgentReactDecision parse(String text, boolean persistentAllowed,
                                      boolean webEnabled) {
-        try {
-            JsonNode root = strictRoot(text);
-            String action = root.get("action").textValue();
-            if ("FINISH".equals(action)) {
-                if (root.size() != 1 || !fields(root).equals(Set.of("action"))) {
-                    throw invalidResponse();
-                }
-                return new AgentReactDecision(null);
-            }
-            if (!"CALL".equals(action) || root.size() != 3
-                    || !fields(root).equals(Set.of("action", "tool", "query"))
-                    || !root.get("tool").isTextual() || !root.get("query").isTextual()) {
-                throw invalidResponse();
-            }
-            AgentReadOnlyTool tool = AgentReadOnlyTool.valueOf(root.get("tool").textValue());
-            if ((!persistentAllowed && (tool == AgentReadOnlyTool.LONG_TERM_MEMORY
-                    || tool == AgentReadOnlyTool.CONVERSATION_HISTORY))
-                    || (!webEnabled && tool == AgentReadOnlyTool.WEB_SEARCH)) {
-                throw invalidResponse();
-            }
-            return new AgentReactDecision(new AgentToolCall(tool, root.get("query").textValue()));
-        } catch (IllegalArgumentException error) {
-            throw invalidResponse();
+        JsonNode root = strictRoot(text);
+        if (isFinish(root)) return new AgentReactDecision(null);
+        AgentReadOnlyTool tool = callTool(root);
+        if ((!persistentAllowed && (tool == AgentReadOnlyTool.LONG_TERM_MEMORY
+                || tool == AgentReadOnlyTool.CONVERSATION_HISTORY))
+                || (!webEnabled && tool == AgentReadOnlyTool.WEB_SEARCH)) {
+            throw new ReActDecisionException(REACT_FORBIDDEN_TOOL);
         }
+        return new AgentReactDecision(validatedCall(tool, root));
     }
 
     private String parsePublicWebQuery(String text) {
+        JsonNode root = strictRoot(text);
+        if (isFinish(root)) return null;
+        AgentReadOnlyTool tool = callTool(root);
+        if (tool != AgentReadOnlyTool.WEB_SEARCH) {
+            throw new ReActDecisionException(REACT_FORBIDDEN_TOOL);
+        }
+        return validatedCall(tool, root).query();
+    }
+
+    private boolean isFinish(JsonNode root) {
+        if ("FINISH".equals(root.get("action").textValue())) {
+            if (root.size() != 1 || !fields(root).equals(Set.of("action"))) {
+                throw new ReActDecisionException(REACT_INVALID_SHAPE);
+            }
+            return true;
+        }
+        return false;
+    }
+
+    private AgentReadOnlyTool callTool(JsonNode root) {
+        if (!"CALL".equals(root.get("action").textValue()) || root.size() != 3
+                || !fields(root).equals(Set.of("action", "tool", "query"))
+                || !root.get("tool").isTextual() || !root.get("query").isTextual()) {
+            throw new ReActDecisionException(REACT_INVALID_SHAPE);
+        }
         try {
-            JsonNode root = strictRoot(text);
-            String action = root.get("action").textValue();
-            if ("FINISH".equals(action)) {
-                if (root.size() != 1 || !fields(root).equals(Set.of("action"))) {
-                    throw invalidResponse();
-                }
-                return null;
-            }
-            if (!"CALL".equals(action) || root.size() != 3
-                    || !fields(root).equals(Set.of("action", "tool", "query"))
-                    || !root.get("tool").isTextual() || !root.get("query").isTextual()
-                    || !AgentReadOnlyTool.WEB_SEARCH.name().equals(root.get("tool").textValue())) {
-                throw invalidResponse();
-            }
-            return new AgentToolCall(AgentReadOnlyTool.WEB_SEARCH,
-                    root.get("query").textValue()).query();
+            return AgentReadOnlyTool.valueOf(root.get("tool").textValue());
         } catch (IllegalArgumentException error) {
-            throw invalidResponse();
+            throw new ReActDecisionException(REACT_UNKNOWN_TOOL);
+        }
+    }
+
+    private AgentToolCall validatedCall(AgentReadOnlyTool tool, JsonNode root) {
+        try {
+            return new AgentToolCall(tool, root.get("query").textValue());
+        } catch (IllegalArgumentException error) {
+            throw new ReActDecisionException(REACT_INVALID_QUERY);
         }
     }
 
     private JsonNode strictRoot(String text) {
-        if (text == null || text.isBlank() || text.length() > MAX_RESPONSE_CHARACTERS) {
-            throw invalidResponse();
+        if (text == null || text.isBlank()) {
+            throw new ReActDecisionException(REACT_INVALID_JSON);
+        }
+        if (text.length() > MAX_RESPONSE_CHARACTERS) {
+            throw new ReActDecisionException(REACT_RESPONSE_TOO_LARGE);
         }
         try {
             JsonNode root = mapper.reader()
@@ -354,11 +369,12 @@ public final class GatewayReActDecisionProvider implements AgentReactDecisionPro
                     .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
                     .readTree(text);
             if (root == null || !root.isObject() || !root.path("action").isTextual()) {
-                throw invalidResponse();
+                throw new ReActDecisionException(REACT_INVALID_SHAPE);
             }
             return root;
         } catch (JsonProcessingException error) {
-            throw invalidResponse();
+            // 解析异常可能携带模型原文，不能保留为 cause 或进入日志。
+            throw new ReActDecisionException(REACT_INVALID_JSON);
         }
     }
 
@@ -366,11 +382,6 @@ public final class GatewayReActDecisionProvider implements AgentReactDecisionPro
         java.util.HashSet<String> fields = new java.util.HashSet<>();
         node.fieldNames().forEachRemaining(fields::add);
         return Set.copyOf(fields);
-    }
-
-    private static IllegalStateException invalidResponse() {
-        // 不把模型原文或用户资料写入异常，避免执行器日志泄漏隐私。
-        return new IllegalStateException("Invalid ReAct decision response");
     }
 
     private static Instant min(Instant left, Instant right) {

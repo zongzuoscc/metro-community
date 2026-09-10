@@ -162,6 +162,8 @@ public final class AiProblemDetails {
             case "AI_DISABLED" -> "This AI capability is disabled.";
             case "AI_UNAVAILABLE" -> "The AI capability is temporarily unavailable.";
             case "AGENT_RUNTIME_UNAVAILABLE" -> "The Agent runtime is temporarily unavailable.";
+            case "AGENT_CAPACITY_EXHAUSTED" -> "Agent capacity is full. Please retry later.";
+            case "AGENT_STREAM_CAPACITY_EXHAUSTED" -> "The concurrent stream limit has been reached.";
             case "ARTICLE_CUTOVER_IN_PROGRESS" -> "Article mutations are paused for cutover verification.";
             case "METHOD_NOT_ALLOWED" -> "The HTTP method is not supported for this resource.";
             case "UNSUPPORTED_MEDIA_TYPE" -> "The request media type is not supported.";

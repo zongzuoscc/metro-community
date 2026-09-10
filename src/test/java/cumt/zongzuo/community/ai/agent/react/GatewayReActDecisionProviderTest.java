@@ -17,12 +17,16 @@ import cumt.zongzuo.community.ai.userprovider.UserAiFundingSource;
 import cumt.zongzuo.community.ai.userprovider.UserAiRoutedResult;
 import io.github.resilience4j.core.functions.CheckedSupplier;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.Arguments;
 
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.stream.Stream;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -34,6 +38,101 @@ class GatewayReActDecisionProviderTest {
 
     private static final Instant NOW = Instant.parse("2026-09-09T02:00:00Z");
     private static final Instant DEADLINE = NOW.plusSeconds(30);
+
+    @ParameterizedTest
+    @MethodSource("invalidDecisions")
+    void rejectsWithSpecificSafeCodeWithoutRelaxingValidation(String response,
+                                                              boolean persistentAllowed,
+                                                              boolean webEnabled,
+                                                              String expectedCode) {
+        var provider = provider(new RecordingExecutor(), 6, 8, 100_000);
+        var error = org.assertj.core.api.Assertions.catchThrowable(() ->
+                decide(provider, persistentAllowed, webEnabled, response));
+
+        assertSafeDecisionError(error, expectedCode);
+    }
+
+    private static Stream<Arguments> invalidDecisions() {
+        return Stream.of(
+                Arguments.of("private-secret malformed", true, true, "REACT_INVALID_JSON"),
+                Arguments.of("", true, true, "REACT_INVALID_JSON"),
+                Arguments.of(null, true, true, "REACT_INVALID_JSON"),
+                Arguments.of("{\"action\":\"FINISH\",\"action\":\"FINISH\"}", true, true, "REACT_INVALID_JSON"),
+                Arguments.of("{\"action\":\"FINISH\"} {}", true, true, "REACT_INVALID_JSON"),
+                Arguments.of("[]", true, true, "REACT_INVALID_SHAPE"),
+                Arguments.of("{}", true, true, "REACT_INVALID_SHAPE"),
+                Arguments.of("{\"action\":false}", true, true, "REACT_INVALID_SHAPE"),
+                Arguments.of("{\"action\":\"finish\"}", true, true, "REACT_INVALID_SHAPE"),
+                Arguments.of("{\"action\":\"FINISH\",\"secret\":\"private-secret\"}", true, true, "REACT_INVALID_SHAPE"),
+                Arguments.of("{\"action\":\"CALL\",\"tool\":\"WEB_SEARCH\"}", true, true, "REACT_INVALID_SHAPE"),
+                Arguments.of("{\"action\":\"CALL\",\"tool\":false,\"query\":\"q\"}", true, true, "REACT_INVALID_SHAPE"),
+                Arguments.of("{\"action\":\"CALL\",\"tool\":\"WEB_SEARCH\",\"query\":null}", true, true, "REACT_INVALID_SHAPE"),
+                Arguments.of("{\"action\":\"CALL\",\"tool\":\"PRIVATE_SECRET\",\"query\":\"q\"}", true, true, "REACT_UNKNOWN_TOOL"),
+                Arguments.of("{\"action\":\"CALL\",\"tool\":\"LONG_TERM_MEMORY\",\"query\":\"q\"}", false, true, "REACT_FORBIDDEN_TOOL"),
+                Arguments.of("{\"action\":\"CALL\",\"tool\":\"CONVERSATION_HISTORY\",\"query\":\"q\"}", false, true, "REACT_FORBIDDEN_TOOL"),
+                Arguments.of("{\"action\":\"CALL\",\"tool\":\"WEB_SEARCH\",\"query\":\"q\"}", true, false, "REACT_FORBIDDEN_TOOL"),
+                Arguments.of("{\"action\":\"CALL\",\"tool\":\"WEB_SEARCH\",\"query\":\"   \"}", true, true, "REACT_INVALID_QUERY"),
+                Arguments.of("{\"action\":\"CALL\",\"tool\":\"WEB_SEARCH\",\"query\":\"" + "界".repeat(2_001) + "\"}", true, true, "REACT_INVALID_QUERY"),
+                Arguments.of("x".repeat(32_001), true, true, "REACT_RESPONSE_TOO_LARGE"));
+    }
+
+    @ParameterizedTest
+    @MethodSource("invalidPublicDecisions")
+    void publicQueryUsesTheSameSafeClassification(String response, String expectedCode) {
+        var provider = provider(new RecordingExecutor(), 6, 8, 100_000);
+        var error = org.assertj.core.api.Assertions.catchThrowable(() -> provider.publicWebQuery(
+                9, "public", "question", List.of(), route("model", response), DEADLINE));
+
+        assertSafeDecisionError(error, expectedCode);
+    }
+
+    private static Stream<Arguments> invalidPublicDecisions() {
+        return Stream.of(
+                Arguments.of("not JSON private-secret", "REACT_INVALID_JSON"),
+                Arguments.of("{\"action\":\"CALL\",\"tool\":\"WEB_SEARCH\",\"query\":\"q\",\"userId\":9}", "REACT_INVALID_SHAPE"),
+                Arguments.of("{\"action\":\"CALL\",\"tool\":\"PRIVATE_SECRET\",\"query\":\"q\"}", "REACT_UNKNOWN_TOOL"),
+                Arguments.of("{\"action\":\"CALL\",\"tool\":\"COMMUNITY_ARTICLES\",\"query\":\"q\"}", "REACT_FORBIDDEN_TOOL"),
+                Arguments.of("{\"action\":\"CALL\",\"tool\":\"LONG_TERM_MEMORY\",\"query\":\"q\"}", "REACT_FORBIDDEN_TOOL"),
+                Arguments.of("{\"action\":\"CALL\",\"tool\":\"WEB_SEARCH\",\"query\":\"\"}", "REACT_INVALID_QUERY"));
+    }
+
+    @ParameterizedTest
+    @MethodSource("invalidEnvelopes")
+    void distinguishesTruncationRoutingAndMissingEnvelopeWithoutRetrying(
+            UserAiRoutedResult result, String expectedCode) {
+        var invocations = new AtomicInteger();
+        var frozen = new PreparedUserAiChat("model", UserAiFundingSource.USER, command -> {
+            invocations.incrementAndGet();
+            return result;
+        });
+        var provider = provider(new RecordingExecutor(), 6, 8, 100_000);
+        var error = org.assertj.core.api.Assertions.catchThrowable(() -> provider.decide(
+                9, "envelope", "question", List.of(), true, true, 1, 8, List.of(), frozen, DEADLINE));
+
+        assertSafeDecisionError(error, expectedCode);
+        assertThat(invocations).hasValue(1);
+    }
+
+    private static Stream<Arguments> invalidEnvelopes() {
+        return Stream.of(
+                Arguments.of(null, "REACT_INVALID_RESPONSE"),
+                Arguments.of(envelope("length", "model", UserAiFundingSource.USER), "REACT_RESPONSE_TRUNCATED"),
+                Arguments.of(envelope("content_filter", "model", UserAiFundingSource.USER), "REACT_RESPONSE_INCOMPLETE"),
+                Arguments.of(envelope(null, "model", UserAiFundingSource.USER), "REACT_RESPONSE_INCOMPLETE"),
+                Arguments.of(envelope("stop", "wrong-private-model", UserAiFundingSource.USER), "REACT_ROUTE_MISMATCH"),
+                Arguments.of(envelope("stop", "model", UserAiFundingSource.PLATFORM), "REACT_ROUTE_MISMATCH"));
+    }
+
+    private static UserAiRoutedResult envelope(String finishReason, String model, UserAiFundingSource funding) {
+        return new UserAiRoutedResult(new AiChatResult("private-secret", finishReason, 1, 1,
+                "private-provider", model), funding);
+    }
+
+    private static void assertSafeDecisionError(Throwable error, String expectedCode) {
+        assertThat(error).isInstanceOf(IllegalStateException.class);
+        assertThat(error.getClass().getSimpleName()).isEqualTo("ReActDecisionException");
+        assertThat(error).hasMessage(expectedCode).hasNoCause();
+    }
 
     @Test
     void publicWebQuerySendsOnlyTheQuestionAndPublicObservationsThroughTheFrozenRoute() {

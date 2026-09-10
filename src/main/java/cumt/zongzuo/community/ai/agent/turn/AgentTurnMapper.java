@@ -453,6 +453,37 @@ public interface AgentTurnMapper {
                      @Param("oldFence") long oldFence, @Param("newRunId") UUID newRunId,
                      @Param("newFence") long newFence, @Param("leaseSeconds") long leaseSeconds);
 
+    /**
+     * 高频运行权检查只做主键定位的非锁定读取，不更新租约或开启显式事务。
+     * 同一条语句同时检查 guard 与 turn，避免 Redis 删除失败时已取消的任务继续运行。
+     */
+    @Select("""
+            SELECT EXISTS (
+              SELECT 1 FROM agent_run_guard g JOIN agent_turn t ON t.user_id=g.user_id
+              WHERE g.user_id=#{userId} AND t.id=#{turnId}
+                AND g.active_run_type='PERSISTENT'
+                AND g.active_run_id=#{runId,typeHandler=cumt.zongzuo.community.event.persistence.UuidBinaryTypeHandler}
+                AND g.run_fence=#{runFence} AND g.lease_until>CURRENT_TIMESTAMP(6)
+                AND t.run_id=#{runId,typeHandler=cumt.zongzuo.community.event.persistence.UuidBinaryTypeHandler}
+                AND t.run_fence=#{runFence} AND t.state='RUNNING'
+                AND t.lease_until>CURRENT_TIMESTAMP(6)
+            )
+            """)
+    boolean isPersistentRunCurrent(@Param("turnId") long turnId, @Param("userId") long userId,
+                                   @Param("runId") UUID runId, @Param("runFence") long runFence);
+
+    /** 临时正文不进 MySQL；这里只读取共享 guard，正文状态及绝对过期仍由 Redis 校验。 */
+    @Select("""
+            SELECT EXISTS (
+              SELECT 1 FROM agent_run_guard
+              WHERE user_id=#{userId} AND active_run_type='TEMPORARY'
+                AND active_run_id=#{runId,typeHandler=cumt.zongzuo.community.event.persistence.UuidBinaryTypeHandler}
+                AND run_fence=#{runFence} AND lease_until>CURRENT_TIMESTAMP(6)
+            )
+            """)
+    boolean isTemporaryRunCurrent(@Param("userId") long userId, @Param("runId") UUID runId,
+                                  @Param("runFence") long runFence);
+
     @Update("""
             UPDATE agent_run_guard
             SET lease_until=DATE_ADD(CURRENT_TIMESTAMP(6), INTERVAL #{leaseSeconds} SECOND),

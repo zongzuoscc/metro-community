@@ -15,7 +15,8 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import java.time.Clock;
 
 @Configuration(proxyBeanMethods = false)
-@EnableConfigurationProperties(MetroAiProperties.class)
+@EnableConfigurationProperties({MetroAiProperties.class,
+        cumt.zongzuo.community.ai.agent.turn.AgentTurnRuntimeProperties.class})
 public class AiRuntimeConfiguration {
 
     @Bean

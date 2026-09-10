@@ -66,6 +66,7 @@ public class AgentTurnController {
     private final ObjectMapper objectMapper;
     private final AgentConversationPreferenceService preferences;
     private final AgentConversationContextService contexts;
+    private final cumt.zongzuo.community.ai.agent.turn.AgentTurnRuntimeProperties runtimeSettings;
 
     public AgentTurnController(AgentTurnAdmissionService admissions,
                                TemporaryTurnAdmissionService temporaryAdmissions,
@@ -76,7 +77,8 @@ public class AgentTurnController {
                                ObjectProvider<TemporaryTurnRunner> temporaryRunners,
                                MetroAiProperties properties, ObjectMapper objectMapper,
                                AgentConversationPreferenceService preferences,
-                               AgentConversationContextService contexts) {
+                               AgentConversationContextService contexts,
+                               cumt.zongzuo.community.ai.agent.turn.AgentTurnRuntimeProperties runtimeSettings) {
         this.admissions = admissions;
         this.temporaryAdmissions = temporaryAdmissions;
         this.queries = queries;
@@ -88,6 +90,7 @@ public class AgentTurnController {
         this.objectMapper = objectMapper;
         this.preferences = preferences;
         this.contexts = contexts;
+        this.runtimeSettings = runtimeSettings;
     }
 
     /** 返回当前用户唯一主对话的联网偏好；默认值为开启。 */
@@ -204,9 +207,10 @@ public class AgentTurnController {
                                                          String lastEventId) {
         long userId = CurrentUser.id();
         String cursor = after == null ? lastEventId : after;
-        List<AgentTurnEvent> initial = events.replay(turnId, userId, cursor, 100);
+        var reader = events.openReplay(turnId, userId);
+        List<AgentTurnEvent> initial = reader.read(cursor, 100);
         StreamingResponseBody body = output -> streamEvents(
-                output, turnId, userId, cursor, initial);
+                output, reader, cursor, initial);
         return ResponseEntity.ok().contentType(MediaType.TEXT_EVENT_STREAM).body(body);
     }
 
@@ -224,30 +228,44 @@ public class AgentTurnController {
         }
     }
 
-    private void streamEvents(java.io.OutputStream output, long turnId, long userId,
+    private void streamEvents(java.io.OutputStream output, AgentTurnEventStore.ReplayReader reader,
                               String after, List<AgentTurnEvent> initial) throws IOException {
+        // HTTP 预检查到异步线程真正开始之间可能发生临时会话删除，发送缓存批次前再次校验。
+        reader.validateTemporarySession();
         String cursor = writeEvents(output, initial, after);
         if (containsTerminal(initial)) {
             return;
         }
-        Instant deadline = Instant.now().plus(Duration.ofMinutes(3));
-        Instant terminalObservedAt = events.isTerminal(turnId, userId) ? Instant.now() : null;
-        while (Instant.now().isBefore(deadline)) {
-            try {
-                Thread.sleep(200);
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                return;
-            }
-            List<AgentTurnEvent> next = events.replay(turnId, userId, cursor, 100);
-            cursor = writeEvents(output, next, cursor);
-            if (containsTerminal(next)) {
-                return;
-            }
-            if (events.isTerminal(turnId, userId)) {
-                if (terminalObservedAt == null) {
-                    terminalObservedAt = Instant.now();
-                } else if (Duration.between(terminalObservedAt, Instant.now()).toSeconds() >= 2) {
+        Instant deadline = Instant.now().plus(runtimeSettings.getSseTimeout());
+        Instant terminalObservedAt = null;
+        Instant nextStateCheck = Instant.now();
+        // 先订阅再补读：即使事件恰好写在初始批次与订阅之间，也会由第一次补读取到。
+        try (var subscription = reader.subscribe()) {
+            while (Instant.now().isBefore(deadline)) {
+                List<AgentTurnEvent> next = reader.read(cursor, 100);
+                cursor = writeEvents(output, next, cursor);
+                if (containsTerminal(next)) return;
+                Instant now = Instant.now();
+                // 正文事件不再触发 MySQL 状态查询。每五秒最多查一次，处理“已落库但终态事件未写成”。
+                if (!now.isBefore(nextStateCheck)) {
+                    if (reader.isTerminal() && terminalObservedAt == null) terminalObservedAt = now;
+                    nextStateCheck = now.plusSeconds(5);
+                }
+                if (terminalObservedAt != null && !now.isBefore(terminalObservedAt.plusSeconds(2))) return;
+                // 积压超过一页时连续排空，不依赖下一条通知；避免恢复历史时每页额外等五秒。
+                if (next.size() == 100) continue;
+                Instant wakeBy = nextStateCheck.isBefore(deadline) ? nextStateCheck : deadline;
+                if (terminalObservedAt != null && terminalObservedAt.plusSeconds(2).isBefore(wakeBy)) {
+                    wakeBy = terminalObservedAt.plusSeconds(2);
+                }
+                try {
+                    if (!subscription.await(Duration.between(Instant.now(), wakeBy))) {
+                        // 无正文时也探测断连，同时避免代理把静默的 SSE 当作空闲连接关闭。
+                        output.write(": keep-alive\n\n".getBytes(StandardCharsets.UTF_8));
+                        output.flush();
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
                     return;
                 }
             }

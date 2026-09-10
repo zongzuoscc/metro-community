@@ -38,4 +38,13 @@ public class AgentTurnLeaseService {
         });
         return Boolean.TRUE.equals(renewed);
     }
+
+    /**
+     * 模型增量及工具边界只读检查，续租写库交给定时心跳。
+     * 不能只相信 Redis：取消已在 MySQL 提交、Redis 删除暂时失败时，也必须立即拒绝旧 run。
+     */
+    public boolean isRunning(long turnId, long userId, UUID runId, long runFence) {
+        return redisLeases.isCurrent(userId, runId, runFence)
+                && mapper.isPersistentRunCurrent(turnId, userId, runId, runFence);
+    }
 }

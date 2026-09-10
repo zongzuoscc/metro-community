@@ -39,6 +39,14 @@ public class AiProblemDetailAdvice extends ResponseEntityExceptionHandler {
 
     private static final int DEFAULT_RETRY_AFTER_SECONDS = 1;
 
+    /** SSE 执行器满时立即返回可识别的资源错误，而不是把连接挂在无界等待队列。 */
+    @ExceptionHandler(org.springframework.core.task.TaskRejectedException.class)
+    ResponseEntity<Object> handleStreamCapacity(org.springframework.core.task.TaskRejectedException error,
+                                                HttpServletRequest request) {
+        return response(request, HttpStatus.SERVICE_UNAVAILABLE, "AGENT_STREAM_CAPACITY_EXHAUSTED",
+                true, DEFAULT_RETRY_AFTER_SECONDS, List.of());
+    }
+
     @ExceptionHandler(AiApiException.class)
     ResponseEntity<Object> handleAiApiException(AiApiException error, HttpServletRequest request) {
         Integer retryAfter = seconds(error.retryAfter().orElse(null));

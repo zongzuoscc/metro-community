@@ -2,7 +2,9 @@ package cumt.zongzuo.community.ai.agent.temporary;
 
 import cumt.zongzuo.community.ai.agent.GroundedAgentAnswer;
 import cumt.zongzuo.community.ai.agent.GroundedAnswerService;
+import cumt.zongzuo.community.ai.agent.react.ReActDecisionException;
 import cumt.zongzuo.community.ai.agent.turn.AgentTurnEventStore;
+import cumt.zongzuo.community.ai.agent.turn.AgentRunLeaseMonitor;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
@@ -64,9 +66,9 @@ public class DefaultTemporaryTurnRunner implements TemporaryTurnRunner {
             // 调用 Provider 前先续约一次，防止在线程池中排队过久的 worker 继续执行。
             if (!lifecycle.renew(userId, admission.runId(), admission.runFence())) return;
             // 心跳只维持运行权，绝不延长临时 session 的 24 小时绝对截止时间。
-            heartbeat = heartbeatExecutor.scheduleAtFixedRate(
-                    () -> lifecycle.renew(userId, admission.runId(), admission.runFence()),
-                    30, 30, TimeUnit.SECONDS);
+            var lease = new AgentRunLeaseMonitor(() -> lifecycle.isRunning(admission, userId),
+                    () -> lifecycle.renew(userId, admission.runId(), admission.runFence()));
+            heartbeat = heartbeatExecutor.scheduleAtFixedRate(lease::heartbeat, 30, 30, TimeUnit.SECONDS);
             events.append(admission.turnId(), userId, admission.runId(), admission.runFence(),
                     "generating", Map.of("phase", "temporary_grounded_answer"));
             var stream = new cumt.zongzuo.community.ai.agent.turn.AgentAnswerStream(events,
@@ -75,7 +77,11 @@ public class DefaultTemporaryTurnRunner implements TemporaryTurnRunner {
                     admission.runId().toString(), question,
                     turns.previousContext(userId, admission.sessionId(), question),
                     admission.webSearchEnabled(), clock.instant().plus(Duration.ofMinutes(2)),
-                    () -> lifecycle.renew(userId,admission.runId(),admission.runFence()), stream);
+                    lease::isRunning, text -> {
+                        lease.requireValid();
+                        stream.accept(text);
+                    });
+            lease.requireValid();
             stream.flush();
             if (!lifecycle.renew(userId, admission.runId(), admission.runFence())) return;
             // 先在栕栏事务内完成 turn，再发 done 事件；SSE 始终只是短期进度通道。
@@ -92,15 +98,19 @@ public class DefaultTemporaryTurnRunner implements TemporaryTurnRunner {
             events.append(admission.turnId(), userId, admission.runId(), admission.runFence(),
                     "done", done);
         } catch (RuntimeException error) {
+            String failureCode = error instanceof ReActDecisionException decision
+                    ? decision.errorCode() : "AGENT_EXECUTION_FAILED";
+            String eventCode = error instanceof ReActDecisionException
+                    ? failureCode : "AI_UNAVAILABLE";
             // 临时正文不能进入日志；仅记录异常类型与代码位置，定位异步失败而不保存问答或供应商错误体。
             Throwable root = error;
             for (int i = 0; i < 16 && root.getCause() != null && root.getCause() != root; i++) root = root.getCause();
             StackTraceElement location = root.getStackTrace().length == 0 ? null : root.getStackTrace()[0];
-            LOG.warn("Temporary turn failed turnId={} exceptionType={} rootCauseType={} location={}",
-                    admission.turnId(), error.getClass().getName(), root.getClass().getName(), location);
-            if (lifecycle.fail(admission, userId, "AGENT_EXECUTION_FAILED")) {
+            LOG.warn("Temporary turn failed turnId={} exceptionType={} rootCauseType={} location={} code={}",
+                    admission.turnId(), error.getClass().getName(), root.getClass().getName(), location, failureCode);
+            if (lifecycle.fail(admission, userId, failureCode)) {
                 events.append(admission.turnId(), userId, admission.runId(), admission.runFence(),
-                        "error", Map.of("code", "AI_UNAVAILABLE", "retryable", true,
+                        "error", Map.of("code", eventCode, "retryable", true,
                                 "partialRetained", false));
             }
         } finally {

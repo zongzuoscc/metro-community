@@ -2,6 +2,7 @@ package cumt.zongzuo.community.ai.agent.turn;
 
 import cumt.zongzuo.community.ai.agent.GroundedAgentAnswer;
 import cumt.zongzuo.community.ai.agent.GroundedAnswerService;
+import cumt.zongzuo.community.ai.agent.react.ReActDecisionException;
 import org.springframework.stereotype.Service;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.slf4j.Logger;
@@ -63,9 +64,10 @@ public class AgentTurnRunner {
                     admission.runFence())) {
                 return;
             }
-            heartbeat = heartbeatExecutor.scheduleAtFixedRate(
-                    () -> turnLeases.renew(admission.turnId(), userId, admission.runId(),
-                            admission.runFence()), 30, 30, TimeUnit.SECONDS);
+            var lease = new AgentRunLeaseMonitor(
+                    () -> turnLeases.isRunning(admission.turnId(), userId, admission.runId(), admission.runFence()),
+                    () -> turnLeases.renew(admission.turnId(), userId, admission.runId(), admission.runFence()));
+            heartbeat = heartbeatExecutor.scheduleAtFixedRate(lease::heartbeat, 30, 30, TimeUnit.SECONDS);
             events.append(admission.turnId(), userId, admission.runId(), admission.runFence(),
                     "retrieving", Map.of("phase", "agent_retrieval",
                             "webSearchEnabled", admission.webSearchEnabled()));
@@ -75,7 +77,11 @@ public class AgentTurnRunner {
             GroundedAgentAnswer answer = answers.answerPersistent(userId,
                     admission.runId(), question, admission.webSearchEnabled(),
                     clock.instant().plus(Duration.ofMinutes(2)),
-                    () -> turnLeases.renew(admission.turnId(),userId,admission.runId(),admission.runFence()), stream);
+                    lease::isRunning, text -> {
+                        lease.requireValid();
+                        stream.accept(text);
+                    });
+            lease.requireValid();
             stream.flush();
             if (!turnLeases.renew(admission.turnId(), userId, admission.runId(),
                     admission.runFence())) {
@@ -96,16 +102,20 @@ public class AgentTurnRunner {
             events.append(admission.turnId(), userId, admission.runId(), admission.runFence(),
                     "done", done);
         } catch (RuntimeException error) {
+            String failureCode = error instanceof ReActDecisionException decision
+                    ? decision.errorCode() : "AGENT_EXECUTION_FAILED";
+            String eventCode = error instanceof ReActDecisionException
+                    ? failureCode : "AI_UNAVAILABLE";
             // 异步执行不能把异常静默吞掉，否则前端只会看到通用“不可用”，运维也无法区分
-            // 是联网检索、模型响应格式还是事务提交失败。这里只记录异常类型与根因类型，
+            // 是联网检索、模型响应格式还是事务提交失败。这里只记录固定错误码和异常类型，
             // 不记录问题、回答、联网摘要、URL 或密钥，避免诊断日志变成第二份用户数据。
-            log.warn("Agent turn execution failed turnId={} exceptionType={} rootCauseType={} reason={}",
+            log.warn("Agent turn execution failed turnId={} exceptionType={} rootCauseType={} code={}",
                     admission.turnId(), error.getClass().getName(), rootCauseType(error),
-                    safeDiagnostic(error.getMessage()));
+                    failureCode);
             if (failures.fail(admission.turnId(), userId, admission.runId(), admission.runFence(),
-                    "AGENT_EXECUTION_FAILED")) {
+                    failureCode)) {
                 events.append(admission.turnId(), userId, admission.runId(), admission.runFence(),
-                        "error", Map.of("code", "AI_UNAVAILABLE", "retryable", true,
+                        "error", Map.of("code", eventCode, "retryable", true,
                                 "partialRetained", false));
             }
         } finally {
@@ -125,14 +135,5 @@ public class AgentTurnRunner {
             current = current.getCause();
         }
         return current.getClass().getName();
-    }
-
-    private static String safeDiagnostic(String value) {
-        if (value == null || value.isBlank()) {
-            return "unspecified";
-        }
-        // 异常消息来自后端预定义校验文本；仍截断并清理换行，禁止意外把供应商正文带入日志。
-        String normalized = value.replaceAll("[\\r\\n]+", " ").strip();
-        return normalized.substring(0, Math.min(normalized.length(), 160));
     }
 }

@@ -47,6 +47,22 @@ public class TemporaryTurnLifecycleService {
                 mapper.renewGuardLease(userId, runId, fence, LEASE_SECONDS) == 1));
     }
 
+    /**
+     * 高频检查不续租、不锁行；MySQL 判定运行权，Redis 判定临时内容是否仍可用。
+     * find 会重新校验父 session，不能因为 guard 有效就越过用户删除或 24 小时绝对过期。
+     */
+    public boolean isRunning(TemporaryTurnAdmission admission, long userId) {
+        if (!leases.isCurrent(userId, admission.runId(), admission.runFence())
+                || !mapper.isTemporaryRunCurrent(userId, admission.runId(), admission.runFence())) {
+            return false;
+        }
+        TemporaryTurnRecord turn = turns.find(admission.turnId(), userId);
+        return turn != null && "RUNNING".equals(turn.state())
+                && admission.runId().equals(turn.runId())
+                && admission.runFence() == turn.runFence()
+                && admission.sessionId().equals(turn.sessionId());
+    }
+
     /** 持有 guard 行锁时完成 Redis turn，然后释放 guard；两者之间不会被新 run 插入。 */
     public boolean complete(TemporaryTurnAdmission admission, long userId,
                             GroundedAgentAnswer answer) {

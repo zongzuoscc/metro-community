@@ -60,6 +60,11 @@ public class AgentRunLeaseStore {
         return execute(RENEW, userId, runId, fence, Long.toString(LEASE.toMillis()));
     }
 
+    /** 只检查精确运行编号及栅栏，不延长 TTL；过期键由 Redis 按不存在处理。 */
+    public boolean isCurrent(long userId, UUID runId, long fence) {
+        return (runId + ":" + fence).equals(redis.opsForValue().get(key(userId)));
+    }
+
     public boolean release(long userId, UUID runId, long fence) {
         return execute(RELEASE, userId, runId, fence, "0");
     }

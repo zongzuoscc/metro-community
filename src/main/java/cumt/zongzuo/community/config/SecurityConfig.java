@@ -44,9 +44,21 @@ public class SecurityConfig {
     }
 
     @Bean
-    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain filterChain(HttpSecurity http,
+            org.springframework.beans.factory.ObjectProvider<cumt.zongzuo.community.ai.agent.web.AgentTurnCapacityFilter> capacityFilters) throws Exception {
         http
                 .csrf(csrf -> csrf.disable())
+                .headers(headers -> headers.withObjectPostProcessor(
+                        new org.springframework.security.config.ObjectPostProcessor<org.springframework.security.web.header.HeaderWriterFilter>() {
+                            @Override
+                            public <O extends org.springframework.security.web.header.HeaderWriterFilter> O postProcess(O filter) {
+                                // SSE 子线程可能在原请求过滤链返回之前 flush。
+                                // 提前写完安全响应头，避免延迟写头与子线程提交响应并发修改 Tomcat MimeHeaders。
+                                // 保留全部安全头，不通过禁用 HeaderWriterFilter 来规避竞争。
+                                filter.setShouldWriteHeadersEagerly(true);
+                                return filter;
+                            }
+                        }))
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .exceptionHandling(exceptions -> exceptions
@@ -88,6 +100,11 @@ public class SecurityConfig {
                         .anyRequest().denyAll())
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
 
+        var capacityFilter = capacityFilters.getIfAvailable();
+        if (capacityFilter != null) {
+            // CORS 与防火墙仍先执行；过载请求在 JWT 用户查询和业务事务之前结束。
+            http.addFilterBefore(capacityFilter, JwtAuthenticationFilter.class);
+        }
         return http.build();
     }
 

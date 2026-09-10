@@ -189,7 +189,14 @@ metro:
       per-day: 100
       quota-window: PT1M
       timeout: PT45S
-      bulkhead: 8
+      bulkhead: ${METRO_AI_AGENT_BULKHEAD:32}
+    # 整轮并发默认跟随模型层；准入容量=执行并发+排队上限，在 JWT 查库之前预留。
+    # 增大并发前必须核对供应商配额和本机资源，排队不是免费的吞吐能力。
+    turn-runtime:
+      workers: ${METRO_AI_TURN_WORKERS:0}
+      queue-capacity: ${METRO_AI_TURN_QUEUE_CAPACITY:64}
+      sse-concurrency: ${METRO_AI_SSE_CONCURRENCY:256}
+      sse-timeout: ${METRO_AI_SSE_TIMEOUT:PT3M}
     context:
       # 业务安全上限，不是固定输入目标；实际仍与已确认的模型容量取较小值。
       working-window-tokens: ${METRO_AI_CONTEXT_WORKING_WINDOW_TOKENS:262144}

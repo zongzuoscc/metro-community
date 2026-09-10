@@ -60,14 +60,16 @@ public class AgentTurnEventStore {
     private final AgentTurnMapper mapper;
     private final TemporaryTurnStore temporaryTurns;
     private final ObjectMapper objectMapper;
+    private final AgentTurnEventSignals signals;
 
     public AgentTurnEventStore(StringRedisTemplate redis, AgentTurnMapper mapper,
                                TemporaryTurnStore temporaryTurns,
-                               ObjectMapper objectMapper) {
+                               ObjectMapper objectMapper, AgentTurnEventSignals signals) {
         this.redis = redis;
         this.mapper = mapper;
         this.temporaryTurns = temporaryTurns;
         this.objectMapper = objectMapper;
+        this.signals = signals;
     }
 
     /**
@@ -105,6 +107,7 @@ public class AgentTurnEventStore {
                     Integer.toString(MAX_EVENTS), values.get("schemaVersion"), values.get("turnId"),
                     values.get("type"), values.get("occurredAt"), values.get("payload"));
             if (id == null) throw AiApiException.temporarySessionExpired();
+            notifyReaders(turnId);
             return id;
         }
         RecordId id = redis.opsForStream().add(key, values,
@@ -116,7 +119,46 @@ public class AgentTurnEventStore {
         if (temporaryExpiry == null) {
             redis.expire(key, TTL);
         }
+        notifyReaders(turnId);
         return id.getValue();
+    }
+
+    /** 先存事件再通知；通知失败不回滚已写入的事件，由读端低频补查恢复。 */
+    private void notifyReaders(long turnId) {
+        signals.signal(turnId);
+        try {
+            redis.convertAndSend(AgentTurnEventSignals.CHANNEL, Long.toString(turnId));
+        } catch (RuntimeException ignored) {
+            // Pub/Sub 不承担可靠投递，不能因为一次唤醒失败把已生成的答案标为失败。
+        }
+    }
+
+    /**
+     * 建连时验证不可变的 turn 所有者，得到仅供该连接使用的读句柄。
+     * 持久 turn 的 user_id 不会转移，不必每个正文片段都重复查 MySQL；
+     * 临时会话可主动删除且绝对过期，所以每次读之前仍检查 Redis 父会话。
+     */
+    public ReplayReader openReplay(long turnId, long userId) {
+        if (!exists(turnId, userId)) throw AiApiException.resourceNotFound();
+        return new ReplayReader(turnId, userId);
+    }
+
+    public final class ReplayReader {
+        private final long turnId;
+        private final long userId;
+        private ReplayReader(long turnId, long userId) {
+            this.turnId = turnId;
+            this.userId = userId;
+        }
+        public void validateTemporarySession() {
+            if (turnId < 0 && !exists(turnId, userId)) throw AiApiException.resourceNotFound();
+        }
+        public List<AgentTurnEvent> read(String after, int limit) {
+            validateTemporarySession();
+            return readStream(turnId, after, limit);
+        }
+        public AgentTurnEventSignals.Subscription subscribe() { return signals.subscribe(turnId); }
+        public boolean isTerminal() { return AgentTurnEventStore.this.isTerminal(turnId, userId); }
     }
 
     /** 从指定 Stream ID 之后重放有界事件，先校验 turn 属于当前用户。 */
@@ -124,6 +166,10 @@ public class AgentTurnEventStore {
         if (!exists(turnId, userId)) {
             throw AiApiException.resourceNotFound();
         }
+        return readStream(turnId, after, limit);
+    }
+
+    private List<AgentTurnEvent> readStream(long turnId, String after, int limit) {
         String key = key(turnId);
         List<MapRecord<String, Object, Object>> first = redis.opsForStream().range(key,
                 Range.unbounded(), Limit.limit().count(1));
