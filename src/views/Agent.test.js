@@ -342,7 +342,11 @@ describe('Agent 临时对话页面', () => {
     expect(mocks.createAgentTurn).not.toHaveBeenCalled()
   })
 
-  it('restores a failed temporary turn with a terminal explanation instead of a loading animation', async () => {
+  it.each([
+    ['AGENT_PROVIDER_FAILED', '这次回答没有完成，请稍后重试。'],
+    ['REACT_FORBIDDEN_TOOL', '模型选择的工具超出当前权限'],
+    ['REACT_RESPONSE_TRUNCATED', '模型决策响应被截断'],
+  ])('失败快照 %s 恢复安全错误提示且停止加载', async (errorCode, expected) => {
     mocks.getTemporarySession.mockResolvedValue({
       sessionId: 'session-1',
       createdAt: '2026-08-12T10:00:00Z',
@@ -355,7 +359,7 @@ describe('Agent 临时对话页面', () => {
       userMessage: '这次为什么失败？',
       finalMessage: null,
       partialMessage: null,
-      error: 'AGENT_PROVIDER_FAILED',
+      error: errorCode,
     })
     sessionStorage.setItem('metro.agent.temporary.session', 'session-1')
     sessionStorage.setItem('metro.agent.temporary.turn', '-8')
@@ -364,7 +368,7 @@ describe('Agent 临时对话页面', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('这次为什么失败？')
-    expect(wrapper.text()).toContain('这次回答没有完成，请稍后重试。')
+    expect(wrapper.text()).toContain(expected)
     expect(wrapper.find('.answer-progress').exists()).toBe(false)
   })
 

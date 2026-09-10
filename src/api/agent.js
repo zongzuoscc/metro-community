@@ -142,6 +142,13 @@ export async function streamAgentTurnEvents(turnId, { after, onEvent, signal } =
   if (!response.ok || !response.body) {
     const error = new Error(`Agent 事件流连接失败（${response.status}）`)
     error.status = response.status
+    // SSE 尚未建立时服务端仍可返回 ProblemDetail；只传错误码，不携带 detail 等上游原文。
+    if (response.headers?.get('content-type')?.includes('json')) {
+      try {
+        const problem = await response.json()
+        if (typeof problem?.code === 'string' && /^[A-Z_]{1,80}$/.test(problem.code)) error.code = problem.code
+      } catch { /* 网关可能返回不完整 JSON，仍按原连接失败恢复，不掩盖 HTTP 状态。 */ }
+    }
     throw error
   }
 

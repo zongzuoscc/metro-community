@@ -245,6 +245,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import { agentErrorMessage } from '../utils/agentErrors'
 import AgentMemoryCenter from './AgentMemoryCenter.vue'
 import {
   cancelAgentTurn,
@@ -643,7 +644,7 @@ async function sendChat(questionOverride = null) {
         }
         if (event.type === 'error') {
           terminalReceived = true
-          ensureStreamingMessage().streamStatus = '回答未完成校验或保存，请勿将部分内容视为最终结论'
+          ensureStreamingMessage().streamStatus = `${agentErrorMessage(payload)} 回答未完成校验或保存，请勿将部分内容视为最终结论。`
           retryQuestion.value = question
         }
       },
@@ -654,6 +655,7 @@ async function sendChat(questionOverride = null) {
         await streamAgentTurnEvents(admission.turnId, { ...options, after: lastEventId || undefined })
       } catch (error) {
         if (error?.name === 'AbortError' || requestEpoch !== authenticationEpoch) throw error
+        if (error?.code === 'AGENT_STREAM_CAPACITY_EXHAUSTED') taskStatus.value = agentErrorMessage(error)
       }
       if (terminalReceived || requestEpoch !== authenticationEpoch) break
       const snapshot = await getAgentTurn(admission.turnId)
@@ -668,7 +670,7 @@ async function sendChat(questionOverride = null) {
           options.onEvent({ type: 'done', data: { payload: { ...snapshot, sourcesUnavailable: true } } })
         }
       } else if (snapshot?.state === 'CANCELLED' || snapshot?.state === 'FAILED') {
-        options.onEvent({ type: snapshot.state === 'CANCELLED' ? 'cancelled' : 'error', data: { payload: {} } })
+        options.onEvent({ type: snapshot.state === 'CANCELLED' ? 'cancelled' : 'error', data: { payload: snapshot } })
       } else if (attempt < 2) {
         await new Promise(resolve => setTimeout(resolve, 300 * (attempt + 1)))
       }
@@ -683,7 +685,7 @@ async function sendChat(questionOverride = null) {
       const partial = messages.value.find(message => message.id === `assistant-${activeTurnId.value}`)
       if (partial) partial.streamStatus = '回答未完成校验或保存，可复制当前内容'
       retryQuestion.value = question
-      ElMessage.error('消息发送失败，可重试上一问')
+      ElMessage.error(agentErrorMessage(error))
     }
   } finally {
     if (requestEpoch === authenticationEpoch) {

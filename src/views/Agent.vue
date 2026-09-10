@@ -114,6 +114,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import { agentErrorMessage } from '../utils/agentErrors'
 import {
   cancelAgentTurn,
   createAgentTurn,
@@ -308,8 +309,8 @@ function applyStreamEvent(event) {
     ensureAssistantMessage().content ||= '回答已停止。'
   } else if (event.type === 'error') {
     turnState.value = 'FAILED'
-    ensureAssistantMessage().content ||= '这次回答没有完成，请稍后重试。'
-    ensureAssistantMessage().streamStatus = '回答未完成校验或保存，请勿将部分内容视为最终结论'
+    ensureAssistantMessage().content ||= agentErrorMessage(payload)
+    ensureAssistantMessage().streamStatus = `${agentErrorMessage(payload)} 回答未完成校验或保存，请勿将部分内容视为最终结论。`
   }
   syncPersistentTurnMetadata()
 }
@@ -337,6 +338,7 @@ async function connectEventStream(turnId) {
   while (!recoveryStopped && activeTurnId.value === turnId && turnRunning.value) {
     await waitForRecovery(recoveryAttempt)
     if (recoveryStopped || activeTurnId.value !== turnId || !turnRunning.value) return
+    let connectionErrorCode = null
     try {
       await streamAgentTurnEvents(turnId, {
         after: lastEventId.value,
@@ -345,10 +347,15 @@ async function connectEventStream(turnId) {
       })
     } catch (error) {
       if (error?.name === 'AbortError') return
+      connectionErrorCode = error?.code
     }
     if (recoveryStopped || activeTurnId.value !== turnId || !turnRunning.value) return
     const recovered = await recoverTurn(turnId)
     if (!recovered || !turnRunning.value) return
+    // 连接名额不足不意味着生成失败；保持原任务，用快照和游标恢复，不再创建收费请求。
+    if (connectionErrorCode === 'AGENT_STREAM_CAPACITY_EXHAUSTED') {
+      ensureAssistantMessage().streamStatus = agentErrorMessage(connectionErrorCode)
+    }
     recoveryAttempt += 1
   }
 }
@@ -367,7 +374,7 @@ function applySnapshot(snapshot) {
     const terminalFallback = snapshot.state === 'CANCELLED'
       ? '回答已停止。'
       : snapshot.state === 'FAILED'
-        ? '这次回答没有完成，请稍后重试。'
+        ? agentErrorMessage(snapshot)
         : ''
     restored.push({
       id: `assistant-${snapshot.turnId}`,
@@ -375,7 +382,8 @@ function applySnapshot(snapshot) {
       content: snapshot.finalMessage || snapshot.partialMessage || existingPartial?.content || terminalFallback,
       streamStatus: snapshot.state === 'SUCCEEDED' ? ''
         : snapshot.state === 'RUNNING' ? '生成中，尚未保存；引用待校验'
-          : existingPartial?.content ? '回答未完成校验或保存，请勿将部分内容视为最终结论' : '',
+          : snapshot.state === 'FAILED' ? `${agentErrorMessage(snapshot)} 部分内容未确认保存。`
+            : existingPartial?.content ? '回答未完成校验或保存，请勿将部分内容视为最终结论' : '',
     })
   }
   messages.value = restored
@@ -439,9 +447,9 @@ async function sendMessage() {
     persistTemporaryMetadata()
     syncPersistentTurnMetadata()
     await connectEventStream(admission.turnId)
-  } catch {
+  } catch (error) {
     turnState.value = 'FAILED'
-    ensureAssistantMessage().content = '消息发送失败，请检查网络后重试。'
+    ensureAssistantMessage().content = agentErrorMessage(error)
   } finally {
     turnStarting.value = false
   }

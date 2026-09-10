@@ -38,6 +38,17 @@ const agentRaw = Object.freeze({
 })
 
 describe('Agent 前端接口契约', () => {
+  it('SSE 容量不足保留稳定错误码，不传播服务端异常原文', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      code: 'AGENT_STREAM_CAPACITY_EXHAUSTED', detail: 'secret-provider-body',
+    }), { status: 503, headers: { 'Content-Type': 'application/problem+json' } })))
+    try {
+      await expect(streamAgentTurnEvents(1)).rejects.toMatchObject({
+        status: 503, code: 'AGENT_STREAM_CAPACITY_EXHAUSTED',
+      })
+    } finally { vi.unstubAllGlobals() }
+  })
+
   beforeEach(() => {
     get.mockReset()
     post.mockReset()
