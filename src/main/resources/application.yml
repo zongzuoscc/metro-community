@@ -1,6 +1,14 @@
 server:
   port: ${SERVER_PORT:8080}
 
+# 框架异常日志可能打印完整 Prompt；只保留业务层安全错误码与计数，不记录私有上下文或思维内容。
+logging:
+  level:
+    org.springframework.ai.openai.OpenAiChatModel: "OFF"
+    com.alibaba.cloud.ai.graph.agent: "OFF"
+    # 官方 HyDE 的调试日志包含生成文档，可能源于私人上下文；仅保留业务侧无正文指标。
+    com.alibaba.cloud.ai.rag.preretrieval.transformation.HyDeTransformer: "OFF"
+
 spring:
   config:
     # 本地开发可把平台密钥放在仓库根目录的 .env；该文件已被 Git 忽略。

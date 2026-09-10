@@ -10,8 +10,10 @@ public final class DefaultUserAiChatRouter implements UserAiChatRouter {
     private final UserAiProviderService settings;
     private final UserOpenAiCompatibleGateway userGateway;
 
-    public DefaultUserAiChatRouter(AiChatGateway platformGateway, UserAiProviderService settings,
-                                   UserOpenAiCompatibleGateway userGateway) {
+    public DefaultUserAiChatRouter(
+            AiChatGateway platformGateway,
+            UserAiProviderService settings,
+            UserOpenAiCompatibleGateway userGateway) {
         this.platformGateway = platformGateway;
         this.settings = settings;
         this.userGateway = userGateway;
@@ -20,32 +22,73 @@ public final class DefaultUserAiChatRouter implements UserAiChatRouter {
     @Override
     public UserAiRoutedResult generate(long userId, AiChatCommand command) {
         return settings.findEnabledRecord(userId)
-                .map(record -> new UserAiRoutedResult(userGateway.generate(record,
-                        settings.decryptApiKey(record), command), UserAiFundingSource.USER))
-                .orElseGet(() -> new UserAiRoutedResult(platformGateway.generate(command),
-                        UserAiFundingSource.PLATFORM));
+                .map(
+                        record ->
+                                new UserAiRoutedResult(
+                                        userGateway.generate(
+                                                record, settings.decryptApiKey(record), command),
+                                        UserAiFundingSource.USER))
+                .orElseGet(
+                        () ->
+                                new UserAiRoutedResult(
+                                        platformGateway.generate(command),
+                                        UserAiFundingSource.PLATFORM));
     }
 
     @Override
     public PreparedUserAiChat prepare(long userId, String platformModel) {
-        return settings.findEnabledRecord(userId).map(record -> {
-            // Mapper 对象可变，复制调用所需字段，避免检索期间切换模型后预算与实际模型不一致。
-            UserAiProviderRecord frozen = new UserAiProviderRecord();
-            frozen.setUserId(record.getUserId());
-            frozen.setProvider(record.getProvider());
-            frozen.setBaseUrl(record.getBaseUrl());
-            frozen.setModel(record.getModel());
-            frozen.setEncryptedApiKey(record.getEncryptedApiKey());
-            frozen.setEnabled(record.isEnabled());
-            return new PreparedUserAiChat(frozen.getModel(), UserAiFundingSource.USER,
-                    command -> new UserAiRoutedResult(userGateway.generate(frozen,
-                            settings.decryptApiKey(frozen), command), UserAiFundingSource.USER), () -> {},
-                    (command, observer) -> new UserAiRoutedResult(userGateway.stream(frozen,
-                            settings.decryptApiKey(frozen), command, observer), UserAiFundingSource.USER));
-        }).orElseGet(() -> new PreparedUserAiChat(platformModel, UserAiFundingSource.PLATFORM,
-                command -> new UserAiRoutedResult(platformGateway.generate(command),
-                        UserAiFundingSource.PLATFORM), () -> {},
-                (command, observer) -> new UserAiRoutedResult(platformGateway.stream(command, observer),
-                        UserAiFundingSource.PLATFORM)));
+        return settings.findEnabledRecord(userId)
+                .map(
+                        record -> {
+                            // Mapper 对象可变，复制调用所需字段，避免检索期间切换模型后预算与实际模型不一致。
+                            UserAiProviderRecord frozen = new UserAiProviderRecord();
+                            frozen.setUserId(record.getUserId());
+                            frozen.setProvider(record.getProvider());
+                            frozen.setBaseUrl(record.getBaseUrl());
+                            frozen.setModel(record.getModel());
+                            frozen.setEncryptedApiKey(record.getEncryptedApiKey());
+                            frozen.setEnabled(record.isEnabled());
+                            return new PreparedUserAiChat(
+                                    frozen.getModel(),
+                                    UserAiFundingSource.USER,
+                                    command ->
+                                            new UserAiRoutedResult(
+                                                    userGateway.generate(
+                                                            frozen,
+                                                            settings.decryptApiKey(frozen),
+                                                            command),
+                                                    UserAiFundingSource.USER),
+                                    () -> {},
+                                    (command, observer) ->
+                                            new UserAiRoutedResult(
+                                                    userGateway.stream(
+                                                            frozen,
+                                                            settings.decryptApiKey(frozen),
+                                                            command,
+                                                            observer),
+                                                    UserAiFundingSource.USER),
+                                    userGateway.model(
+                                            frozen, () -> settings.decryptApiKey(frozen)));
+                        })
+                .orElseGet(
+                        () ->
+                                new PreparedUserAiChat(
+                                        platformModel,
+                                        UserAiFundingSource.PLATFORM,
+                                        command ->
+                                                new UserAiRoutedResult(
+                                                        platformGateway.generate(command),
+                                                        UserAiFundingSource.PLATFORM),
+                                        () -> {},
+                                        (command, observer) ->
+                                                new UserAiRoutedResult(
+                                                        platformGateway.stream(command, observer),
+                                                        UserAiFundingSource.PLATFORM),
+                                        platformGateway
+                                                        instanceof
+                                                        org.springframework.ai.chat.model.ChatModel
+                                                                        nativeModel
+                                                ? nativeModel
+                                                : null));
     }
 }

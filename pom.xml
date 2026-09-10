@@ -46,7 +46,52 @@
 	</dependencyManagement>
 
 	<dependencies>
-		<!-- Alibaba Graph 管理回答前的状态流转；模型传输仍复用经过 SSRF 和预算校验的项目网关。 -->
+		<!-- 仅使用官方 HyDeTransformer；排除 DashScope/向量库/ES 自动配置与旧版 RAG。 -->
+		<dependency>
+			<groupId>com.alibaba.cloud.ai</groupId>
+			<artifactId>spring-ai-alibaba-rag</artifactId>
+			<version>${spring-ai-alibaba.version}</version>
+			<exclusions>
+				<exclusion>
+					<groupId>org.springframework.boot</groupId>
+					<artifactId>spring-boot-starter</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>com.alibaba.cloud.ai</groupId>
+					<artifactId>spring-ai-alibaba-starter-dashscope</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>org.springframework.ai</groupId>
+					<artifactId>spring-ai-rag</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>org.springframework.ai</groupId>
+					<artifactId>spring-ai-starter-vector-store-elasticsearch</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>co.elastic.clients</groupId>
+					<artifactId>elasticsearch-java</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>org.elasticsearch.client</groupId>
+					<artifactId>elasticsearch-rest-client</artifactId>
+				</exclusion>
+			</exclusions>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.ai</groupId>
+			<artifactId>spring-ai-rag</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>com.alibaba.cloud.ai</groupId>
+			<artifactId>spring-ai-alibaba-agent-framework</artifactId>
+			<version>${spring-ai-alibaba.version}</version>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.ai</groupId>
+			<artifactId>spring-ai-openai</artifactId>
+		</dependency>
+		<!-- 原生 ReactAgent 和上下文 Graph 共用同版本；模型协议由标准 Spring AI 管理。 -->
 		<dependency>
 			<groupId>com.alibaba.cloud.ai</groupId>
 			<artifactId>spring-ai-alibaba-graph-core</artifactId>

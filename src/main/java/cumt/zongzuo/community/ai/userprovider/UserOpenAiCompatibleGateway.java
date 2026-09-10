@@ -1,21 +1,19 @@
 package cumt.zongzuo.community.ai.userprovider;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ArrayNode;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import cumt.zongzuo.community.ai.provider.AiChatCommand;
 import cumt.zongzuo.community.ai.provider.AiChatResult;
-import cumt.zongzuo.community.ai.provider.AiProviderErrorReason;
-import cumt.zongzuo.community.ai.provider.AiProviderException;
-import cumt.zongzuo.community.ai.provider.AiResponseMode;
 import cumt.zongzuo.community.ai.provider.AiStreamObserver;
-import cumt.zongzuo.community.ai.provider.OpenAiChatStream;
-import okhttp3.MediaType;
+import cumt.zongzuo.community.ai.provider.SpringAiHttpTransport;
+import cumt.zongzuo.community.ai.provider.SpringAiModels;
+
 import okhttp3.OkHttpClient;
-import okhttp3.Request;
-import okhttp3.RequestBody;
-import okhttp3.Response;
+
+import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.http.client.reactive.ClientHttpConnector;
+
+import reactor.core.publisher.Flux;
 
 import java.net.InetAddress;
 import java.net.Proxy;
@@ -23,173 +21,136 @@ import java.net.URI;
 import java.net.UnknownHostException;
 import java.time.Duration;
 import java.util.List;
-import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 
-/**
- * 调用用户配置的 OpenAI 兼容 Chat Completions 接口。
- *
- * <p>客户端禁止重定向，端点在每次调用前重新解析和校验，响应只提取标准字段。
- * 请求头与 API Key 不进入日志、异常信息或返回对象。</p>
- */
+/** BYOK 每次调用重验端点并固定 DNS，协议和流式解码由 OpenAiChatModel 负责。 */
 public final class UserOpenAiCompatibleGateway {
-
     public interface HttpTransport {
-        HttpResponse post(URI uri, List<InetAddress> approvedAddresses,
-                          Map<String, String> headers, String body) throws Exception;
+        HttpResponse post(
+                URI uri, List<InetAddress> addresses, Map<String, String> headers, String body)
+                throws Exception;
 
-        default AiChatResult stream(URI uri, List<InetAddress> approvedAddresses,
-                                    Map<String, String> headers, String body, String provider,
-                                    String model, AiStreamObserver observer) throws Exception {
-            throw new UnsupportedOperationException("Streaming transport is unavailable");
+        default ClientHttpConnector connector(URI uri, List<InetAddress> addresses) {
+            return null;
         }
     }
 
-    public record HttpResponse(int status, String body) { }
+    public record HttpResponse(int status, String body) {}
 
     private final AiProviderEndpointPolicy endpoints;
     private final HttpTransport transport;
-    private final ObjectMapper mapper = new ObjectMapper();
 
-    public UserOpenAiCompatibleGateway(AiProviderEndpointPolicy endpoints, HttpTransport transport) {
+    public UserOpenAiCompatibleGateway(
+            AiProviderEndpointPolicy endpoints, HttpTransport transport) {
         this.endpoints = endpoints;
         this.transport = transport;
     }
 
-    public AiChatResult generate(UserAiProviderRecord setting, String apiKey,
-                                 AiChatCommand command) {
-        return request(setting, apiKey, command, null);
+    private ChatModel resolved(UserAiProviderRecord setting, String key) {
+        var validated = endpoints.validateAndResolve(setting.getBaseUrl());
+        var uri = URI.create(validated.normalizedBaseUrl() + "/chat/completions");
+        return SpringAiModels.chat(
+                SpringAiModels.api(
+                        validated.normalizedBaseUrl(),
+                        key,
+                        SpringAiHttpTransport.requests(
+                                (url, headers, body) -> {
+                                    var response =
+                                            transport.post(
+                                                    url,
+                                                    validated.approvedAddresses(),
+                                                    headers,
+                                                    body);
+                                    return new SpringAiHttpTransport.Reply(
+                                            response.status(), response.body());
+                                }),
+                        transport.connector(uri, validated.approvedAddresses())),
+                setting.getModel());
     }
 
-    /** BYOK 流式请求仍先重验公网地址，不因启用流式而绕开 SSRF 防线。 */
-    public AiChatResult stream(UserAiProviderRecord setting, String apiKey,
-                               AiChatCommand command, AiStreamObserver observer) {
-        try {
-            return request(setting, apiKey, command, java.util.Objects.requireNonNull(observer));
-        } catch (java.util.concurrent.CancellationException error) { throw error; }
-        catch (AiProviderException error) { throw error; }
-    }
-
-    private AiChatResult request(UserAiProviderRecord setting, String apiKey,
-                                 AiChatCommand command, AiStreamObserver observer) {
-        AiProviderEndpointPolicy.ValidatedEndpoint validated =
-                endpoints.validateAndResolve(setting.getBaseUrl());
-        URI endpoint = URI.create(validated.normalizedBaseUrl() + "/chat/completions");
-        ObjectNode request = mapper.createObjectNode().put("model", setting.getModel());
-        ArrayNode messages = request.putArray("messages");
-        command.messages().forEach(message -> messages.addObject()
-                .put("role", message.role().name().toLowerCase(Locale.ROOT))
-                .put("content", message.text()));
-        if (command.responseMode() == AiResponseMode.JSON_OBJECT) {
-            request.putObject("response_format").put("type", "json_object");
-        }
-        if (command.maxOutputTokens() != null) {
-            request.put("max_tokens", command.maxOutputTokens());
-        }
-        Map<String, String> headers = new LinkedHashMap<>();
-        headers.put("Authorization", "Bearer " + apiKey);
-        headers.put("Content-Type", "application/json");
-        try {
-            if (observer != null) {
-                request.put("stream", true);
-                return transport.stream(endpoint, validated.approvedAddresses(), headers,
-                        mapper.writeValueAsString(request), setting.getProvider().toLowerCase(Locale.ROOT),
-                        setting.getModel(), observer);
-            }
-            HttpResponse response = transport.post(endpoint, validated.approvedAddresses(), headers,
-                    mapper.writeValueAsString(request));
-            if (response.status() < 200 || response.status() >= 300) {
-                throw providerStatus(response.status());
-            }
-            JsonNode root = mapper.readTree(response.body());
-            JsonNode choice = root.path("choices").path(0);
-            String text = choice.path("message").path("content").asText("");
-            String finishReason = choice.path("finish_reason").asText("").strip().toLowerCase(Locale.ROOT);
-            String actualModel = root.path("model").asText(setting.getModel());
-            if (text.isBlank() || finishReason.isBlank() || !setting.getModel().equals(actualModel)) {
-                throw new AiProviderException(AiProviderErrorReason.MALFORMED_RESPONSE,
-                        "AI provider returned an incompatible response");
-            }
-            long input = nonNegative(root.path("usage").path("prompt_tokens").asLong(0));
-            long output = nonNegative(root.path("usage").path("completion_tokens").asLong(0));
-            return new AiChatResult(text, finishReason, input, output,
-                    setting.getProvider().toLowerCase(Locale.ROOT), actualModel);
-        }
-        catch (java.util.concurrent.CancellationException error) {
-            throw error;
-        }
-        catch (AiProviderException error) {
-            throw error;
-        }
-        catch (Exception error) {
-            throw new AiProviderException(AiProviderErrorReason.CONNECTION_FAILURE,
-                    "User AI provider request failed", error);
-        }
-    }
-
-    /**
-     * 创建固定单次 DNS 结果的 HTTPS 传输。
-     *
-     * <p>URL 仍保留用户配置的原域名，因此 TLS SNI、证书主机名与 Host 头都按原域名校验；
-     * 只有底层建连地址替换为安全策略已经检查过的公网 IP。禁用系统代理和重定向，避免请求
-     * 绕过这一地址约束。这样 DNS 重绑定无法把第二次解析切到本机、内网或云元数据地址。</p>
-     */
-    public static HttpTransport pinnedTransport(Duration connectTimeout, Duration requestTimeout) {
-        OkHttpClient baseClient = new OkHttpClient.Builder()
-                .connectTimeout(connectTimeout)
-                .callTimeout(requestTimeout)
-                .readTimeout(requestTimeout)
-                .followRedirects(false)
-                .followSslRedirects(false)
-                .proxy(Proxy.NO_PROXY)
-                .build();
-        MediaType json = MediaType.get("application/json; charset=utf-8");
-        return new HttpTransport() {
-        private OkHttpClient client(URI uri, List<InetAddress> approvedAddresses) throws UnknownHostException {
-            if (approvedAddresses == null || approvedAddresses.isEmpty()) {
-                throw new UnknownHostException("No approved address is available");
-            }
-            String approvedHost = uri.getHost();
-            return baseClient.newBuilder().dns(hostname -> {
-                if (!hostname.equalsIgnoreCase(approvedHost)) {
-                    throw new UnknownHostException("Unexpected DNS lookup");
+    public ChatModel model(UserAiProviderRecord setting, java.util.function.Supplier<String> key) {
+        return new ChatModel() {
+            public ChatResponse call(Prompt prompt) {
+                try {
+                    return SpringAiModels.validate(
+                            resolved(setting, key.get()).call(prompt), setting.getModel(), true);
+                } catch (RuntimeException error) {
+                    throw SpringAiModels.failure(error);
                 }
-                return List.copyOf(approvedAddresses);
-            }).build();
-        }
-        @Override public AiChatResult stream(URI uri, List<InetAddress> approvedAddresses,
-                                             Map<String, String> headers, String body, String provider,
-                                             String model, AiStreamObserver observer) throws Exception {
-            return OpenAiChatStream.read(client(uri, approvedAddresses), uri, headers, body, provider, model, observer);
-        }
-        @Override public HttpResponse post(URI uri, List<InetAddress> approvedAddresses,
-                                           Map<String, String> headers, String body) throws Exception {
-            OkHttpClient requestClient = client(uri, approvedAddresses);
-            Request.Builder request = new Request.Builder().url(uri.toString())
-                    .post(RequestBody.create(body, json));
-            headers.forEach(request::header);
-            try (Response response = requestClient.newCall(request.build()).execute()) {
-                String responseBody = response.body() == null ? "" : response.body().string();
-                return new HttpResponse(response.code(), responseBody);
             }
-        }
+
+            public Flux<ChatResponse> stream(Prompt prompt) {
+                return Flux.defer(() -> resolved(setting, key.get()).stream(prompt))
+                        .onErrorMap(SpringAiModels::failure);
+            }
         };
     }
 
-    private static AiProviderException providerStatus(int status) {
-        AiProviderErrorReason reason = status == 429 ? AiProviderErrorReason.RATE_LIMITED
-                : status >= 500 ? AiProviderErrorReason.RETRYABLE_PROVIDER_FAILURE
-                : AiProviderErrorReason.NON_RETRYABLE_PROVIDER_FAILURE;
-        return new AiProviderException(reason, status,
-                "User AI provider returned HTTP status " + status, null);
+    public AiChatResult generate(UserAiProviderRecord setting, String key, AiChatCommand command) {
+        return SpringAiModels.result(
+                model(setting, () -> key).call(SpringAiModels.prompt(command, 0)),
+                setting.getProvider().toLowerCase(Locale.ROOT),
+                setting.getModel(),
+                true);
     }
 
-    private static long nonNegative(long value) {
-        if (value < 0) {
-            throw new AiProviderException(AiProviderErrorReason.MALFORMED_RESPONSE,
-                    "AI provider returned a negative token count");
-        }
-        return value;
+    public AiChatResult stream(
+            UserAiProviderRecord setting,
+            String key,
+            AiChatCommand command,
+            AiStreamObserver observer) {
+        return SpringAiModels.stream(
+                model(setting, () -> key).stream(SpringAiModels.streamingPrompt(command, 0)),
+                setting.getProvider().toLowerCase(Locale.ROOT),
+                setting.getModel(),
+                true,
+                observer);
+    }
+
+    public static HttpTransport pinnedTransport(Duration connectTimeout, Duration requestTimeout) {
+        var base =
+                SpringAiHttpTransport.clientBuilder()
+                        .connectTimeout(connectTimeout)
+                        .callTimeout(requestTimeout)
+                        .readTimeout(requestTimeout)
+                        .followRedirects(false)
+                        .followSslRedirects(false)
+                        .proxy(Proxy.NO_PROXY)
+                        .build();
+        return new HttpTransport() {
+            private OkHttpClient client(URI uri, List<InetAddress> addresses) {
+                if (addresses == null || addresses.isEmpty())
+                    throw new IllegalArgumentException("No approved address");
+                List<InetAddress> frozen = List.copyOf(addresses);
+                // URL/Host/SNI 保留原域名；只有连接 IP 被替换，禁止重新解析与代理绕行。
+                return base.newBuilder()
+                        .dns(
+                                host -> {
+                                    if (!host.equalsIgnoreCase(uri.getHost()))
+                                        throw new UnknownHostException("Unexpected DNS lookup");
+                                    return frozen;
+                                })
+                        .build();
+            }
+
+            public HttpResponse post(
+                    URI uri, List<InetAddress> addresses, Map<String, String> headers, String body)
+                    throws Exception {
+                var response =
+                        SpringAiHttpTransport.post(client(uri, addresses), uri, headers, body);
+                return new HttpResponse(response.status(), response.body());
+            }
+
+            public ClientHttpConnector connector(URI uri, List<InetAddress> addresses) {
+                var client = client(uri, addresses);
+                return new SpringAiHttpTransport(
+                        url -> {
+                            if (!url.getHost().equalsIgnoreCase(uri.getHost()))
+                                throw new IllegalArgumentException("Unexpected host");
+                            return client;
+                        });
+            }
+        };
     }
 }

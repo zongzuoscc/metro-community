@@ -342,7 +342,7 @@ public class MetroAiProperties {
         }
     }
 
-    /** ReAct 决策预算；字段名沿用旧 planner 配置以保持部署兼容。 */
+    /** 原生 ReactAgent 预算；planner 前缀兼容已有部署，enabled 仅保留绑定，不再切回旧直查路径。 */
     public static class PlannerProperties {
         private boolean enabled = true;
         private int maxRounds = 6;

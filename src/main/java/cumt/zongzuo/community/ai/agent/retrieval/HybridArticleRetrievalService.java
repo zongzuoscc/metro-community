@@ -6,24 +6,21 @@ import cumt.zongzuo.community.ai.provider.EmbeddingGateway;
 import cumt.zongzuo.community.ai.provider.EmbeddingResult;
 import cumt.zongzuo.community.ai.runtime.AiCapabilityExecutor;
 import cumt.zongzuo.community.ai.runtime.AiInvocationContext;
-import cumt.zongzuo.community.article.projection.chunk.ArticleChunkSearchHit;
 import cumt.zongzuo.community.article.projection.chunk.ArticleChunkSearchRepository;
-import cumt.zongzuo.community.article.projection.vector.ArticleVectorHit;
 import cumt.zongzuo.community.article.projection.vector.ArticleVectorRepository;
+import org.springframework.ai.document.Document;
+import org.springframework.ai.rag.Query;
+import org.springframework.ai.rag.postretrieval.document.DocumentPostProcessor;
+import org.springframework.ai.rag.retrieval.join.DocumentJoiner;
+import org.springframework.ai.rag.retrieval.search.DocumentRetriever;
 
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 public class HybridArticleRetrievalService {
-
-    private static final int RRF_CONSTANT = 60;
 
     private final ArticleChunkSearchRepository lexical;
     private final ArticleVectorRepository vectors;
@@ -91,12 +88,15 @@ public class HybridArticleRetrievalService {
 
     public ArticleRetrievalResult retrieve(ArticleRetrievalQuery query) {
         checkActive(query);
-        List<ArticleChunkSearchHit> lexicalHits = List.of();
-        List<ArticleVectorHit> denseHits = List.of();
+        Query standardQuery = new Query(query.query());
+        List<Document> lexicalDocuments = List.of();
+        List<Document> denseDocuments = List.of();
         boolean lexicalAvailable = true;
         boolean denseAvailable = true;
         try {
-            lexicalHits = lexical.searchActive(query.query(), candidateLimit);
+            DocumentRetriever lexicalRetriever =
+                    new ArticleLexicalDocumentRetriever(lexical, candidateLimit);
+            lexicalDocuments = lexicalRetriever.retrieve(standardQuery);
             checkActive(query);
         } catch (RuntimeException unavailable) {
             requireFallbackAllowed(query, unavailable);
@@ -105,24 +105,13 @@ public class HybridArticleRetrievalService {
         try {
             checkActive(query);
             Instant embeddingDeadline = min(query.deadline(), clock.instant().plus(embeddingTimeout));
-            EmbeddingResult result = executor.execute(new AiInvocationContext(AiCapability.EMBEDDING,
-                            query.userId(), query.requestId() + ":embedding", query.query().length(),
-                            embeddingDeadline, false),
-                    () -> {
-                        checkActive(query);
-                        var embedded = embedding.embed(new EmbeddingCommand(AiCapability.EMBEDDING,
-                                List.of(query.query())));
-                        checkActive(query);
-                        return embedded;
-                    });
-            checkActive(query);
-            if (result.vectors().size() != 1 || !embeddingModel.equals(result.model())) {
-                throw new IllegalStateException("query embedding result is incompatible");
-            }
+            float[] vector = embed(query, query.query(), query.requestId() + ":embedding",
+                    embeddingDeadline, "query embedding result is incompatible");
             long parserGeneration = resolver.activeParserGeneration();
             checkActive(query);
-            denseHits = vectors.searchActive(vectorAlias, result.vectors().getFirst(), candidateLimit,
-                    embeddingModel, parserGeneration);
+            DocumentRetriever denseRetriever = new ArticleVectorDocumentRetriever(vectors,
+                    vectorAlias, embeddingModel, candidateLimit, vector, parserGeneration, "denseRank");
+            denseDocuments = denseRetriever.retrieve(standardQuery);
             checkActive(query);
         } catch (RuntimeException unavailable) {
             requireFallbackAllowed(query, unavailable);
@@ -130,50 +119,65 @@ public class HybridArticleRetrievalService {
         }
 
         checkActive(query);
-        List<Fused> firstFused = fuse(lexicalHits, denseHits, List.of());
-        List<RankedArticleChunk> firstRanked = resolveAndRank(firstFused);
+        DocumentJoiner joiner = new ReciprocalRankFusionDocumentJoiner();
+        DocumentPostProcessor postProcessor =
+                new PublishedArticleDocumentPostProcessor(resolver, contextLimit);
+        List<Document> firstJoined = joiner.join(Map.of(standardQuery,
+                List.of(lexicalDocuments, denseDocuments)));
+        List<Document> firstProcessed = postProcessor.process(standardQuery, firstJoined);
         checkActive(query);
-        List<ArticleVectorHit> hydeHits = List.of();
-        if (shouldUseHyde(query.query(), firstRanked.size())) {
+        List<Document> hydeDocuments = List.of();
+        if (shouldUseHyde(query.query(), firstProcessed.size())) {
             try {
                 String hypotheticalDocument = hyde.generate(query.userId(), query.requestId(),
                         query.query(), query.deadline(), query.route(), () -> checkActive(query));
                 checkActive(query);
                 Instant embeddingDeadline = min(query.deadline(),
                         clock.instant().plus(embeddingTimeout));
-                EmbeddingResult result = executor.execute(new AiInvocationContext(
-                                AiCapability.EMBEDDING, query.userId(),
-                                query.requestId() + ":hyde-embedding",
-                                hypotheticalDocument.length(), embeddingDeadline, false),
-                        () -> {
-                            checkActive(query);
-                            var embedded = embedding.embed(new EmbeddingCommand(AiCapability.EMBEDDING,
-                                    List.of(hypotheticalDocument)));
-                            checkActive(query);
-                            return embedded;
-                        });
-                checkActive(query);
-                if (result.vectors().size() != 1 || !embeddingModel.equals(result.model())) {
-                    throw new IllegalStateException("HyDE embedding result is incompatible");
-                }
+                float[] vector = embed(query, hypotheticalDocument,
+                        query.requestId() + ":hyde-embedding", embeddingDeadline,
+                        "HyDE embedding result is incompatible");
                 long parserGeneration = resolver.activeParserGeneration();
                 checkActive(query);
-                hydeHits = vectors.searchActive(vectorAlias, result.vectors().getFirst(),
-                        candidateLimit, embeddingModel, parserGeneration);
+                DocumentRetriever hydeRetriever = new ArticleVectorDocumentRetriever(vectors,
+                        vectorAlias, embeddingModel, candidateLimit, vector, parserGeneration,
+                        "hydeRank");
+                hydeDocuments = hydeRetriever.retrieve(new Query(hypotheticalDocument));
                 checkActive(query);
             } catch (RuntimeException unavailable) {
                 requireFallbackAllowed(query, unavailable);
                 // HyDE 是召回增强而不是回答的单点依赖：任何失败都继续使用已完成的 BM25 + Dense。
-                hydeHits = List.of();
+                hydeDocuments = List.of();
             }
         }
 
-        List<RankedArticleChunk> ranked = hydeHits.isEmpty() ? firstRanked
-                : resolveAndRank(fuse(lexicalHits, denseHits, hydeHits));
+        List<Document> processed = hydeDocuments.isEmpty() ? firstProcessed
+                : postProcessor.process(standardQuery, joiner.join(Map.of(standardQuery,
+                        List.of(lexicalDocuments, denseDocuments, hydeDocuments))));
+        List<RankedArticleChunk> ranked = processed.stream()
+                .map(HybridArticleRetrievalService::toRankedChunk).toList();
         List<ResolvedArticleChunk> authorized = ranked.stream().map(RankedArticleChunk::chunk).toList();
         checkActive(query);
-        return new ArticleRetrievalResult(lexicalHits.size(), denseHits.size(), lexicalAvailable,
+        return new ArticleRetrievalResult(lexicalDocuments.size(), denseDocuments.size(), lexicalAvailable,
                 denseAvailable, authorized, ranked);
+    }
+
+    private float[] embed(ArticleRetrievalQuery query, String text, String requestId,
+                          Instant deadline, String incompatibleMessage) {
+        EmbeddingResult result = executor.execute(new AiInvocationContext(AiCapability.EMBEDDING,
+                        query.userId(), requestId, text.length(), deadline, false),
+                () -> {
+                    checkActive(query);
+                    var embedded = embedding.embed(new EmbeddingCommand(AiCapability.EMBEDDING,
+                            List.of(text)));
+                    checkActive(query);
+                    return embedded;
+                });
+        checkActive(query);
+        if (result.vectors().size() != 1 || !embeddingModel.equals(result.model())) {
+            throw new IllegalStateException(incompatibleMessage);
+        }
+        return result.vectors().getFirst();
     }
 
     private void checkActive(ArticleRetrievalQuery query) {
@@ -208,86 +212,30 @@ public class HybridArticleRetrievalService {
                 || validCandidates < hydeMinimumCandidates);
     }
 
-    private List<RankedArticleChunk> resolveAndRank(List<Fused> fused) {
-        List<Long> ids = fused.stream().map(Fused::chunkId).sorted().toList();
-        Map<Long, ResolvedArticleChunk> currentById = new HashMap<>();
-        for (ResolvedArticleChunk chunk : resolver.resolveCurrent(ids)) {
-            currentById.put(chunk.chunkId(), chunk);
-        }
-        Map<Long, Integer> articleCounts = new HashMap<>();
-        List<RankedArticleChunk> ranked = new ArrayList<>();
-        for (Fused candidate : fused) {
-            ResolvedArticleChunk current = currentById.get(candidate.chunkId());
-            if (current == null || articleCounts.getOrDefault(current.articleId(), 0) >= 2) {
-                continue;
-            }
-            ranked.add(new RankedArticleChunk(current, candidate.score(),
-                    candidate.lexicalRank(), candidate.denseRank(), candidate.hydeRank()));
-            articleCounts.merge(current.articleId(), 1, Integer::sum);
-            if (ranked.size() == contextLimit) {
-                break;
-            }
-        }
-        return List.copyOf(ranked);
+    @SuppressWarnings("unchecked")
+    private static RankedArticleChunk toRankedChunk(Document document) {
+        Map<String, Object> metadata = document.getMetadata();
+        ResolvedArticleChunk chunk = new ResolvedArticleChunk(Long.parseLong(document.getId()),
+                number(metadata, "articleId").longValue(), number(metadata, "revisionId").longValue(),
+                number(metadata, "chunkNo").intValue(), (String) metadata.get("title"),
+                (List<String>) metadata.get("headingPath"), document.getText(),
+                (String) metadata.get("revisionContentHash"), (String) metadata.get("chunkHash"));
+        return new RankedArticleChunk(chunk, number(metadata, "rrfScore").doubleValue(),
+                optionalRank(metadata, "lexicalRank"), optionalRank(metadata, "denseRank"),
+                optionalRank(metadata, "hydeRank"));
     }
 
-    private static List<Fused> fuse(List<ArticleChunkSearchHit> lexical,
-                                    List<ArticleVectorHit> dense,
-                                    List<ArticleVectorHit> hyde) {
-        Map<Long, MutableFused> merged = new LinkedHashMap<>();
-        for (int index = 0; index < lexical.size(); index++) {
-            ArticleChunkSearchHit hit = lexical.get(index);
-            merged.computeIfAbsent(hit.chunkId(), MutableFused::new).lexical(index + 1);
-        }
-        for (int index = 0; index < dense.size(); index++) {
-            ArticleVectorHit hit = dense.get(index);
-            merged.computeIfAbsent(hit.chunkId(), MutableFused::new).dense(index + 1);
-        }
-        for (int index = 0; index < hyde.size(); index++) {
-            ArticleVectorHit hit = hyde.get(index);
-            merged.computeIfAbsent(hit.chunkId(), MutableFused::new).hyde(index + 1);
-        }
-        return merged.values().stream().map(MutableFused::freeze)
-                .sorted(Comparator.comparingDouble(Fused::score).reversed()
-                        .thenComparingLong(Fused::chunkId))
-                .toList();
+    private static Number number(Map<String, Object> metadata, String key) {
+        return (Number) metadata.get(key);
+    }
+
+    private static Integer optionalRank(Map<String, Object> metadata, String key) {
+        Number value = (Number) metadata.get(key);
+        return value == null ? null : value.intValue();
     }
 
     private static Instant min(Instant left, Instant right) {
         return left.isBefore(right) ? left : right;
     }
 
-    private static final class MutableFused {
-        private final long chunkId;
-        private Integer lexicalRank;
-        private Integer denseRank;
-        private Integer hydeRank;
-
-        private MutableFused(long chunkId) {
-            this.chunkId = chunkId;
-        }
-
-        private void lexical(int rank) {
-            lexicalRank = rank;
-        }
-
-        private void dense(int rank) {
-            denseRank = rank;
-        }
-
-        private void hyde(int rank) {
-            hydeRank = rank;
-        }
-
-        private Fused freeze() {
-            double score = (lexicalRank == null ? 0D : 1D / (RRF_CONSTANT + lexicalRank))
-                    + (denseRank == null ? 0D : 1D / (RRF_CONSTANT + denseRank))
-                    + (hydeRank == null ? 0D : 1D / (RRF_CONSTANT + hydeRank));
-            return new Fused(chunkId, score, lexicalRank, denseRank, hydeRank);
-        }
-    }
-
-    private record Fused(long chunkId, double score, Integer lexicalRank, Integer denseRank,
-                         Integer hydeRank) {
-    }
 }

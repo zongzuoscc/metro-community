@@ -20,6 +20,9 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -298,6 +301,134 @@ class HybridArticleRetrievalServiceTest {
         assertThat(result.authorizedChunks()).containsExactly(lexicalOnly);
         assertThat(result.rankedCandidates().getFirst().hydeRank()).isNull();
         assertThat(executor.capabilities()).containsExactly(AiCapability.EMBEDDING, AiCapability.HYDE);
+    }
+
+    @Test
+    void officialHydeTemplateTreatsBracesInTheQuestionAsPlainText() {
+        String question = "Map<String, {value}> 怎么加锁";
+        HydeHypotheticalDocumentService hyde = new HydeHypotheticalDocumentService(
+                new RecordingExecutor(),
+                (userId, command) -> {
+                    assertThat(command.messages()).singleElement().satisfies(message ->
+                            assertThat(message.text()).contains(question));
+                    return new UserAiRoutedResult(new AiChatResult("使用按键粒度的锁。", "stop",
+                            8, 9, "test", "chat-test"), UserAiFundingSource.PLATFORM);
+                },
+                Clock.fixed(Instant.parse("2026-08-12T00:00:00Z"), ZoneOffset.UTC),
+                Duration.ofSeconds(8), 600);
+
+        assertThat(hyde.generate(7L, "braces", question,
+                Instant.parse("2026-08-12T00:00:30Z"))).isEqualTo("使用按键粒度的锁。");
+    }
+
+    @Test
+    void emptyHydeOutputIsNotEmbeddedAsTheOriginalQuestion() {
+        assertInvalidHydeDoesNotStartSecondEmbedding(
+                new AiChatResult("   ", "stop", 3, 0, "test", "chat-test"));
+    }
+
+    @Test
+    void overlongHydeOutputDoesNotStartSecondEmbedding() {
+        assertInvalidHydeDoesNotStartSecondEmbedding(
+                new AiChatResult("x".repeat(601), "stop", 3, 601, "test", "chat-test"));
+    }
+
+    @Test
+    void exceptionalHydeCallFallsBackWithoutStartingSecondEmbedding() {
+        List<String> embedded = new CopyOnWriteArrayList<>();
+        when(lexical.searchActive("锁", 40)).thenReturn(List.of());
+        when(vectors.searchActive("metro_article_chunks_read", new float[]{1F, 0F},
+                40, "bge-m3", 3L)).thenReturn(List.of());
+        when(resolver.resolveCurrent(List.of())).thenReturn(List.of());
+        PreparedUserAiChat route = new PreparedUserAiChat("frozen", UserAiFundingSource.USER,
+                command -> { throw new IllegalStateException("provider unavailable"); });
+
+        ArticleRetrievalResult result = guardedService(new RecordingExecutor(), command -> {
+            embedded.add(command.inputs().getFirst());
+            return embedding.embed(command);
+        }).retrieve(new ArticleRetrievalQuery(7L, "exceptional-hyde", "锁",
+                Instant.parse("2026-08-12T00:00:30Z"), route, () -> { }));
+
+        assertThat(result.authorizedChunks()).isEmpty();
+        assertThat(embedded).containsExactly("锁");
+    }
+
+    @Test
+    void longQuestionWithTooFewPublishedCandidatesStillUsesHyde() {
+        String question = "如何在大型 Java 并发系统中为不同用户设计锁粒度";
+        List<String> embedded = new CopyOnWriteArrayList<>();
+        when(lexical.searchActive(question, 40)).thenReturn(List.of());
+        when(vectors.searchActive("metro_article_chunks_read", new float[]{1F, 0F},
+                40, "bge-m3", 3L)).thenReturn(List.of());
+        when(vectors.searchActive("metro_article_chunks_read", new float[]{0F, 1F},
+                40, "bge-m3", 3L)).thenReturn(List.of());
+        when(resolver.resolveCurrent(List.of())).thenReturn(List.of());
+        PreparedUserAiChat route = new PreparedUserAiChat("frozen", UserAiFundingSource.USER,
+                command -> new UserAiRoutedResult(new AiChatResult("一段假设检索文档。", "stop",
+                        8, 9, "test", "chat-test"), UserAiFundingSource.USER));
+
+        guardedService(new RecordingExecutor(), command -> {
+            String text = command.inputs().getFirst();
+            embedded.add(text);
+            return new EmbeddingResult(List.of(text.equals(question) ? new float[]{1F, 0F}
+                    : new float[]{0F, 1F}), "test", "bge-m3");
+        }).retrieve(new ArticleRetrievalQuery(7L, "long-low-recall", question,
+                Instant.parse("2026-08-12T00:00:30Z"), route, () -> { }));
+
+        assertThat(embedded).containsExactly(question, "一段假设检索文档。");
+    }
+
+    @Test
+    void concurrentHydeCallsKeepFrozenRoutesAndQuestionsIsolated() throws Exception {
+        RecordingExecutor capabilityExecutor = new RecordingExecutor();
+        HydeHypotheticalDocumentService hyde = new HydeHypotheticalDocumentService(
+                capabilityExecutor,
+                (userId, command) -> { throw new AssertionError("mutable router used"); },
+                Clock.fixed(Instant.parse("2026-08-12T00:00:00Z"), ZoneOffset.UTC),
+                Duration.ofSeconds(8), 600);
+        List<String> firstPrompts = new CopyOnWriteArrayList<>();
+        List<String> secondPrompts = new CopyOnWriteArrayList<>();
+        PreparedUserAiChat firstRoute = recordingRoute(firstPrompts, "第一份文档");
+        PreparedUserAiChat secondRoute = recordingRoute(secondPrompts, "第二份文档");
+
+        try (ExecutorService pool = Executors.newFixedThreadPool(2)) {
+            var first = CompletableFuture.supplyAsync(() -> hyde.generate(1L, "first", "问题甲",
+                    Instant.parse("2026-08-12T00:00:30Z"), firstRoute, () -> { }), pool);
+            var second = CompletableFuture.supplyAsync(() -> hyde.generate(2L, "second", "问题乙",
+                    Instant.parse("2026-08-12T00:00:30Z"), secondRoute, () -> { }), pool);
+
+            assertThat(first.get()).isEqualTo("第一份文档");
+            assertThat(second.get()).isEqualTo("第二份文档");
+        }
+        assertThat(firstPrompts).singleElement().asString().contains("问题甲").doesNotContain("问题乙");
+        assertThat(secondPrompts).singleElement().asString().contains("问题乙").doesNotContain("问题甲");
+    }
+
+    private void assertInvalidHydeDoesNotStartSecondEmbedding(AiChatResult response) {
+        List<String> embedded = new CopyOnWriteArrayList<>();
+        when(lexical.searchActive("锁", 40)).thenReturn(List.of());
+        when(vectors.searchActive("metro_article_chunks_read", new float[]{1F, 0F},
+                40, "bge-m3", 3L)).thenReturn(List.of());
+        when(resolver.resolveCurrent(List.of())).thenReturn(List.of());
+        PreparedUserAiChat route = new PreparedUserAiChat("frozen", UserAiFundingSource.USER,
+                command -> new UserAiRoutedResult(response, UserAiFundingSource.USER));
+
+        ArticleRetrievalResult result = guardedService(new RecordingExecutor(), command -> {
+            embedded.add(command.inputs().getFirst());
+            return embedding.embed(command);
+        }).retrieve(new ArticleRetrievalQuery(7L, "invalid-hyde", "锁",
+                Instant.parse("2026-08-12T00:00:30Z"), route, () -> { }));
+
+        assertThat(result.authorizedChunks()).isEmpty();
+        assertThat(embedded).containsExactly("锁");
+    }
+
+    private PreparedUserAiChat recordingRoute(List<String> prompts, String result) {
+        return new PreparedUserAiChat("frozen", UserAiFundingSource.USER, command -> {
+            prompts.add(command.messages().getFirst().text());
+            return new UserAiRoutedResult(new AiChatResult(result, "stop", 5, 5,
+                    "test", "chat-test"), UserAiFundingSource.USER);
+        });
     }
 
     @Test

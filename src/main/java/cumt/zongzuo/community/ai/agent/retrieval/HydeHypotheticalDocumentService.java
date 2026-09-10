@@ -1,5 +1,7 @@
 package cumt.zongzuo.community.ai.agent.retrieval;
 
+import com.alibaba.cloud.ai.rag.preretrieval.transformation.HyDeTransformer;
+
 import cumt.zongzuo.community.ai.provider.AiCapability;
 import cumt.zongzuo.community.ai.provider.AiChatCommand;
 import cumt.zongzuo.community.ai.provider.AiChatResult;
@@ -10,6 +12,15 @@ import cumt.zongzuo.community.ai.runtime.AiCapabilityExecutor;
 import cumt.zongzuo.community.ai.runtime.AiInvocationContext;
 import cumt.zongzuo.community.ai.userprovider.UserAiChatRouter;
 import cumt.zongzuo.community.ai.userprovider.PreparedUserAiChat;
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.metadata.ChatGenerationMetadata;
+import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.model.Generation;
+import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.chat.prompt.PromptTemplate;
+import org.springframework.ai.rag.Query;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -27,11 +38,16 @@ import java.util.Objects;
  */
 final class HydeHypotheticalDocumentService {
 
-    private static final String SYSTEM_PROMPT = """
+    private static final String PROMPT_TEMPLATE = """
             你是一个只用于检索扩展的 HyDE 生成器。
             请根据用户问题，写一段可能出现在高质量社区长文章中的假设性答案正文。
             只输出正文，不要解释任务，不要输出标题、引用、链接、JSON 或 Markdown 代码块。
             不要声称这段文字已经被验证；其内容只会用来生成检索向量。
+            输出不得超过 %d 个 Unicode 码点。
+
+            用户问题：{query}
+
+            假设性答案正文：
             """;
 
     private final AiCapabilityExecutor executor;
@@ -69,39 +85,66 @@ final class HydeHypotheticalDocumentService {
         if (query.isEmpty()) {
             throw new IllegalArgumentException("HyDE query must not be blank");
         }
-        // 限额同时写入提示词和结果校验：前者减少无效 Token，后者防止不遵守指令的模型绕过上限。
-        String boundedSystemPrompt = SYSTEM_PROMPT + "\n输出不得超过 "
-                + maxOutputCharacters + " 个中文字符或 Unicode 码点。";
-        List<AiPromptMessage> prompt = List.of(
-                new AiPromptMessage(AiPromptRole.SYSTEM, boundedSystemPrompt),
-                new AiPromptMessage(AiPromptRole.USER, query));
-        int inputCharacters = prompt.stream().mapToInt(message -> message.text().length()).sum();
         Instant deadline = min(requestDeadline, clock.instant().plus(timeout));
         if (!deadline.isAfter(clock.instant())) {
             throw new IllegalStateException("HyDE deadline has expired");
         }
-
-        AiChatResult generated = executor.execute(new AiInvocationContext(AiCapability.HYDE, userId,
-                        requestId + ":hyde", inputCharacters, deadline, false),
-                () -> {
-                    validate.run();
-                    var command = new AiChatCommand(AiCapability.HYDE, prompt, AiResponseMode.TEXT);
-                    var routed = route == null ? router.generate(userId, command) : route.generate(command);
-                    validate.run();
-                    return routed.result();
-                });
+        ChatModel bridge = new GuardedHydeChatModel(executor, router, userId, requestId, deadline,
+                route, validate, maxOutputCharacters);
+        HyDeTransformer transformer = HyDeTransformer.builder()
+                .chatClientBuilder(ChatClient.builder(bridge))
+                .promptTemplate(new PromptTemplate(PROMPT_TEMPLATE.formatted(maxOutputCharacters)))
+                .build();
+        Query source = new Query(query);
+        Query transformed = transformer.transform(source);
         validate.run();
-        // 被过滤、截断或其它非正常终止的文本不是可用的假设文档，不应浪费第二次向量调用。
-        if (generated.finishReason() == null
-                || !"stop".equalsIgnoreCase(generated.finishReason().strip())) {
-            throw new IllegalStateException("HyDE provider did not finish normally");
+        // 官方空响应会返回原 Query；原问题不能被当作成功的假设文档。
+        if (transformed == source || transformed.text().equals(source.text())) {
+            throw new IllegalStateException("HyDE did not produce a hypothetical document");
         }
-        String document = generated.text() == null ? "" : generated.text().strip();
-        int outputCharacters = document.codePointCount(0, document.length());
-        if (document.isEmpty() || outputCharacters > maxOutputCharacters) {
-            throw new IllegalStateException("HyDE provider returned an invalid document");
+        return transformed.text().strip();
+    }
+
+    /** 每次请求一个不可变桥接，避免单例或 ThreadLocal 泄漏路由与撤销状态。 */
+    private record GuardedHydeChatModel(AiCapabilityExecutor executor, UserAiChatRouter router,
+                                        long userId, String requestId, Instant deadline,
+                                        PreparedUserAiChat route, Runnable validate,
+                                        int maxOutputCharacters) implements ChatModel {
+
+        @Override
+        public ChatResponse call(Prompt prompt) {
+            List<AiPromptMessage> messages = prompt.getInstructions().stream()
+                    .map(message -> new AiPromptMessage(switch (message.getMessageType()) {
+                        case SYSTEM -> AiPromptRole.SYSTEM;
+                        case ASSISTANT -> AiPromptRole.ASSISTANT;
+                        case USER -> AiPromptRole.USER;
+                        case TOOL -> throw new IllegalArgumentException("HyDE prompt must not contain tools");
+                    }, message.getText()))
+                    .toList();
+            int inputCharacters = messages.stream().mapToInt(message -> message.text().length()).sum();
+            AiChatResult generated = executor.execute(new AiInvocationContext(AiCapability.HYDE,
+                            userId, requestId + ":hyde", inputCharacters, deadline, false),
+                    () -> {
+                        validate.run();
+                        var command = new AiChatCommand(AiCapability.HYDE, messages, AiResponseMode.TEXT);
+                        var routed = route == null ? router.generate(userId, command) : route.generate(command);
+                        validate.run();
+                        return routed.result();
+                    });
+            validate.run();
+            if (generated.finishReason() == null
+                    || !"stop".equalsIgnoreCase(generated.finishReason().strip())) {
+                throw new IllegalStateException("HyDE provider did not finish normally");
+            }
+            String document = generated.text() == null ? "" : generated.text().strip();
+            if (document.isEmpty()
+                    || document.codePointCount(0, document.length()) > maxOutputCharacters) {
+                throw new IllegalStateException("HyDE provider returned an invalid document");
+            }
+            var metadata = ChatGenerationMetadata.builder()
+                    .finishReason(generated.finishReason()).build();
+            return new ChatResponse(List.of(new Generation(new AssistantMessage(document), metadata)));
         }
-        return document;
     }
 
     private static Instant min(Instant left, Instant right) {
