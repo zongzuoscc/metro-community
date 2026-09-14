@@ -27,16 +27,20 @@ class DefaultDomainEventOutboxService implements DomainEventOutboxService {
     private final DomainEventOutboxMapper mapper;
     private final ObjectMapper objectMapper;
     private final Clock clock;
+    private final org.springframework.context.ApplicationEventPublisher applicationEvents;
 
     @Autowired
-    DefaultDomainEventOutboxService(DomainEventOutboxMapper mapper, ObjectMapper objectMapper) {
-        this(mapper, objectMapper, Clock.systemUTC());
+    DefaultDomainEventOutboxService(DomainEventOutboxMapper mapper, ObjectMapper objectMapper,
+                                    org.springframework.context.ApplicationEventPublisher applicationEvents) {
+        this(mapper, objectMapper, Clock.systemUTC(), applicationEvents);
     }
 
-    DefaultDomainEventOutboxService(DomainEventOutboxMapper mapper, ObjectMapper objectMapper, Clock clock) {
+    DefaultDomainEventOutboxService(DomainEventOutboxMapper mapper, ObjectMapper objectMapper, Clock clock,
+                                    org.springframework.context.ApplicationEventPublisher applicationEvents) {
         this.mapper = mapper;
         this.objectMapper = objectMapper;
         this.clock = clock;
+        this.applicationEvents = applicationEvents;
     }
 
     @Override
@@ -69,6 +73,9 @@ class DefaultDomainEventOutboxService implements DomainEventOutboxService {
             throw new DomainEventConflictException(
                     "dedupe key already belongs to a different domain event");
         }
+        // 本地监听器只在提交后尝试快速失效；崩溃或 Redis 故障仍由已落库的 Outbox 补送。
+        // 发布 Spring 事件不替代 RabbitMQ，也不改变其他领域事件的持久化语义。
+        applicationEvents.publishEvent(stored.toEvent(objectMapper));
         return stored.getEventId();
     }
 

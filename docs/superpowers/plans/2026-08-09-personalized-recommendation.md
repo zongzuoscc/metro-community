@@ -969,7 +969,7 @@ Run: `git diff --check`
 
 Expected: no whitespace errors.
 
-Run from `/Users/yangyiming/Desktop/项目改进/metro-community-frontend`: `npm run test -- --run && npm run build`
+Run from `/Users/yangyiming/Desktop/项目改进/社区项目相关/metro-community-frontend`: `npm run test -- --run && npm run build`
 
 Expected: all frontend tests pass and build succeeds; retain the known Vite chunk-size warning only if it is unchanged.
 

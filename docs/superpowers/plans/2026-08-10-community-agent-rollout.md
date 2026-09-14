@@ -133,27 +133,30 @@ Expected: migration run twice is unchanged; article/revision/draft counts and ha
 
 - Add Compose `ai` profile only here: Milvus 2.6.20, etcd, MinIO, Ollama, named volumes, health checks, loopback-only host ports and preflight collision checks.
 - Resolve `milvusdb/milvus:v2.6.20` to an immutable digest and record it in a deployment lock file; use Java SDK 2.6.22.
-- Add explicit idempotent forward SQL for `article_chunk`, projection manifest/registry and aggregate watermarks; no Flyway.
+- Add explicit idempotent forward SQL for `article_chunk`, durable parser-generation admission, projection manifest/registry and aggregate watermarks; no Flyway.
 - Implement project-owned `ArticleVectorRepository` and collection registry; do not use Spring AI VectorStore to create production collections.
 - Create the specified 1024-dimension article and memory physical schemas/aliases with dynamic fields disabled, HNSW+COSINE, scalar indexes, BOUNDED reads and STRONG deletion verification.
 - Parse only current published revisions into deterministic 350–600 token chunks with 60–100 token overlap; MySQL stores body text, ES/Milvus store projections.
-- Add chunk-level ES physical index/alias and BM25 top-40 retrieval. Keep normal site search separate.
+- Before adding chunk ES, move the server, Java/REST clients, matching IK plugin and site-search physical index/alias together to the supported 8.18.1 axis in an isolated checkpoint.
+- Add the separate chunk physical index/alias and BM25 top-40 retrieval only after that upgrade gate is green. Keep normal site search separate.
 - Perform blue/green snapshot + high-water replay + write fence + alias switch, including deletes and late-event races.
-- Upgrade Elasticsearch to 8.18.1 only at its own checkpoint, with matching IK plugin, full reindex and alias switch; do not combine it with the first Milvus schema commit.
 
-**Commit boundaries:** Compose/digest; Milvus schema repository; article chunk SQL/parser; ES chunk projection; Milvus projection; projection replay/delete; blue/green alias; isolated ES 8.18.1 checkpoint.
+**Commit boundaries:** Compose/digest; projection control-plane SQL + lease/repair primitives + Milvus schema repository; article chunk/parser-generation SQL + parser/Rabbit facts; isolated ES 8.18.1 checkpoint; ES chunk projection; Milvus projection; target anti-entropy/replay/delete; blue/green alias.
 
 **Gate commands:**
 
 ```bash
-./mvnw -Dtest=ArticleChunkerTest,ArticleProjectionIntegrationTest test
-./mvnw -Dtest=MilvusSchemaContractTest,MilvusArticleVectorRepositoryIntegrationTest test
-./mvnw -Dtest=ProjectionReplayRaceIntegrationTest,MilvusRestartRecoveryIntegrationTest test
-./mvnw -Dtest=ElasticsearchChunkProjectionIntegrationTest,ArticleSearchRegressionIntegrationTest test
+./mvnw -Pmilvus-contract verify
+./mvnw -Dtest=ArticleChunkerTest,ArticleChunkProjectionIntegrationTest test
+./mvnw help:evaluate -Dexpression=elasticsearch-client.version -q -DforceStdout
+./mvnw dependency:tree -Dincludes=co.elastic.clients:elasticsearch-java,org.elasticsearch.client:elasticsearch-rest-client
+./mvnw clean compile
+./mvnw -Dtest=ElasticsearchDependencyAlignmentTest,ElasticsearchUpgradeIntegrationTest,ArticleSearchRegressionIntegrationTest test
+./mvnw -Dtest=ArticleChunkProjectionReplayRaceIntegrationTest,ElasticsearchArticleChunkProjectionIntegrationTest test
 ./mvnw test
 ```
 
-Expected: real locked Milvus container passes create/index/alias/upsert/filter/delete/restart/auth/dimension-error contracts; stale events cannot revive unpublished content; every hit is revalidated against MySQL; AI profile being absent still passes the full application suite.
+Expected: real locked Milvus container passes create/index/alias/upsert/filter/delete/restart/auth/dimension-error contracts; the effective Elasticsearch property and both resolved clients are exactly 8.18.1 with no second version, and that supported client/server/plugin tuple passes a fresh MySQL-truth rebuild and site-search regression before chunk indexing; stale events cannot revive unpublished content; every hit is revalidated against MySQL; AI profile being absent still passes the full application suite.
 
 ## Stage D: memory-free read-only Agent
 
@@ -184,7 +187,7 @@ Expected: one-user concurrency, idempotency hash conflicts, fence takeover, canc
 
 ## Stage E: long-term memory, temporary mode, deletion and export
 
-**Depends on:** D's run guard/conversation/epoch hooks and C's project-owned memory vector repository. Starts behind `metro.ai.memory.enabled=false`.
+**Depends on:** D's run guard/conversation/epoch hooks and C's project-owned Milvus schema manager plus SCHEMA_ONLY memory collection/registry boundary. Stage E performs the audited memory consumer/principal admission and then implements/assembles `MemoryVectorRepository`. Starts behind `metro.ai.memory.enabled=false`.
 
 **Deliverables:**
 

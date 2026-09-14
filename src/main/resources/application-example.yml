@@ -49,6 +49,8 @@ metro:
       elasticsearch-read-alias: ${METRO_STAGE_B_ES_READ_ALIAS:article-read}
       elasticsearch-pit-keep-alive: ${METRO_STAGE_B_ES_PIT_KEEP_ALIVE:PT1M}
   article:
+    detail-cache:
+      ttl: ${METRO_ARTICLE_DETAIL_CACHE_TTL:PT30S}
     revision-mode: ${METRO_ARTICLE_REVISION_MODE:LEGACY}
     rollout-build:
       binary-generation: ${METRO_ARTICLE_ROLLOUT_BINARY_GENERATION:-1}

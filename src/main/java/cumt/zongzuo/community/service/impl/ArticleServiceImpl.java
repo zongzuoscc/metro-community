@@ -33,6 +33,8 @@ import cumt.zongzuo.community.document.ArticleDoc;
 import cumt.zongzuo.community.article.service.ArticleMutationFacade;
 import cumt.zongzuo.community.article.service.AuthorArticleReadService;
 import cumt.zongzuo.community.article.service.PublishedArticleReadService;
+import cumt.zongzuo.community.article.service.ArticleDetailCache;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import jakarta.servlet.http.HttpServletRequest;
 import org.apache.http.util.EntityUtils;
 import org.elasticsearch.client.Request;
@@ -91,8 +93,10 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
     @Autowired
     private AuthorArticleReadService authorArticleReadService;
 
+    @Autowired
+    private ArticleDetailCache articleDetailCache;
+
     // Redis Key 定义
-    private static final String ARTICLE_DETAIL_CACHE_PREFIX = "article:detail:";
     private static final String ARTICLE_VIEW_COUNT_KEY = "article:view:count:";
     public static final String ARTICLE_VIEW_DIRTY_SET = "article:view:dirty:set";
     private static final String HOT_RANK_CACHE_KEY = "hot:article:rank:7days";
@@ -101,13 +105,18 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
     private static final int SEARCH_CANDIDATE_BATCH_SIZE = 100;
     private static final int SEARCH_CANDIDATE_HARD_LIMIT = 1_000;
 
+    // 浏览量初始化与递增必须原子完成，避免冷缓存并发 SET 覆盖已经增加的计数。
+    private static final DefaultRedisScript<Long> INCREMENT_VIEW = new DefaultRedisScript<>("""
+            redis.call('SET', KEYS[1], ARGV[1], 'NX')
+            return redis.call('INCR', KEYS[1])
+            """, Long.class);
+
     // --------------------------------------------------------------------------------
     // 1. 发布/保存文章 (含机器审核逻辑)
     // --------------------------------------------------------------------------------
     @Override
     public Long publishOrSave(ArticleDTO dto, boolean isPublish, Long userId) {
         long articleId = articleMutationFacade.publishOrSave(dto, isPublish, userId);
-        stringRedisTemplate.delete(ARTICLE_DETAIL_CACHE_PREFIX + articleId);
         return articleId;
     }
 
@@ -124,53 +133,32 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
     // --------------------------------------------------------------------------------
     @Override
     public Article getDetail(Long id) {
-        // MySQL current visibility and pointer identity are authoritative. Resolve them
-        // before touching Redis so an old cache entry can never bypass unpublish/delete.
-        Article current = publishedArticleReadService.findById(id);
-        if (current == null) {
+        // 命中只读 Redis；回源仍通过公开版本查询，绝不缓存作者草稿或未发布修订。
+        Article article = articleDetailCache.getOrLoad(id, publishedArticleReadService.pointerReadsEnabled(), () -> {
+            Article current = publishedArticleReadService.findById(id);
+            if (current != null) {
+                fillArticleAuthorInfo(current);
+                if (current.getTagList() == null) {
+                    fillArticleTags(current);
+                }
+            }
+            return current;
+        });
+        if (article == null) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "文章不存在或未发布");
         }
-        String cacheKey = articleDetailCacheKey(current);
-        String json = stringRedisTemplate.opsForValue().get(cacheKey);
-
-        Article article = null;
-        if (StrUtil.isNotBlank(json)) {
-            try {
-                article = objectMapper.readValue(json, Article.class);
-            } catch (Exception e) {
-                log.error("文章详情缓存解析失败", e);
+        try {
+            Long views = stringRedisTemplate.execute(INCREMENT_VIEW,
+                    List.of(ARTICLE_VIEW_COUNT_KEY + id),
+                    Integer.toString(article.getViewCount() == null ? 0 : article.getViewCount()));
+            if (views != null) {
+                article.setViewCount(views.intValue());
             }
+            stringRedisTemplate.opsForSet().add(ARTICLE_VIEW_DIRTY_SET, id.toString());
+        } catch (RuntimeException unavailable) {
+            // 展示计数允许延迟；缓存故障不能让本来可读取的公开正文一起失败。
+            log.warn("浏览量缓存不可用，返回已有计数：articleId={}", id);
         }
-
-        // Cache misses use the already-authorized current snapshot.
-        if (article == null) {
-            article = current;
-
-            // 填充作者信息
-            fillArticleAuthorInfo(article);
-            if (article.getTagList() == null) {
-                fillArticleTags(article);
-            }
-
-            // 3. 写入 Redis (过期时间 1 小时)
-            try {
-                String cacheValue = objectMapper.writeValueAsString(article);
-                stringRedisTemplate.opsForValue().set(cacheKey, cacheValue, 1, TimeUnit.HOURS);
-            } catch (Exception e) {
-                log.error("文章详情写入缓存失败", e);
-            }
-        }
-
-        // 浏览量处理 (Redis 实时计数)
-        String viewCountKey = ARTICLE_VIEW_COUNT_KEY + id;
-        if (Boolean.FALSE.equals(stringRedisTemplate.hasKey(viewCountKey))) {
-            stringRedisTemplate.opsForValue().set(viewCountKey, String.valueOf(article.getViewCount()));
-        }
-        Long newViewCount = stringRedisTemplate.opsForValue().increment(viewCountKey);
-        article.setViewCount(newViewCount.intValue()); // 视图层展示最新值
-
-        // 标记脏数据等待同步
-        stringRedisTemplate.opsForSet().add(ARTICLE_VIEW_DIRTY_SET, id.toString());
 
         return article;
     }
@@ -390,13 +378,11 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
     public void auditArticle(Long articleId, boolean pass, String reason) {
         articleMutationFacade.assertArticleWritesAllowed();
         articleMutationFacade.auditLegacyArticle(articleId, pass, reason, CurrentUser.id());
-        stringRedisTemplate.delete(ARTICLE_DETAIL_CACHE_PREFIX + articleId);
     }
 
     @Override
     public void moveToRecycleBin(Long articleId, Long userId) {
         articleMutationFacade.recycle(articleId, userId);
-        stringRedisTemplate.delete(ARTICLE_DETAIL_CACHE_PREFIX + articleId);
     }
 
     @Override
@@ -407,13 +393,11 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
     @Override
     public void restoreArticle(Long articleId, Long userId) {
         articleMutationFacade.restore(articleId, userId);
-        stringRedisTemplate.delete(ARTICLE_DETAIL_CACHE_PREFIX + articleId);
     }
 
     @Override
     public void deletePermanently(Long articleId, Long userId) {
         articleMutationFacade.purge(articleId, userId);
-        stringRedisTemplate.delete(ARTICLE_DETAIL_CACHE_PREFIX + articleId);
     }
 
     @Override
@@ -578,15 +562,6 @@ public class ArticleServiceImpl extends ServiceImpl<ArticleMapper, Article> impl
 
     private Long tryGetCurrentUserId() {
         return CurrentUser.idOrNull();
-    }
-
-    private String articleDetailCacheKey(Article article) {
-        if (publishedArticleReadService.pointerReadsEnabled()) {
-            return ARTICLE_DETAIL_CACHE_PREFIX + "v2:" + article.getId() + ":"
-                    + article.getPublishedRevisionId() + ":" + article.getContentHash();
-        }
-        return ARTICLE_DETAIL_CACHE_PREFIX + "legacy:" + article.getId() + ":"
-                + String.valueOf(article.getUpdateTime());
     }
 
     private FeedPosition parseFeedPosition(String cursor) {

@@ -649,6 +649,8 @@ class GroundedAnswerServiceTest {
         var query = org.mockito.ArgumentCaptor.forClass(ArticleRetrievalQuery.class);
         verify(retrieval).retrieve(query.capture());
         assertThat(query.getValue().query()).contains("给三个事务优化方案", "把第三个展开");
+        // 语义路由需要同时看到用户实际提问和补充后的检索文字，不能只分类改写结果。
+        assertThat(query.getValue().originalQuestion()).isEqualTo("把第三个展开");
         // 检索只使用前 20 秒，为最终回答保留 10 秒，而不是耗尽整个请求。
         verify(webSearch).search("把第三个展开", Instant.parse("2026-08-12T00:00:20Z"));
     }

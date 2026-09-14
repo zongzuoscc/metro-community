@@ -166,7 +166,7 @@ class HybridArticleRetrievalServiceTest {
                 (userId, command) -> { throw new AssertionError("Mutable router must not be consulted"); },
                 clock, Duration.ofSeconds(8), 600);
         return new HybridArticleRetrievalService(lexical, vectors, resolver, executor, gateway,
-                clock, "metro_article_chunks_read", "bge-m3", 40, 8, Duration.ofSeconds(20), hyde, 18, 3);
+                clock, "metro_article_chunks_read", "bge-m3", 40, 8, Duration.ofSeconds(20), hyde, 3);
     }
 
     @Test
@@ -256,7 +256,7 @@ class HybridArticleRetrievalServiceTest {
                 lexical, vectors, resolver, executor, recordingEmbedding,
                 Clock.fixed(Instant.parse("2026-08-12T00:00:00Z"), ZoneOffset.UTC),
                 "metro_article_chunks_read", "bge-m3", 40, 8, Duration.ofSeconds(20),
-                hyde, 18, 3);
+                hyde, 3);
 
         ArticleRetrievalResult result = service.retrieve(new ArticleRetrievalQuery(
                 9L, "req-hyde", "如何让锁更安全", Instant.parse("2026-08-12T00:00:30Z")));
@@ -293,7 +293,7 @@ class HybridArticleRetrievalServiceTest {
                 lexical, vectors, resolver, executor, embedding,
                 Clock.fixed(Instant.parse("2026-08-12T00:00:00Z"), ZoneOffset.UTC),
                 "metro_article_chunks_read", "bge-m3", 40, 8, Duration.ofSeconds(20),
-                hyde, 18, 3);
+                hyde, 3);
 
         ArticleRetrievalResult result = service.retrieve(new ArticleRetrievalQuery(
                 10L, "req-hyde-fallback", "锁", Instant.parse("2026-08-12T00:00:30Z")));
@@ -432,7 +432,159 @@ class HybridArticleRetrievalServiceTest {
     }
 
     @Test
-    void sufficientlyStrongFirstRoundDoesNotSpendAnExtraModelCall() {
+    void shortConceptWithEnoughCandidatesUsesSemanticRoutingInsteadOfLength() {
+        assertSemanticRouting("什么是缓存雪崩", "CONCEPTUAL", false);
+    }
+
+    @Test
+    void longDescriptiveQuestionExpandsEvenWhenCandidatesAreEnough() {
+        assertSemanticRouting("每天晚上八点数据库突然变得特别忙，过了一会儿又恢复正常，可能是什么原因", "DESCRIPTIVE", true);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"EXACT", "UNRESOLVED"})
+    void exactAndUnresolvedIntentDoesNotInventAHypothesis(String intent) {
+        assertSemanticRouting("查询目标", intent, false);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"{}", "null", "{\"type\":\"UNKNOWN\"}", "不是 JSON"})
+    void invalidClassificationKeepsExistingEvidenceAndSkipsExtraEmbedding(String output) {
+        String question = "什么是缓存雪崩";
+        List<ResolvedArticleChunk> current = seedCandidates(question);
+        List<String> embedded = new CopyOnWriteArrayList<>();
+        PreparedUserAiChat route = new PreparedUserAiChat("frozen", UserAiFundingSource.USER, command ->
+                new UserAiRoutedResult(new AiChatResult(output, "stop", 8, 9, "test", "frozen"),
+                        UserAiFundingSource.USER));
+        ArticleRetrievalResult result = guardedService(new RecordingExecutor(), command -> {
+            embedded.add(command.inputs().getFirst());
+            return embedding.embed(command);
+        }).retrieve(new ArticleRetrievalQuery(7L, "invalid-intent", question,
+                Instant.parse("2026-08-12T00:00:30Z"), route, () -> { }));
+        assertThat(result.authorizedChunks()).containsExactlyElementsOf(current);
+        assertThat(embedded).containsExactly(question);
+    }
+
+    @Test
+    void semanticPromptPreservesOriginalSceneBesideRewrittenSearchText() {
+        String original = "每天晚上八点数据库突然繁忙，过一会儿又恢复，为什么";
+        String rewritten = "缓存雪崩";
+        seedCandidates(rewritten);
+        List<String> prompts = new CopyOnWriteArrayList<>();
+        PreparedUserAiChat route = new PreparedUserAiChat("frozen", UserAiFundingSource.USER, command -> {
+            if (command.responseMode() == cumt.zongzuo.community.ai.provider.AiResponseMode.JSON_OBJECT) {
+                prompts.add(command.messages().stream().map(m -> m.text()).collect(java.util.stream.Collectors.joining("\n")));
+            }
+            return new UserAiRoutedResult(new AiChatResult("{\"type\":\"CONCEPTUAL\"}", "stop",
+                    8, 9, "test", "frozen"), UserAiFundingSource.USER);
+        });
+        guardedService(new RecordingExecutor(), embedding).retrieve(new ArticleRetrievalQuery(7L,
+                "original-question", rewritten, Instant.parse("2026-08-12T00:00:30Z"), route, () -> { }, original));
+        assertThat(prompts).singleElement().asString().contains(original, rewritten);
+    }
+
+    @Test
+    void cancellationDuringClassificationCannotBecomeSuccessfulFallback() {
+        String question = "什么是缓存雪崩";
+        seedCandidates(question);
+        AtomicBoolean active = new AtomicBoolean(true);
+        PreparedUserAiChat route = new PreparedUserAiChat("frozen", UserAiFundingSource.USER, command -> {
+            active.set(false);
+            return new UserAiRoutedResult(new AiChatResult("{\"type\":\"DESCRIPTIVE\"}", "stop",
+                    8, 9, "test", "frozen"), UserAiFundingSource.USER);
+        });
+        List<String> embedded = new CopyOnWriteArrayList<>();
+        assertThatThrownBy(() -> guardedService(new RecordingExecutor(), command -> {
+            embedded.add(command.inputs().getFirst());
+            return embedding.embed(command);
+        }).retrieve(new ArticleRetrievalQuery(7L, "cancel-intent", question,
+                Instant.parse("2026-08-12T00:00:30Z"), route, () -> {
+                    if (!active.get()) throw new java.util.concurrent.CancellationException("已取消");
+                }))).isInstanceOf(java.util.concurrent.CancellationException.class);
+        assertThat(embedded).containsExactly(question);
+    }
+
+    @Test
+    void interruptedWhileClassificationIsQueuedCannotCallTheProvider() {
+        String question = "什么是缓存雪崩";
+        seedCandidates(question);
+        AtomicBoolean called = new AtomicBoolean();
+        RecordingExecutor executor = new RecordingExecutor();
+        executor.beforeOperation = capability -> {
+            if (capability == AiCapability.HYDE) Thread.currentThread().interrupt();
+        };
+        PreparedUserAiChat route = new PreparedUserAiChat("frozen", UserAiFundingSource.USER, command -> {
+            called.set(true);
+            return new UserAiRoutedResult(new AiChatResult("{\"type\":\"CONCEPTUAL\"}", "stop",
+                    8, 9, "test", "frozen"), UserAiFundingSource.USER);
+        });
+        try {
+            assertThatThrownBy(() -> guardedService(executor, embedding).retrieve(new ArticleRetrievalQuery(
+                    7L, "queued-interrupt", question, Instant.parse("2026-08-12T00:00:30Z"),
+                    route, () -> { }))).isInstanceOf(java.util.concurrent.CancellationException.class);
+            assertThat(called).isFalse();
+        } finally {
+            // 本测试主动中断运行线程，清除标记，避免影响同线程的其他用例。
+            Thread.interrupted();
+        }
+    }
+
+    @Test
+    void insufficientPublishedCandidatesTriggerHydeWithoutClassifyingConcept() {
+        String question = "什么是缓存雪崩";
+        List<ResolvedArticleChunk> current = seedCandidates(question);
+        // 原始命中有三块，但只有一块仍然公开，数量触发必须使用过滤后的数量。
+        when(resolver.resolveCurrent(List.of(61L, 62L, 63L))).thenReturn(current.subList(0, 1));
+        List<cumt.zongzuo.community.ai.provider.AiResponseMode> modes = new CopyOnWriteArrayList<>();
+        PreparedUserAiChat route = new PreparedUserAiChat("frozen", UserAiFundingSource.USER, command -> {
+            modes.add(command.responseMode());
+            return harmlessRoute().generate(command);
+        });
+        guardedService(new RecordingExecutor(), embedding).retrieve(new ArticleRetrievalQuery(7L,
+                "low-candidates", question, Instant.parse("2026-08-12T00:00:30Z"), route, () -> { }));
+        assertThat(modes).containsExactly(cumt.zongzuo.community.ai.provider.AiResponseMode.TEXT);
+    }
+
+    /** 外部模型使用确定性返回值；检索、路由、融合及真实输出转换仍执行生产实现。 */
+    private void assertSemanticRouting(String question, String intent, boolean expand) {
+        List<ResolvedArticleChunk> current = seedCandidates(question);
+        var classifications = new java.util.concurrent.atomic.AtomicInteger();
+        List<String> embedded = new CopyOnWriteArrayList<>();
+        PreparedUserAiChat route = new PreparedUserAiChat("frozen", UserAiFundingSource.USER, command -> {
+            boolean classification = command.responseMode() == cumt.zongzuo.community.ai.provider.AiResponseMode.JSON_OBJECT;
+            if (classification) classifications.incrementAndGet();
+            return new UserAiRoutedResult(new AiChatResult(classification
+                    ? "{\"type\":\"" + intent + "\"}" : "场景的假设性检索文档", "stop",
+                    8, 9, "test", "frozen"), UserAiFundingSource.USER);
+        });
+        ArticleRetrievalResult result = guardedService(new RecordingExecutor(), command -> {
+            embedded.add(command.inputs().getFirst());
+            return embedding.embed(command);
+        }).retrieve(new ArticleRetrievalQuery(7L, "semantic", question,
+                Instant.parse("2026-08-12T00:00:30Z"), route, () -> { }));
+
+        assertThat(result.authorizedChunks()).containsExactlyElementsOf(current);
+        assertThat(embedded).containsExactlyElementsOf(expand
+                ? List.of(question, "场景的假设性检索文档") : List.of(question));
+        assertThat(classifications.get()).isEqualTo(1);
+    }
+
+    private List<ResolvedArticleChunk> seedCandidates(String question) {
+        when(lexical.searchActive(question, 40)).thenReturn(List.of(
+                new ArticleChunkSearchHit(61L, 601L, 6001L, 9F),
+                new ArticleChunkSearchHit(62L, 602L, 6002L, 8F),
+                new ArticleChunkSearchHit(63L, 603L, 6003L, 7F)));
+        when(vectors.searchActive("metro_article_chunks_read", new float[]{1F, 0F},
+                40, "bge-m3", 3L)).thenReturn(List.of());
+        List<ResolvedArticleChunk> current = List.of(
+                resolved(61L, 601L, 6001L), resolved(62L, 602L, 6002L),
+                resolved(63L, 603L, 6003L));
+        when(resolver.resolveCurrent(List.of(61L, 62L, 63L))).thenReturn(current);
+        return current;
+    }
+
+    @Test
+    void semanticProviderFailurePreservesSufficientFirstRoundEvidence() {
         String question = "如何在大型 Java 并发系统中设计可以避免死锁的锁顺序";
         List<ArticleChunkSearchHit> hits = List.of(
                 new ArticleChunkSearchHit(61L, 601L, 6001L, 9F),
@@ -451,8 +603,7 @@ class HybridArticleRetrievalServiceTest {
                 executor,
                 (userId, command) -> {
                     hydeCalled.set(true);
-                    return new UserAiRoutedResult(new AiChatResult("不应被调用", "stop",
-                            1, 1, "test", "chat-test"), UserAiFundingSource.PLATFORM);
+                    throw new IllegalStateException("分类服务暂时不可用");
                 },
                 Clock.fixed(Instant.parse("2026-08-12T00:00:00Z"), ZoneOffset.UTC),
                 Duration.ofSeconds(8), 600);
@@ -460,14 +611,14 @@ class HybridArticleRetrievalServiceTest {
                 lexical, vectors, resolver, executor, embedding,
                 Clock.fixed(Instant.parse("2026-08-12T00:00:00Z"), ZoneOffset.UTC),
                 "metro_article_chunks_read", "bge-m3", 40, 8, Duration.ofSeconds(20),
-                hyde, 18, 3);
+                hyde, 3);
 
         ArticleRetrievalResult result = service.retrieve(new ArticleRetrievalQuery(
                 11L, "req-hyde-skip", question, Instant.parse("2026-08-12T00:00:30Z")));
 
         assertThat(result.authorizedChunks()).containsExactlyElementsOf(current);
-        assertThat(hydeCalled).isFalse();
-        assertThat(executor.capabilities()).containsExactly(AiCapability.EMBEDDING);
+        assertThat(hydeCalled).isTrue();
+        assertThat(executor.capabilities()).containsExactly(AiCapability.EMBEDDING, AiCapability.HYDE);
     }
 
     private static ResolvedArticleChunk resolved(long chunkId, long articleId, long revisionId) {

@@ -5,7 +5,13 @@ import java.time.Instant;
 import java.util.Objects;
 
 public record ArticleRetrievalQuery(long userId, String requestId, String query, Instant deadline,
-                                    PreparedUserAiChat route, Runnable validate) {
+                                    PreparedUserAiChat route, Runnable validate, String originalQuestion) {
+
+    /** 原问题与实际检索词分开保存，避免 ReAct 改写成关键词后丢失描述型意图。 */
+    public ArticleRetrievalQuery(long userId, String requestId, String query, Instant deadline,
+                               PreparedUserAiChat route, Runnable validate) {
+        this(userId, requestId, query, deadline, route, validate, query);
+    }
 
     /** 非 Agent 调用方兼容入口；有运行租约的调用方必须提供冻结路由与验证器。 */
     public ArticleRetrievalQuery(long userId, String requestId, String query, Instant deadline) {
@@ -23,6 +29,10 @@ public record ArticleRetrievalQuery(long userId, String requestId, String query,
             throw new IllegalArgumentException("query must not be blank");
         }
         query = query.strip();
+        if (originalQuestion == null || originalQuestion.isBlank()) {
+            throw new IllegalArgumentException("原始问题不能为空");
+        }
+        originalQuestion = originalQuestion.strip();
         Objects.requireNonNull(deadline, "deadline");
         Objects.requireNonNull(validate, "validate");
     }

@@ -113,6 +113,7 @@ public class ArticleMutationFacade implements ArticleDraftService {
                     article.getLockVersion(), now) != 1) {
                 throw optimisticConflict();
             }
+            appendLegacyCacheInvalidation(articleId);
             return;
         }
 
@@ -229,6 +230,7 @@ public class ArticleMutationFacade implements ArticleDraftService {
                 rabbitTemplate.convertAndSend("es.sync.queue", articleId);
             }
             sendLegacyNotification(administratorId, article, pass, reason);
+            appendLegacyCacheInvalidation(articleId);
             return;
         }
 
@@ -297,6 +299,7 @@ public class ArticleMutationFacade implements ArticleDraftService {
                 throw optimisticConflict();
             }
             rabbitTemplate.convertAndSend("es.sync.queue", articleId);
+            appendLegacyCacheInvalidation(articleId);
         } else {
             List<ArticleModerationJob> supersededJobs = supersedeNonTerminalJobs(articleId, now);
             int eventCount = supersededJobs.isEmpty() ? 1 : 2;
@@ -344,6 +347,7 @@ public class ArticleMutationFacade implements ArticleDraftService {
         }
         if (mode == ArticleRevisionMode.LEGACY) {
             rabbitTemplate.convertAndSend("es.sync.queue", articleId);
+            appendLegacyCacheInvalidation(articleId);
         } else {
             DomainEventType type = article.getPublishedRevisionId() == null
                     ? DomainEventType.ARTICLE_UNPUBLISHED : DomainEventType.ARTICLE_REVISION_PUBLISHED;
@@ -372,6 +376,7 @@ public class ArticleMutationFacade implements ArticleDraftService {
                 throw optimisticConflict();
             }
             rabbitTemplate.convertAndSend("es.sync.queue", articleId);
+            appendLegacyCacheInvalidation(articleId);
         } else {
             List<ArticleModerationJob> supersededJobs = supersedeNonTerminalJobs(articleId, now);
             int eventCount = supersededJobs.isEmpty() ? 1 : 2;
@@ -409,6 +414,7 @@ public class ArticleMutationFacade implements ArticleDraftService {
                     throw optimisticConflict();
                 }
                 rabbitTemplate.convertAndSend("es.sync.queue", articleId);
+                appendLegacyCacheInvalidation(articleId);
             } else {
                 List<ArticleModerationJob> supersededJobs =
                         supersedeNonTerminalJobs(articleId, now);
@@ -575,7 +581,20 @@ public class ArticleMutationFacade implements ArticleDraftService {
         }
         legacyTagWriter.replace(article.getId(), snapshot.tags().subList(0, Math.min(5, snapshot.tags().size())));
         rabbitTemplate.convertAndSend(publish ? "article.audit.queue" : "es.sync.queue", article.getId());
+        appendLegacyCacheInvalidation(article.getId());
         return article.getId();
+    }
+
+    /** 旧模式没有统一的发布事件，只在正文/可见性变更时补一条轻量失效事件。 */
+    private void appendLegacyCacheInvalidation(long articleId) {
+        Article current = articleMapper.selectById(articleId);
+        if (current == null) {
+            throw new IllegalStateException("文章写入后不存在，无法登记缓存失效");
+        }
+        DomainEventType type = DomainEventType.ARTICLE_DETAIL_CACHE_INVALIDATED;
+        outboxService.append("ARTICLE", articleId, current.getLockVersion(), current.getLifecycleEpoch(),
+                type, 1, objectMapper.createObjectNode().put("articleId", articleId),
+                eventDedupe(current, current.getLockVersion(), type));
     }
 
     private Article createShell(long userId) {

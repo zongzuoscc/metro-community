@@ -38,6 +38,7 @@ class HybridRetrievalLoadTest {
         AtomicInteger lexicalCalls = new AtomicInteger();
         AtomicInteger vectorCalls = new AtomicInteger();
         AtomicInteger modelCalls = new AtomicInteger();
+        AtomicInteger classificationCalls = new AtomicInteger();
         AtomicInteger embeddingCalls = new AtomicInteger();
         AtomicInteger active = new AtomicInteger();
         AtomicInteger peak = new AtomicInteger();
@@ -61,7 +62,7 @@ class HybridRetrievalLoadTest {
         // 一个共享实例处理全部请求，才能捕获新增单例字段导致的串线。
         var service = new HybridArticleRetrievalService(lexical, new Vectors(vectorCalls),
                 new Resolver(), executor, embedding, Clock.systemUTC(), "fixture-alias",
-                "fixture-embedding", 40, 8, Duration.ofSeconds(10), hyde, 18, 3);
+                "fixture-embedding", 40, 8, Duration.ofSeconds(10), hyde, 3);
         var start = new CountDownLatch(1);
         var slots = new Semaphore(SLOTS);
         List<Future<Long>> futures = new ArrayList<>();
@@ -75,10 +76,14 @@ class HybridRetrievalLoadTest {
                     long begin = System.nanoTime();
                     peak.accumulateAndGet(active.incrementAndGet(), Math::max);
                     try {
-                        String question = "q:" + user + (useHyde ? "" : " 请详细解释大型系统如何保持数据一致性与检索可见性");
+                        String question = "q:" + user + (useHyde
+                                ? " 每晚数据库突然繁忙后又恢复，可能是什么原因"
+                                : " 什么是缓存雪崩");
                         var route = new PreparedUserAiChat("fixture-model-" + user, UserAiFundingSource.USER,
                                 command -> {
-                                    modelCalls.incrementAndGet();
+                                    boolean classify = command.responseMode() == AiResponseMode.JSON_OBJECT;
+                                    if (classify) classificationCalls.incrementAndGet();
+                                    else modelCalls.incrementAndGet();
                                     assertThat(command.capability()).isEqualTo(AiCapability.HYDE);
                                     String prompt = command.messages().stream().map(AiPromptMessage::text)
                                             .reduce("", (a, b) -> a + "\n" + b);
@@ -87,7 +92,10 @@ class HybridRetrievalLoadTest {
                                     while (matcher.find()) mentioned.add(Integer.parseInt(matcher.group(1)));
                                     assertThat(mentioned).containsExactly(user);
                                     pause();
-                                    return new UserAiRoutedResult(new AiChatResult("hypothesis:" + user,
+                                    String output = classify ? "{\"type\":\""
+                                            + (useHyde ? "DESCRIPTIVE" : "CONCEPTUAL") + "\"}"
+                                            : "hypothesis:" + user;
+                                    return new UserAiRoutedResult(new AiChatResult(output,
                                             "stop", 8, 8, "fixture", "fixture-model-" + user), UserAiFundingSource.USER);
                                 });
                         var result = service.retrieve(new ArticleRetrievalQuery(user, "fixture-" + user,
@@ -138,11 +146,13 @@ class HybridRetrievalLoadTest {
             assertThat(vectorCalls.get()).isEqualTo(REQUESTS * (useHyde ? 2 : 1));
             assertThat(embeddingCalls.get()).isEqualTo(REQUESTS * (useHyde ? 2 : 1));
             assertThat(modelCalls.get()).isEqualTo(useHyde ? REQUESTS : 0);
+            assertThat(classificationCalls.get()).isEqualTo(REQUESTS);
             System.out.printf(Locale.ROOT,
-                    "RAG_COMPONENT_LOAD {\"mode\":\"%s\",\"requests\":%d,\"success\":%d,\"slots\":%d,\"peak\":%d,\"batchMs\":%.3f,\"executionP95Ms\":%.3f,\"lexical\":%d,\"vectors\":%d,\"embeddings\":%d,\"hyde\":%d}%n",
+                    "RAG_COMPONENT_LOAD {\"mode\":\"%s\",\"requests\":%d,\"success\":%d,\"slots\":%d,\"peak\":%d,\"batchMs\":%.3f,\"executionP95Ms\":%.3f,\"lexical\":%d,\"vectors\":%d,\"embeddings\":%d,\"hyde\":%d,\"classifications\":%d}%n",
                     useHyde ? "three-way" : "two-way", REQUESTS, latency.size(), SLOTS, peak.get(),
                     (System.nanoTime() - batchStart) / 1e6, latency.get(949) / 1e6,
-                    lexicalCalls.get(), vectorCalls.get(), embeddingCalls.get(), modelCalls.get());
+                    lexicalCalls.get(), vectorCalls.get(), embeddingCalls.get(), modelCalls.get(),
+                    classificationCalls.get());
         }
     }
 

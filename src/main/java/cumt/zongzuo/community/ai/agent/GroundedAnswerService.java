@@ -629,7 +629,7 @@ original messages when they conflict with summaries.
                                             () -> {
                                                 checkActive(deadline, running);
                                                 route.validate();
-                                            }));
+                                            }, question));
                     evidence.addArticles(result);
                     content =
                             result.authorizedChunks().stream()

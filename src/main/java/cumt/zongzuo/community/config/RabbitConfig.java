@@ -22,6 +22,28 @@ public class RabbitConfig {
 
     public static final String DEAD_LETTER_EXCHANGE = "community.dlx";
     public static final String DOMAIN_EVENT_EXCHANGE = "community.domain.events";
+    public static final String ARTICLE_DETAIL_CACHE_QUEUE = "article.detail.cache.queue";
+
+    /** 独立订阅文章事件，不与搜索消费者竞争同一队列里的消息。 */
+    @Bean
+    public Queue articleDetailCacheQueue() {
+        return workQueue(ARTICLE_DETAIL_CACHE_QUEUE);
+    }
+
+    @Bean
+    public Queue articleDetailCacheDeadLetterQueue() {
+        return deadLetterQueue(ARTICLE_DETAIL_CACHE_QUEUE);
+    }
+
+    @Bean
+    public Binding articleDetailCacheBinding() {
+        return BindingBuilder.bind(articleDetailCacheQueue()).to(domainEventExchange()).with("article.#");
+    }
+
+    @Bean
+    public Binding articleDetailCacheDeadLetterBinding() {
+        return deadLetterBinding(articleDetailCacheDeadLetterQueue(), ARTICLE_DETAIL_CACHE_QUEUE);
+    }
     public static final String ARTICLE_MODERATION_QUEUE = "article.moderation.queue";
     public static final String ARTICLE_MODERATION_RETRY_QUEUE = "article.moderation.retry.queue";
     public static final String ARTICLE_SEARCH_PROJECTION_QUEUE = "article.search.projection.queue";

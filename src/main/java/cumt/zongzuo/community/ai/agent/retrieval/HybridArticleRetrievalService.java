@@ -13,6 +13,8 @@ import org.springframework.ai.rag.Query;
 import org.springframework.ai.rag.postretrieval.document.DocumentPostProcessor;
 import org.springframework.ai.rag.retrieval.join.DocumentJoiner;
 import org.springframework.ai.rag.retrieval.search.DocumentRetriever;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -21,6 +23,7 @@ import java.util.List;
 import java.util.Map;
 
 public class HybridArticleRetrievalService {
+    private static final Logger log = LoggerFactory.getLogger(HybridArticleRetrievalService.class);
 
     private final ArticleChunkSearchRepository lexical;
     private final ArticleVectorRepository vectors;
@@ -34,7 +37,6 @@ public class HybridArticleRetrievalService {
     private final int contextLimit;
     private final Duration embeddingTimeout;
     private final HydeHypotheticalDocumentService hyde;
-    private final int hydeShortQueryCharacters;
     private final int hydeMinimumCandidates;
 
     public HybridArticleRetrievalService(ArticleChunkSearchRepository lexical,
@@ -49,7 +51,7 @@ public class HybridArticleRetrievalService {
                                          int contextLimit,
                                          Duration embeddingTimeout) {
         this(lexical, vectors, resolver, executor, embedding, clock, vectorAlias,
-                embeddingModel, candidateLimit, contextLimit, embeddingTimeout, null, 18, 3);
+                embeddingModel, candidateLimit, contextLimit, embeddingTimeout, null, 3);
     }
 
     public HybridArticleRetrievalService(ArticleChunkSearchRepository lexical,
@@ -64,7 +66,6 @@ public class HybridArticleRetrievalService {
                                          int contextLimit,
                                          Duration embeddingTimeout,
                                          HydeHypotheticalDocumentService hyde,
-                                         int hydeShortQueryCharacters,
                                          int hydeMinimumCandidates) {
         this.lexical = lexical;
         this.vectors = vectors;
@@ -78,11 +79,10 @@ public class HybridArticleRetrievalService {
         this.contextLimit = contextLimit;
         this.embeddingTimeout = embeddingTimeout;
         this.hyde = hyde;
-        if (hydeShortQueryCharacters < 1 || hydeMinimumCandidates < 1
+        if (hydeMinimumCandidates < 1
                 || hydeMinimumCandidates > contextLimit) {
             throw new IllegalArgumentException("HyDE retrieval thresholds are invalid");
         }
-        this.hydeShortQueryCharacters = hydeShortQueryCharacters;
         this.hydeMinimumCandidates = hydeMinimumCandidates;
     }
 
@@ -127,26 +127,32 @@ public class HybridArticleRetrievalService {
         List<Document> firstProcessed = postProcessor.process(standardQuery, firstJoined);
         checkActive(query);
         List<Document> hydeDocuments = List.of();
-        if (shouldUseHyde(query.query(), firstProcessed.size())) {
+        if (hyde != null) {
             try {
-                String hypotheticalDocument = hyde.generate(query.userId(), query.requestId(),
-                        query.query(), query.deadline(), query.route(), () -> checkActive(query));
-                checkActive(query);
-                Instant embeddingDeadline = min(query.deadline(),
-                        clock.instant().plus(embeddingTimeout));
-                float[] vector = embed(query, hypotheticalDocument,
-                        query.requestId() + ":hyde-embedding", embeddingDeadline,
-                        "HyDE embedding result is incompatible");
-                long parserGeneration = resolver.activeParserGeneration();
-                checkActive(query);
-                DocumentRetriever hydeRetriever = new ArticleVectorDocumentRetriever(vectors,
-                        vectorAlias, embeddingModel, candidateLimit, vector, parserGeneration,
-                        "hydeRank");
-                hydeDocuments = hydeRetriever.retrieve(new Query(hypotheticalDocument));
-                checkActive(query);
+                // 数量不足直接补召回；数量足够才请求语义分类，不再按问题长度猜测意图。
+                // 分类也在可选增强的故障边界内，但取消、超时和运行权撤销仍由下面重验。
+                if (shouldUseHyde(query, firstProcessed.size())) {
+                    String hypotheticalDocument = hyde.generate(query.userId(), query.requestId(),
+                            query.query(), query.deadline(), query.route(), () -> checkActive(query));
+                    checkActive(query);
+                    Instant embeddingDeadline = min(query.deadline(),
+                            clock.instant().plus(embeddingTimeout));
+                    float[] vector = embed(query, hypotheticalDocument,
+                            query.requestId() + ":hyde-embedding", embeddingDeadline,
+                            "HyDE embedding result is incompatible");
+                    long parserGeneration = resolver.activeParserGeneration();
+                    checkActive(query);
+                    DocumentRetriever hydeRetriever = new ArticleVectorDocumentRetriever(vectors,
+                            vectorAlias, embeddingModel, candidateLimit, vector, parserGeneration,
+                            "hydeRank");
+                    hydeDocuments = hydeRetriever.retrieve(new Query(hypotheticalDocument));
+                    checkActive(query);
+                }
             } catch (RuntimeException unavailable) {
                 requireFallbackAllowed(query, unavailable);
-                // HyDE 是召回增强而不是回答的单点依赖：任何失败都继续使用已完成的 BM25 + Dense。
+                // 只记录异常类型，不打印模型返回值或异常正文，避免私有问题进入日志。
+                log.debug("HyDE 增强跳过，使用已有候选：failureType={}", unavailable.getClass().getSimpleName());
+                // 可选分类/生成失败可降级，运行权撤销与整轮超时已在上面重新抛出。
                 hydeDocuments = List.of();
             }
         }
@@ -204,12 +210,13 @@ public class HybridArticleRetrievalService {
     }
 
     /**
-     * 短问题往往与长文档的字面形式差异最大；即使问题较长，首轮回源后的
-     * 真实有效候选过少也说明语义桥接不足。两者任一满足时只触发一次 HyDE。
+     * 保留数量触发，但只统计已通过公开版本校验与后处理的片段。
+     * 足量候选不等于覆盖了用户场景，因此另由模型判断是否属于描述型问题。
+     * 数量分支短路，避免已经确定需要扩展时再付出一次分类调用。
      */
-    private boolean shouldUseHyde(String query, int validCandidates) {
-        return hyde != null && (query.codePointCount(0, query.length()) <= hydeShortQueryCharacters
-                || validCandidates < hydeMinimumCandidates);
+    private boolean shouldUseHyde(ArticleRetrievalQuery query, int validCandidates) {
+        return validCandidates < hydeMinimumCandidates
+                || hyde.isDescriptive(query, () -> checkActive(query));
     }
 
     @SuppressWarnings("unchecked")

@@ -61,9 +61,26 @@ class ArticlePublishedPointerIntegrationTest extends IntegrationTestSupport {
     private RecommendationSessionStore recommendationSessionStore;
     @Autowired
     private FavoriteService favoriteService;
+    @Autowired
+    private cumt.zongzuo.community.event.outbox.DomainEventOutboxService outbox;
+    @Autowired
+    private org.springframework.transaction.support.TransactionTemplate transactions;
+    @org.springframework.test.context.bean.override.mockito.MockitoSpyBean
+    private cumt.zongzuo.community.article.service.PublishedArticleReadService publicReads;
+    @Autowired
+    private cumt.zongzuo.community.article.service.ArticleDetailCacheInvalidation cacheInvalidation;
+    @Autowired
+    private cumt.zongzuo.community.article.service.ArticleMutationFacade mutations;
+    @Autowired
+    private cumt.zongzuo.community.event.outbox.DomainEventPublisher publisher;
+    @Autowired
+    private cumt.zongzuo.community.event.outbox.DomainEventOutboxMapper outboxMapper;
+    @Autowired
+    private org.springframework.amqp.rabbit.core.RabbitTemplate rabbit;
 
     @BeforeEach
     void cleanAndSeedSentinels() {
+        jdbcTemplate.update("DELETE FROM domain_event_outbox WHERE aggregate_type='ARTICLE' AND aggregate_id BETWEEN 95101 AND 95109");
         redisTemplate.getConnectionFactory().getConnection().serverCommands().flushDb();
         try {
             articleRepository.deleteAll();
@@ -193,7 +210,7 @@ class ArticlePublishedPointerIntegrationTest extends IntegrationTestSupport {
     }
 
     @Test
-    void publicDetailIsStrictlyPublishedAndCacheIdentityChangesWithThePointer() {
+    void publicDetailUsesCacheUntilCommittedPublicationInvalidatesIt() {
         Article first = articleService.getDetail(ARTICLE_ID);
         assertThat(first.getContent()).isEqualTo("PUBLISHED_BODY");
         assertThat(first.getTagList()).containsExactly("published");
@@ -201,17 +218,123 @@ class ArticlePublishedPointerIntegrationTest extends IntegrationTestSupport {
         Long replacementId = jdbcTemplate.queryForObject(
                 "SELECT id FROM article_revision WHERE article_id=? AND revision_no=2",
                 Long.class, ARTICLE_ID);
-        jdbcTemplate.update("UPDATE article SET published_revision_id=? WHERE id=?", replacementId, ARTICLE_ID);
+        transactions.executeWithoutResult(status -> {
+            jdbcTemplate.update("UPDATE article SET published_revision_id=? WHERE id=?", replacementId, ARTICLE_ID);
+            appendCacheEvent(9001);
+            // 提交前不应删除缓存，更不能暴露未提交的新稿。
+            assertThat(redisTemplate.hasKey("article:detail:public:v3:revision:" + ARTICLE_ID)).isTrue();
+        });
 
         Article replacement = articleService.getDetail(ARTICLE_ID);
         assertThat(replacement.getContent()).isEqualTo("PENDING_BODY");
         assertThat(replacement.getContentHash()).isEqualTo("b".repeat(64));
 
-        jdbcTemplate.update("UPDATE article SET visibility_state='PRIVATE' WHERE id=?", ARTICLE_ID);
+        transactions.executeWithoutResult(status -> {
+            jdbcTemplate.update("UPDATE article SET visibility_state='PRIVATE' WHERE id=?", ARTICLE_ID);
+            appendCacheEvent(9002);
+        });
         assertThatThrownBy(() -> articleService.getDetail(ARTICLE_ID))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(error -> assertThat(((ResponseStatusException) error).getStatusCode().value())
                         .isEqualTo(404));
+    }
+
+    @Test
+    void rolledBackPublicationKeepsTheCachedPublicBody() {
+        articleService.getDetail(ARTICLE_ID);
+        transactions.executeWithoutResult(status -> {
+            jdbcTemplate.update("UPDATE article SET visibility_state='PRIVATE' WHERE id=?", ARTICLE_ID);
+            appendCacheEvent(9003);
+            status.setRollbackOnly();
+        });
+        assertThat(redisTemplate.hasKey("article:detail:public:v3:revision:" + ARTICLE_ID)).isTrue();
+        assertThat(articleService.getDetail(ARTICLE_ID).getContent()).isEqualTo("PUBLISHED_BODY");
+    }
+
+    @Test
+    void realRecycleAndRestoreInvalidatePublicAndMissingSnapshots() {
+        assertThat(articleService.getDetail(ARTICLE_ID).getContent()).isEqualTo("PUBLISHED_BODY");
+        mutations.recycle(ARTICLE_ID, AUTHOR_ID);
+        assertThatThrownBy(() -> articleService.getDetail(ARTICLE_ID)).isInstanceOf(ResponseStatusException.class);
+        mutations.restore(ARTICLE_ID, AUTHOR_ID);
+        assertThat(articleService.getDetail(ARTICLE_ID).getContent()).isEqualTo("PUBLISHED_BODY");
+    }
+
+    @Test
+    void durableRabbitEventCanDeleteStaleCacheAgainAfterImmediateEviction() {
+        articleService.getDetail(ARTICLE_ID);
+        String key = "article:detail:public:v3:revision:" + ARTICLE_ID;
+        String stale = redisTemplate.opsForValue().get(key);
+        // 清理本测试队列的历史样本，不碰其他消费者队列。
+        while (rabbit.receive(cumt.zongzuo.community.config.RabbitConfig.ARTICLE_DETAIL_CACHE_QUEUE) != null) { }
+        transactions.executeWithoutResult(status -> {
+            jdbcTemplate.update("UPDATE article SET visibility_state='PRIVATE' WHERE id=?", ARTICLE_ID);
+            appendCacheEvent(9004);
+        });
+        assertThat(redisTemplate.hasKey(key)).isFalse();
+        // 模拟首次删缓存没有生效或故障恢复后仍有残留；验证真正持久 MQ 的补删路径。
+        redisTemplate.opsForValue().set(key, stale);
+        var stored = outboxMapper.selectByDedupeKey("ARTICLE:" + ARTICLE_ID + ":0:9004:ARTICLE_UNPUBLISHED");
+        assertThat(stored).isNotNull();
+        try {
+            publisher.publish(stored.toEvent(new com.fasterxml.jackson.databind.ObjectMapper()), "cache-replay-test");
+        } catch (Exception failure) {
+            throw new AssertionError("持久事件重放失败", failure);
+        }
+        Object delivered = rabbit.receiveAndConvert(
+                cumt.zongzuo.community.config.RabbitConfig.ARTICLE_DETAIL_CACHE_QUEUE, 5000);
+        assertThat(delivered).isInstanceOf(cumt.zongzuo.community.event.domain.DomainEvent.class);
+        cacheInvalidation.consume((cumt.zongzuo.community.event.domain.DomainEvent) delivered);
+        cacheInvalidation.consume((cumt.zongzuo.community.event.domain.DomainEvent) delivered);
+        assertThat(redisTemplate.hasKey(key)).isFalse();
+        assertThatThrownBy(() -> articleService.getDetail(ARTICLE_ID)).isInstanceOf(ResponseStatusException.class);
+    }
+
+    private void appendCacheEvent(long version) {
+        var type = cumt.zongzuo.community.event.domain.DomainEventType.ARTICLE_UNPUBLISHED;
+        outbox.append("ARTICLE", ARTICLE_ID, version, 0, type, 1,
+                new com.fasterxml.jackson.databind.ObjectMapper().createObjectNode().put("articleId", ARTICLE_ID),
+                "ARTICLE:" + ARTICLE_ID + ":0:" + version + ":" + type.name());
+    }
+
+    @Test
+    void thousandHotHttpReadsAvoidMysqlAndKeepColdViewIncrements() throws Exception {
+        articleService.getDetail(ARTICLE_ID);
+        // 正文已预热，但浏览量 Key 冷启动，复现原先多请求 SET 覆盖增量的问题。
+        redisTemplate.delete("article:view:count:" + ARTICLE_ID);
+        org.mockito.Mockito.clearInvocations(publicReads);
+        var parser = new com.fasterxml.jackson.databind.ObjectMapper();
+        var start = new java.util.concurrent.CountDownLatch(1);
+        long batchStart = System.nanoTime();
+        try (var client = java.net.http.HttpClient.newBuilder()
+                .connectTimeout(java.time.Duration.ofSeconds(10)).build();
+             var workers = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
+            var results = java.util.stream.IntStream.range(0, 1000).mapToObj(index -> workers.submit(() -> {
+                start.await();
+                long begin = System.nanoTime();
+                var request = java.net.http.HttpRequest.newBuilder(java.net.URI.create(
+                        url("/api/article/detail/" + ARTICLE_ID)))
+                        .timeout(java.time.Duration.ofSeconds(20)).GET().build();
+                var response = client.send(request, java.net.http.HttpResponse.BodyHandlers.ofString());
+                assertThat(response.statusCode()).isEqualTo(200);
+                var body = parser.readTree(response.body());
+                assertThat(body.path("code").asInt()).isEqualTo(200);
+                assertThat(body.path("data").path("content").asText()).isEqualTo("PUBLISHED_BODY");
+                // 内部缓存保留版本身份，但 HTTP 仍必须遵守 @JsonIgnore 的隐私边界。
+                assertThat(body.path("data").has("publishedRevisionId")).isFalse();
+                return (System.nanoTime() - begin) / 1_000_000.0;
+            })).toList();
+            start.countDown();
+            var durations = new java.util.ArrayList<Double>();
+            for (var result : results) {
+                durations.add(result.get(30, java.util.concurrent.TimeUnit.SECONDS));
+            }
+            durations.sort(Double::compareTo);
+            System.out.printf("文章详情 HTTP 热缓存验证：1000/1000，P95=%.1f ms，总耗时=%.3f 秒%n",
+                    durations.get(949), (System.nanoTime() - batchStart) / 1_000_000_000.0);
+        }
+        org.mockito.Mockito.verify(publicReads, org.mockito.Mockito.never()).findById(org.mockito.ArgumentMatchers.anyLong());
+        assertThat(redisTemplate.opsForValue().get("article:view:count:" + ARTICLE_ID)).isEqualTo("1000");
     }
 
     @Test

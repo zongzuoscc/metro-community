@@ -8,6 +8,8 @@ logging:
     com.alibaba.cloud.ai.graph.agent: "OFF"
     # 官方 HyDE 的调试日志包含生成文档，可能源于私人上下文；仅保留业务侧无正文指标。
     com.alibaba.cloud.ai.rag.preretrieval.transformation.HyDeTransformer: "OFF"
+    # 结构化解析失败也会打印模型原文；语义路由仅保留无正文的降级信息。
+    org.springframework.ai.converter.BeanOutputConverter: "OFF"
 
 spring:
   config:
@@ -117,6 +119,9 @@ metro:
       elasticsearch-read-alias: ${METRO_STAGE_B_ES_READ_ALIAS:article-read}
       elasticsearch-pit-keep-alive: ${METRO_STAGE_B_ES_PIT_KEEP_ALIVE:PT1M}
   article:
+    detail-cache:
+      # 普通公开详情接受有界陈旧；写入提交后主动失效，Outbox 补删，TTL 作最终兜底。
+      ttl: ${METRO_ARTICLE_DETAIL_CACHE_TTL:PT30S}
     revision-mode: ${METRO_ARTICLE_REVISION_MODE:LEGACY}
     rollout-build:
       binary-generation: ${METRO_ARTICLE_ROLLOUT_BINARY_GENERATION:-1}

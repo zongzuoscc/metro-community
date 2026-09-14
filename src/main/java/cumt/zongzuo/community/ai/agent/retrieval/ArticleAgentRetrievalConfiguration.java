@@ -47,8 +47,6 @@ class ArticleAgentRetrievalConfiguration {
                     String vectorAlias,
             @Value("${metro.ai.agent-retrieval.candidate-limit:40}") int candidateLimit,
             @Value("${metro.ai.agent-retrieval.context-limit:8}") int contextLimit,
-            @Value("${metro.ai.agent-retrieval.hyde-short-query-characters:18}")
-                    int hydeShortQueryCharacters,
             @Value("${metro.ai.agent-retrieval.hyde-minimum-candidates:3}")
                     int hydeMinimumCandidates) {
         if (candidateLimit < 1 || candidateLimit > 100 || contextLimit < 1 || contextLimit > 16) {
@@ -82,7 +80,6 @@ class ArticleAgentRetrievalConfiguration {
                 contextLimit,
                 min(properties.getAgent().getTimeout(), properties.getEmbedding().getTimeout()),
                 hyde,
-                hydeShortQueryCharacters,
                 hydeMinimumCandidates);
     }
 
