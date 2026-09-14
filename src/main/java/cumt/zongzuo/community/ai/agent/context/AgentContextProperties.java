@@ -11,8 +11,9 @@ import java.util.Map;
 @ConfigurationProperties("metro.ai.context")
 @org.springframework.stereotype.Component
 public class AgentContextProperties {
-    private int workingWindowTokens = 262144;
-    private int platformWindowTokens = 32768;
+    // 平台 qwen-plus 按百万总窗口配置；输入仍需扣除输出预留与估算安全余量。
+    private int workingWindowTokens = 1_000_000;
+    private int platformWindowTokens = 1_000_000;
     private int unknownModelWindowTokens = 8192;
     private int maxOutputTokens = 4096;
     private int safetyMarginTokens = 1024;
@@ -21,7 +22,7 @@ public class AgentContextProperties {
     private Map<String, Integer> modelWindows = new HashMap<>();
 
     public void validate() {
-        if (workingWindowTokens < 2048 || workingWindowTokens > 262144
+        if (workingWindowTokens < 2048 || workingWindowTokens > 1_000_000
                 || platformWindowTokens < 2048 || unknownModelWindowTokens < 2048
                 || maxOutputTokens < 256 || safetyMarginTokens < 256
                 || historyPageTurns < 1 || historyPageTurns > 64

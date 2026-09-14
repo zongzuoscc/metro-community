@@ -154,7 +154,7 @@ original messages when they conflict with summaries.
                 webSearch,
                 planner,
                 new AgentPromptBudget(new AgentContextProperties()),
-                400_000);
+                4_000_000);
     }
 
     public GroundedAnswerService(

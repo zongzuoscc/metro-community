@@ -14,6 +14,23 @@ class AgentContextAssemblerTest {
     private final AgentPromptBudget budget = new AgentPromptBudget(new AgentContextProperties());
     private final AgentContextAssembler assembler = new AgentContextAssembler(budget, 400_000);
 
+    /** 超过旧字符上限但仍在 token 预算内的完整历史，应原样保留而不是提前裁剪。 */
+    @Test
+    void defaultConfigurationRetainsLongHistoryBeyondOldCharacterLimit() {
+        var properties = new cumt.zongzuo.community.ai.config.MetroAiProperties();
+        var configured = new AgentContextAssembler(budget, properties.getAgent().getMaxInputCharacters());
+        String answer = " context".repeat(100000);
+        var result = configured.assemble("系统", "继续", List.of(), List.of(), List.of(), List.of(),
+                List.of(row(1, 1, "USER", "请解释上下文"), row(2, 1, "ASSISTANT", answer)),
+                List.of(), AgentWebSearchResult.empty(),
+                budget.limits("platform", cumt.zongzuo.community.ai.userprovider.UserAiFundingSource.PLATFORM));
+        assertThat(result.history()).extracting(AgentConversationHistoryHit::messageId)
+                .containsExactly(1L, 2L);
+        assertThat(result.messages().getLast().text()).contains(answer);
+        assertThat(result.reduced()).isFalse();
+        assertThat(result.estimatedInputTokens()).isBetween(100000, 994880);
+    }
+
     @Test
     void deduplicatesRecentAndRetrievedHistoryByMessageId() {
         var user = row(1, 1, "USER", "三个方案");

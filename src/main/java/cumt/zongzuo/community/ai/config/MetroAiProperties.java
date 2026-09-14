@@ -10,7 +10,8 @@ import java.time.Duration;
 public class MetroAiProperties {
 
     private boolean enabled;
-    private CapabilityProperties agent = capability(false, 400_000, 600, 24, 100,
+    // 字符限制是请求体保护，不等同于 token 窗口；避免旧的 40 万字符上限提前裁剪长上下文。
+    private CapabilityProperties agent = capability(false, 4_000_000, 600, 24, 100,
             Duration.ofMinutes(1), Duration.ofSeconds(45), Duration.ofSeconds(45), 32);
     private PlannerProperties planner = new PlannerProperties();
     private CapabilityProperties articleSummary = capability(false, 100_000, 0, 5, 30,

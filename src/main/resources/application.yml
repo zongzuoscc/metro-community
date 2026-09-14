@@ -197,7 +197,8 @@ metro:
       turn-recovery-enabled: ${METRO_AI_AGENT_TURN_RECOVERY_ENABLED:false}
       turn-recovery-delay-ms: ${METRO_AI_AGENT_TURN_RECOVERY_DELAY_MS:10000}
       # 字符上限只作最终防护；实际提示词先按 context 的 Token 预算自动裁减。
-      max-input-characters: ${METRO_AI_AGENT_MAX_INPUT_CHARACTERS:400000}
+      # 独立字符保护线；最终请求仍须满足所选模型的 token 预算。
+      max-input-characters: ${METRO_AI_AGENT_MAX_INPUT_CHARACTERS:4000000}
       per-minute: 24 # 按模型调用计数，包含 ReAct 决策和 HyDE，不是用户提问次数
       per-day: 100
       quota-window: PT1M
@@ -212,9 +213,9 @@ metro:
       sse-timeout: ${METRO_AI_SSE_TIMEOUT:PT3M}
     context:
       # 业务安全上限，不是固定输入目标；实际仍与已确认的模型容量取较小值。
-      working-window-tokens: ${METRO_AI_CONTEXT_WORKING_WINDOW_TOKENS:262144}
-      # 此处是部署者确认的可用容量，不是根据模型名称猜测供应商规格。
-      platform-window-tokens: ${METRO_AI_CONTEXT_PLATFORM_WINDOW_TOKENS:32768}
+      working-window-tokens: ${METRO_AI_CONTEXT_WORKING_WINDOW_TOKENS:1000000}
+      # 当前平台 qwen-plus 按百万窗口配置；更换模型时需核对容量并调整或按精确模型名覆盖。
+      platform-window-tokens: ${METRO_AI_CONTEXT_PLATFORM_WINDOW_TOKENS:1000000}
       unknown-model-window-tokens: ${METRO_AI_CONTEXT_UNKNOWN_MODEL_WINDOW_TOKENS:8192}
       max-output-tokens: ${METRO_AI_CONTEXT_MAX_OUTPUT_TOKENS:4096}
       safety-margin-tokens: ${METRO_AI_CONTEXT_SAFETY_MARGIN_TOKENS:1024}
