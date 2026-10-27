@@ -53,12 +53,12 @@ public abstract class IntegrationTestSupport {
 
     private static final AtomicBoolean SCHEMA_INITIALIZED = new AtomicBoolean();
 
-    protected static final MySQLContainer<?> MYSQL = new MySQLContainer<>("mysql:8.0");
+    protected static final MySQLContainer<?> MYSQL = new MySQLContainer<>("mysql:8.4.10");
 
-    static final GenericContainer<?> REDIS = new GenericContainer<>("redis:7-alpine")
+    static final GenericContainer<?> REDIS = new GenericContainer<>("redis:8.2-alpine")
             .withExposedPorts(6379);
 
-    static final RabbitMQContainer RABBIT = new RabbitMQContainer("rabbitmq:3.13-management");
+    static final RabbitMQContainer RABBIT = new RabbitMQContainer("rabbitmq:4.1-management-alpine");
 
     /**
      * 应用映射使用 IK 分词，因此集成测试必须与本地部署使用同一种 ES 镜像组成。

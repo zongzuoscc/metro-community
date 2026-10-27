@@ -34,7 +34,7 @@ class StageCProjectionSchemaIntegrationTest {
             "projection_switch_fence");
 
     @Container
-    private static final MySQLContainer<?> MYSQL = new MySQLContainer<>("mysql:8.0");
+    private static final MySQLContainer<?> MYSQL = new MySQLContainer<>("mysql:8.4.10");
 
     @Test
     void freshAndForwardSchemasConvergeAndSeedTheExactConsumerManifest() {

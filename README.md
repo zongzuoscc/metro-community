@@ -61,11 +61,17 @@
 
 需要 JDK 21、Docker（或已有的 MySQL 8、Redis、RabbitMQ、Elasticsearch 8）。Elasticsearch 必须安装仓库中 `elasticsearch/` Dockerfile 使用的 IK 插件。
 
+本地 Compose 与 Testcontainers 统一使用 `mysql:8.4.10`、`redis:8.2-alpine`、`rabbitmq:4.1-management-alpine`。其他项目可以复用同一份镜像层，但本项目的容器、网络、数据库、数据卷和端口仍独立，不共享中间件实例。Milvus、etcd、MinIO 继续使用已有的锁定镜像。
+
 项目 Docker Compose 使用独立默认端口：MySQL `13306`、Redis `16379`、RabbitMQ AMQP `15673` / 管理台 `15674`、Elasticsearch `19200`、Kibana `15601`，避免占用常见的本机开发端口。可以通过 `.env` 中的 `*_HOST_PORT` 覆盖它们。
 
+启动前准备好本机镜像；以下命令不自动拉取新版本：
+
 ```bash
-docker compose up -d
+docker compose up -d --pull never
 ```
+
+已有 MySQL 8.0、Redis 7 或 RabbitMQ 3.13 数据时，先备份并完成对应版本的迁移验证，不要让新镜像直接打开唯一的数据副本。重建 RabbitMQ 容器前，将原节点名 `rabbit@` 后的主机名填入 `.env` 的 `RABBITMQ_HOSTNAME`，保留旧节点身份；默认值只用于新环境，不能用它替换已有数据卷对应的节点名。升级期间保留原有卷名和端口，禁止使用 `docker compose down -v` 清空数据。
 
 ### 2. 初始化数据库与环境变量
 

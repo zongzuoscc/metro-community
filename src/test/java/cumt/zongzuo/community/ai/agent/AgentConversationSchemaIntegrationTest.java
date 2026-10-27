@@ -22,7 +22,7 @@ class AgentConversationSchemaIntegrationTest {
             "agent_tool_call", "agent_retrieval_hit", "agent_answer_citation");
 
     @Container
-    private static final MySQLContainer<?> MYSQL = new MySQLContainer<>("mysql:8.0");
+    private static final MySQLContainer<?> MYSQL = new MySQLContainer<>("mysql:8.4.10");
 
     @Test
     void forwardMigrationIsIdempotentAndBuildsTheOwnerScopedTruthGraph() {

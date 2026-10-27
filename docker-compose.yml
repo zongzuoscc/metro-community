@@ -1,6 +1,6 @@
 services:
   mysql:
-    image: mysql:8.0
+    image: mysql:8.4.10
     restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in .env}
@@ -20,7 +20,7 @@ services:
       retries: 12
 
   redis:
-    image: redis:7-alpine
+    image: redis:8.2-alpine
     restart: unless-stopped
     command: redis-server --requirepass ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env} --appendonly yes
     ports:
@@ -38,7 +38,8 @@ services:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
 
   rabbitmq:
-    image: rabbitmq:3.13-management
+    image: rabbitmq:4.1-management-alpine
+    hostname: ${RABBITMQ_HOSTNAME:-metro-community-rabbitmq}
     restart: unless-stopped
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USERNAME:-metro}

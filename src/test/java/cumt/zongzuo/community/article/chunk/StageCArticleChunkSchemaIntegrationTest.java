@@ -29,7 +29,7 @@ class StageCArticleChunkSchemaIntegrationTest {
             "article_chunk_set", "article_chunk");
 
     @Container
-    private static final MySQLContainer<?> MYSQL = new MySQLContainer<>("mysql:8.0");
+    private static final MySQLContainer<?> MYSQL = new MySQLContainer<>("mysql:8.4.10");
 
     @Test
     void freshAndForwardSchemasConvergeAndMigrationIsIdempotent() {

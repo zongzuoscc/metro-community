@@ -22,7 +22,7 @@ class AgentMemorySchemaIntegrationTest {
             "agent_memory_setting");
 
     @Container
-    private static final MySQLContainer<?> MYSQL = new MySQLContainer<>("mysql:8.0");
+    private static final MySQLContainer<?> MYSQL = new MySQLContainer<>("mysql:8.4.10");
 
     @Test
     void memoryMigrationIsIdempotentAndOwnerScoped() {

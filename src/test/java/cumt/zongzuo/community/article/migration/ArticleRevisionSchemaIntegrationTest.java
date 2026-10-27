@@ -58,7 +58,7 @@ class ArticleRevisionSchemaIntegrationTest {
             "TEST_CHECKPOINT_AFTER_ROLLOUT_CHECKPOINT_CREATE";
 
     @Container
-    private static final MySQLContainer<?> MYSQL = new MySQLContainer<>("mysql:8.0");
+    private static final MySQLContainer<?> MYSQL = new MySQLContainer<>("mysql:8.4.10");
 
     @Test
     void migrationIsIdempotentAndMatchesTheCompleteSchemaManifest() {
