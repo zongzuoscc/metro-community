@@ -44,6 +44,15 @@ public class AgentMemoryRecallService {
         return service.recall(userId, query, limit, deadline);
     }
 
+    /** 仅报告持久投影队列状态，不在回答路径触发 embedding 或补索引。 */
+    public AgentMemoryVectorService.IndexStatus indexStatus(long userId) {
+        mapper.ensureSetting(userId);
+        if (!Boolean.TRUE.equals(mapper.enabled(userId))) return AgentMemoryVectorService.IndexStatus.DISABLED;
+        AgentMemoryVectorService service = vectors.getIfAvailable();
+        if (service == null) throw new IllegalStateException("Persistent memory vector service is unavailable");
+        return service.indexStatus(userId);
+    }
+
     public List<AgentMemoryView> list(long userId) {
         mapper.ensureSetting(userId);
         return mapper.listActive(userId, 100);

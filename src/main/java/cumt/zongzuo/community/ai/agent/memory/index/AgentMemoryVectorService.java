@@ -12,7 +12,7 @@ import java.util.*;
 
 /**
  * 持久记忆向量同步与召回边界。MySQL 为唯一事实源，Milvus 为可重建派生索引。
- * 调用者须先提交 PENDING 事务；失败必须上抛，不能用词法召回掩盖索引未完成。
+ * 调用者须先提交 PENDING 事务，后台 Worker 构建索引；召回不等待积压投影，失败不降级为词法。
  */
 @Service
 @ConditionalOnProperty(name = {"metro.ai.enabled", "metro.ai.embedding.enabled", "metro.ai.memory.enabled"}, havingValue = "true")
@@ -114,7 +114,8 @@ public class AgentMemoryVectorService {
         requireOutsideTransaction();
         if (limit < 1 || limit > 256) throw new IllegalArgumentException("recall limit must be 1..256");
         if (question == null || question.isBlank()) return List.of();
-        synchronize(userId, deadline);
+        if (userId <= 0) throw new IllegalArgumentException("userId must be positive");
+        checkDeadline(deadline);
         if (!Boolean.TRUE.equals(mapper.enabled(userId))) return List.of();
         float[] query = embed(userId, List.of(question.strip()), deadline).getFirst();
         int candidates = Math.min(1024, limit * 4);
@@ -141,6 +142,32 @@ public class AgentMemoryVectorService {
         }
         checkDeadline(deadline);
         return Boolean.TRUE.equals(mapper.enabled(userId)) ? List.copyOf(current) : List.of();
+    }
+
+    /** 供 ReAct 回执区分“没有命中”和“索引尚未追上正文提交”；不触发任何网络调用。 */
+    public IndexStatus indexStatus(long userId) {
+        if (userId <= 0) throw new IllegalArgumentException("userId must be positive");
+        if (!Boolean.TRUE.equals(mapper.enabled(userId))) return IndexStatus.DISABLED;
+        return mapper.countPendingVectorProjections(userId, model) > 0 ? IndexStatus.PENDING : IndexStatus.CURRENT;
+    }
+
+    public enum IndexStatus { DISABLED, PENDING, CURRENT }
+
+    /** 后台一次仅接收一个所有者的一页记录；当前版本、设置和 CAS 仍在提交投影时重新验证。 */
+    void projectBatch(long userId, List<MemoryProjectionRow> rows, Instant deadline) {
+        requireOutsideTransaction();
+        if (userId <= 0 || rows.isEmpty() || rows.size() > pageSize)
+            throw new IllegalArgumentException("Invalid memory projection batch");
+        checkDeadline(deadline);
+        if (!Boolean.TRUE.equals(mapper.enabled(userId))) return;
+        long previous = 0;
+        for (MemoryProjectionRow row : rows) {
+            if (row.userId() != userId || row.memoryVersionId() <= previous
+                    || !Set.of("PENDING", "FAILED", "PROJECTED").contains(row.state()))
+                throw new IllegalArgumentException("Memory projection batch lost owner or ordering");
+            previous = row.memoryVersionId();
+        }
+        project(userId, rows, deadline);
     }
 
     private void project(long userId, List<MemoryProjectionRow> rows, Instant deadline) {

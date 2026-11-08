@@ -2,10 +2,8 @@ package cumt.zongzuo.community.ai.agent.context;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import cumt.zongzuo.community.ai.agent.memory.*;
-import cumt.zongzuo.community.ai.agent.memory.index.AgentMemoryVectorService;
 import cumt.zongzuo.community.ai.config.MetroAiProperties;
 import cumt.zongzuo.community.ai.runtime.AiCapabilityExecutor;
-import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.*;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -13,7 +11,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 import javax.sql.DataSource;
 import java.time.Clock;
 
-/** 启用持久 Agent 就启用回答前压缩；记忆开关只控制事实提取，不再控制工作上下文是否可压缩。 */
+/** 启用持久 Agent 就启用回答前压缩；必要压缩只保存摘要，长期记忆由 Agent 工具主动管理。 */
 @Configuration(proxyBeanMethods=false)
 @ConditionalOnProperty(name={"metro.ai.enabled","metro.ai.agent.enabled"},havingValue="true")
 public class AgentCompactionConfiguration {
@@ -26,14 +24,9 @@ public class AgentCompactionConfiguration {
     }
     @Bean AgentCompactionGraph agentCompactionGraph(AgentCompactionStore store,AiCapabilityExecutor executor,
                                                    ObjectMapper json,AgentContextProperties contexts,
-                                                   AgentMemorySafetyPolicy safety,Clock clock,MetroAiProperties properties,
-                                                   ObjectProvider<AgentMemoryVectorService> vectors) {
+                                                   AgentMemorySafetyPolicy safety,Clock clock,MetroAiProperties properties) {
         var budget=new AgentPromptBudget(contexts);
         var model=new GatewayAgentCompactionModel(executor,json,budget,safety,clock,properties.getAgent().getMaxInputCharacters());
-        return new AgentCompactionGraph(store,model,(userId,deadline)-> {
-            var service=vectors.getIfAvailable();
-            if (service==null) throw new IllegalStateException("Persistent memory vector service is unavailable");
-            service.synchronize(userId,deadline);
-        },budget,safety,clock,properties.getAgent().getMaxInputCharacters());
+        return new AgentCompactionGraph(store,model,budget,safety,clock,properties.getAgent().getMaxInputCharacters());
     }
 }

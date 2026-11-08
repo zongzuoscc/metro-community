@@ -13,7 +13,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 /**
  * 在单个 MySQL 事务中提交持久 Agent 的回答、引用、个人上下文使用记录与终态。
  *
- * <p>长期记忆由回答前的 LLM 压缩阶段提取并完成持久向量同步；本事务只记录本轮实际使用
+ * <p>长期记忆由 Agent 工具在短事务中保存，向量投影由后台 Worker 更新；本事务只记录本轮实际使用
  * 的记忆，不再从回答后的用户原话做规则捕获，也不在数据库事务中触发模型或向量调用。</p>
  */
 @Service

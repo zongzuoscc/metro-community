@@ -983,7 +983,7 @@ CREATE TABLE agent_memory_source (
     memory_id BIGINT NOT NULL, memory_version_id BIGINT NOT NULL,
     source_turn_id BIGINT NOT NULL, source_message_id BIGINT NOT NULL,
     created_at DATETIME(6) NOT NULL, PRIMARY KEY (id),
-    UNIQUE KEY uk_agent_memory_source_message (memory_id,source_message_id),
+    UNIQUE KEY uk_agent_memory_source_version_message (memory_version_id,source_message_id),
     CONSTRAINT fk_agent_memory_source_item FOREIGN KEY (memory_id,user_id)
         REFERENCES agent_memory_item(id,user_id),
     CONSTRAINT fk_agent_memory_source_version FOREIGN KEY (memory_version_id,memory_id,user_id)

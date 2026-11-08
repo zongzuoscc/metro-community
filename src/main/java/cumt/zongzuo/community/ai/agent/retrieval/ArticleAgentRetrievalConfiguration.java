@@ -116,7 +116,8 @@ class ArticleAgentRetrievalConfiguration {
             ObjectProvider<AgentWebSearchGateway> webSearch,
             ObjectProvider<NativeAgentRuntime> planner,
             cumt.zongzuo.community.ai.agent.context.AgentContextProperties contextProperties,
-            cumt.zongzuo.community.ai.agent.context.AgentCompactionGraph compaction) {
+            cumt.zongzuo.community.ai.agent.context.AgentCompactionGraph compaction,
+            cumt.zongzuo.community.ai.agent.memory.AgentMemoryToolService memoryTools) {
         String model = properties.getPlatform().getModel();
         if (model == null || model.isBlank()) {
             throw new IllegalStateException("Agent model must not be blank");
@@ -136,7 +137,7 @@ class ArticleAgentRetrievalConfiguration {
                 planner.getIfAvailable(),
                 new cumt.zongzuo.community.ai.agent.context.AgentPromptBudget(contextProperties),
                 properties.getAgent().getMaxInputCharacters(),
-                compaction);
+                compaction, memoryTools);
     }
 
     private static Duration min(Duration left, Duration right) {

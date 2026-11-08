@@ -32,8 +32,16 @@ public final class AgentContextAssembler {
                               List<AgentEpisodeSummaryView> summaries,
                               List<AgentConversationHistoryHit> recent, List<String> temporary,
                               AgentWebSearchResult web, AgentPromptBudget.Limits limits) {
+        return assemble(system, question, sources, memories, history, summaries, recent, temporary, web, limits, false);
+    }
+
+    public Assembled assemble(String system, String question, List<ResolvedArticleChunk> sources,
+                              List<AgentMemoryView> memories, List<AgentConversationHistoryHit> history,
+                              List<AgentEpisodeSummaryView> summaries, List<AgentConversationHistoryHit> recent,
+                              List<String> temporary, AgentWebSearchResult web, AgentPromptBudget.Limits limits,
+                              boolean contextReduced) {
         var selected = new Selection(sources, memories, history, summaries, recent, temporary, web);
-        return fit(system, question, selected, limits, false);
+        return fit(system, question, selected, limits, contextReduced);
     }
 
     private Assembled fit(String system, String question, Selection selected,
@@ -137,6 +145,14 @@ public final class AgentContextAssembler {
                                       List<AgentMemoryView> memories, List<AgentConversationHistoryHit> history,
                                       List<AgentEpisodeSummaryView> summaries, AgentConversationPage page,
                                       AgentWebSearchResult web, AgentPromptBudget.Limits limits) {
+        return assemblePrepared(system, question, sources, memories, history, summaries, page, web, limits, false);
+    }
+
+    public Assembled assemblePrepared(String system, String question, List<ResolvedArticleChunk> sources,
+                                      List<AgentMemoryView> memories, List<AgentConversationHistoryHit> history,
+                                      List<AgentEpisodeSummaryView> summaries, AgentConversationPage page,
+                                      AgentWebSearchResult web, AgentPromptBudget.Limits limits,
+                                      boolean contextReduced) {
         if (!page.exhausted()) throw new IllegalArgumentException("Prepared context must have a closed history boundary");
         var selected=new Selection(sources,memories,history,summaries,page.messages(),List.of(),web);
         // 已完成压缩的摘要替代了旧原文，不能像可选旧 episode 摘要一样随手删掉。
@@ -145,7 +161,7 @@ public final class AgentContextAssembler {
                 .distinct().sorted(java.util.Comparator.reverseOrder()).limit(3)
                 .collect(java.util.stream.Collectors.toSet());
         selected.protectSummaries=true;
-        return fit(system,question,selected,limits,false);
+        return fit(system,question,selected,limits,contextReduced);
     }
 
     private boolean fits(String system, String question, Selection selected, AgentPromptBudget.Limits limits) {

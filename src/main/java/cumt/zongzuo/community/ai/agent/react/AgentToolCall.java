@@ -1,28 +1,27 @@
 package cumt.zongzuo.community.ai.agent.react;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import cumt.zongzuo.community.ai.agent.planner.AgentReadOnlyTool;
-
 import java.util.Objects;
 import java.util.regex.Pattern;
 
-/**
- * 模型一次只能选择一个后端白名单工具，并仅提供检索文字。
- *
- * <p>查询在边界上统一去掉首尾空白；按 Unicode code point 限制长度，
- * 避免表情等补充字符被 UTF-16 错误按两字计数。此协议不接收 URL、SQL
- * 或用户身份等可扩大权限的独立参数。</p>
- */
-public record AgentToolCall(AgentReadOnlyTool tool, String query) {
-    private static final int MAX_QUERY_CODE_POINTS = 2_000;
-    private static final Pattern WHITESPACE = Pattern.compile("\\s+",
-            Pattern.UNICODE_CHARACTER_CLASS);
+/** 服务端白名单工具参数；身份和运行权始终由调用栈绑定，模型不能提供。 */
+public record AgentToolCall(AgentReadOnlyTool tool, String query, JsonNode arguments) {
+    private static final Pattern WHITESPACE = Pattern.compile("\\s+", Pattern.UNICODE_CHARACTER_CLASS);
+
+    public AgentToolCall(AgentReadOnlyTool tool, String query) { this(tool, query, null); }
 
     public AgentToolCall {
-        Objects.requireNonNull(tool, "tool must not be null");
-        Objects.requireNonNull(query, "query must not be null");
-        query = WHITESPACE.matcher(query.strip()).replaceAll(" ");
-        if (query.isBlank() || query.codePointCount(0, query.length()) > MAX_QUERY_CODE_POINTS) {
-            throw new IllegalArgumentException("Agent tool query must contain 1 to 2000 code points");
+        Objects.requireNonNull(tool, "tool");
+        if (arguments == null) {
+            Objects.requireNonNull(query, "query");
+            query = WHITESPACE.matcher(query.strip()).replaceAll(" ");
+            if (query.isBlank() || query.codePointCount(0, query.length()) > 2_000)
+                throw new IllegalArgumentException("Agent tool query must contain 1 to 2000 code points");
+        } else {
+            if (!arguments.isObject()) throw new IllegalArgumentException("Object arguments required");
+            arguments = arguments.deepCopy();
+            query = "";
         }
     }
 }

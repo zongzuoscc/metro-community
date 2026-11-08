@@ -1,78 +1,70 @@
-# 回答前压缩与持久向量记忆
+# AgeMem 工具化记忆与工作上下文
 
-## 本次实际接入的范围
+## 接入范围
 
-引入 Spring AI Alibaba Graph 1.1.2.0，Spring AI 依赖仍由现有 1.1.8 BOM 统一管理。
-持久主对话现在实际执行：
+本实现借鉴 AgeMem 的长短期记忆统一管理机制，使用项目既有 Spring AI Alibaba 1.1.2.0 `ReactAgent` 和官方消息 hook。没有训练强化学习策略，也不宣称复现论文结果。依赖继续使用 Spring Boot 3.5.16、Spring AI 1.1.8、Java 21。
+
+持久对话的流程：
 
 ```text
-接纳 turn、获得用户运行租约
-  → Graph 加载当前主对话边界和最近完整轮次
-  → 未压缩原文接近模型输入预算：模型同时生成内部摘要与带原文证据的记忆
-  → MySQL 短事务保存 PENDING 压缩批次、记忆版本、来源、待投影记录
-  → Embedding → Milvus 幂等 upsert → STRONG 查询确认可见
-  → MySQL 再校验运行租约/主对话边界，批次置为 READY
-  → 重新检查剩余上下文 → ReAct 动作/观察循环 → 最终回答 → 原有回答落库事务
+接纳 turn、持有用户运行租约
+  → 必要预算压缩（只生成工作摘要，不自动提取长期事实）
+  → 先检索站内文章；开启联网时先执行一次公开搜索
+  → ReactAgent 自主选择记忆工具和检索工具
+      ADD/UPDATE/DELETE → MySQL 正文、不可变版本、来源与 PENDING 投影短事务提交
+      RETRIEVE → 查询向量、Milvus 用户隔离召回、MySQL 当前版本复核
+      SUMMARY/FILTER → 修改本轮有效工作上下文
+  → 最终模型从同一有效视图流式回答
+  → 引用校验、回答落库、成功终态
+
+独立 Worker：持久 PENDING/FAILED 投影 → Embedding → Milvus upsert/可见性确认 → PROJECTED
+独立删除 Worker：DELETING → Milvus 删除确认 → DELETED
 ```
 
-检索部分已替换为完整 ReAct 动作/观察循环，详见 [ReAct 执行说明](agent-react.md)。
-上下文压缩仍由确定性的 Graph 流程负责，不让模型自行决定是否跳过持久化检查。
-Graph 管执行顺序，不拥有数据库写权限或用户 API Key；没有使用进程内 MemorySaver 代替聊天数据库。
-模型 HTTP 传输仍通过项目的 `PreparedUserAiChat`，保留用户自定义地址的 DNS 固定、SSRF 校验、配额、超时与密钥加密。
+正文提交与向量索引完成是两个状态。回答不等待新记忆索引完成；查询本身所需的 embedding 和 Milvus 检索仍是同步操作，失败会明确报错，不退回词法记忆。
 
-## 上下文与记忆规则
+## 工具与选择策略
 
-- 模型输入预算扣除输出和安全余量后，默认在约 70% 水位触发。不是每轮压缩，也不是固定每 20 轮。
-- 每次压缩只覆盖成功的完整旧问答，至少保留最近三个完整轮次；最终提示词也保护这三轮与有效摘要，先裁减检索补充资料。必选内容仍超过所选模型容量时明确失败，不静默退回一轮。当前问题不进入本次历史压缩。
-- 压缩批次以实际完整 JSON 提示词检查容量，包括系统词、消息 ID、角色、时间及旧摘要；不能只统计正文 token，否则大量短消息也可能超过模型窗口。
-- 旧上下文分批处理，每个请求最多推进 8 个批次，并受整轮 deadline 约束。超大单轮超过当前模型可接受输入时明确失败，不偷偷截断后宣称完整处理。
-- 摘要只替换传给模型的工作上下文，`agent_message` 不删除、不改写；前端聊天历史仍展示原文。
-- 记忆不再依赖“我喜欢”“我偏好”等词法规则。模型输出必须带当前批次中 USER 消息 ID 和可匹配的连续原文；助手建议不能作为用户事实。
-- “日常喜欢蓝色”和“外套偏向黑色”要求保留对象/范围，作为两条事实。当前去重是规范化内容哈希，不宣称已实现可靠的语义冲突自动合并，也不能保证模型不会漏提取。
-- 每条有效记忆在 MySQL 保存事实、在独立 Milvus collection 保存向量。查询直接进行用户隔离的向量召回，不再先挑最近 100 条再临时向量化。
-- Milvus 使用余弦相似度，默认最低分 0.35，只是可调阈值，需根据实际 Embedding 模型和测试问题校准。
-- 向量命中后回 MySQL 校验所有者、当前版本、ACTIVE 状态、到期时间与记忆开关。修改/删除不会只依赖索引刷新。
-- 关闭长期记忆：不提取/检索长期事实，但仍能压缩工作上下文。临时对话完全不进入该持久流水线。
-- 删除/暂停记忆不等于删除原始聊天，用户事实可能仍存在于授权的聊天原文与工作摘要中。删除记忆不是“彻底忘记全部历史”。
+| 工具 | 作用 | 后端边界 |
+| --- | --- | --- |
+| ADD | 新增未来有用的用户事实 | 原文证据、敏感信息策略、所有者、运行权、记忆开关、内容哈希去重 |
+| UPDATE | 用新事实更新已有记忆 | 同上并要求 expectedVersion，生成新不可变版本 |
+| DELETE | 删除不再适用的记忆 | 版本与运行权校验，数据库立即失效，向量后台删除 |
+| RETRIEVE | 语义召回长期记忆 | owner、ACTIVE、到期时间、当前版本、记忆开关，明确索引状态 |
+| SUMMARY | 摘要可压缩的历史片段 | 摘要替换选中工作上下文，保留原始聊天 |
+| FILTER | 移除当前任务不需要的片段 | 只改变工作上下文，不删除数据库消息或推进持久历史水位 |
 
-## 失败与一致性
+系统提示词说明何时操作，工具 schema 说明参数；最终权限和一致性由服务端执行。模型可以完全不调用记忆工具，不强制每轮“先查、再更新或新增”。相同参数的重复调用不重复执行；没有有效上下文变化或新证据的重复动作不会无限继续。
 
-MySQL 和 Milvus **不在同一事务中**。MySQL 先提交可恢复的批次和待投影记录；Milvus 以 `memory_version_id` 为幂等主键写入。
-写入成功但数据库状态更新失败时，重试同一版本即可；压缩批次未 READY 前不推进工作上下文水位，也不调用最终回答模型。
-重试优先恢复已保存的 PENDING 批次，不重新生成整批记忆。当前恢复由下一次主对话请求驱动，待删除向量另有 Worker 定时清理。
-若恢复时长期记忆已关闭，只启用批次中的工作摘要，不要求向量服务；此前保存的事实和待投影记录保留，重新开启记忆后的召回同步会继续处理。
+每次 Agent 写操作返回该事务准确的 beforeEpoch/afterEpoch。当前回答只接纳自己提交的这一次变化；不通过重新读取最新 epoch 吞掉其他页面的人工修改。外部编辑、删除、暂停、关闭记忆继续使使用旧数据的回答取消。
 
-Embedding/Milvus 失败会显式终止本轮，不回退长期记忆词法召回。文章 BM25 与旧历史检索不受这次删除影响。
-网络调用不持有数据库连接或行锁；记忆管理与压缩事务统一会话优先的锁顺序，事务/语句有超时。
-注销账号时会擦除新摘要文本，关闭记忆后待删除向量也能由 Worker 清理。
+本轮已提交的新内容可直接用于当前任务，不必等待向量索引。更新或删除的旧版本从当前有效视图移除，历史工具回执不能把旧正文重新送入后续请求。
+
+## 上下文与权限
+
+- 官方 `MessagesModelHook.beforeModel` 在工具完整回执形成后替换下一次模型输入；保留工具调用与返回的配对。最终回答和引用验证也使用有效视图，不能重新装回 `prepared` 原集合。
+- 当前完整问题、系统规则和近期完整问答受保护。SUMMARY/FILTER 对原始聊天存储无删除作用。
+- 预算压缩仍按实际输入预算分批处理，默认约 70% 水位，只覆盖成功的旧完整问答，保留最近三个完整轮次。原文、角色、ID、时间与摘要的序列化开销均计入预算。必选内容仍超限时明确失败。
+- `agent_context_compaction` 的 PENDING 批次由后续持久请求恢复，启用摘要不再等待向量索引；旧批次已有记忆投影交给 Worker 恢复。
+- 关闭长期记忆后不能自动读写长期事实，短期上下文管理仍可使用。临时对话不访问持久历史或记忆。
+- 删除长期记忆不等于抹除授权聊天原文中的全部事实。FILTER 是本轮输入选择，显式历史检索可以再次取回原文。
+- 联网参数隔离、模型配额、运行租约、取消、SSE 回放与正文持久化沿用现有业务实现，见 [ReAct 执行说明](agent-react.md)。
+
+## 后台投影与恢复
+
+复用 `agent_memory_projection` 持久状态，无新增通用命令队列。Worker 默认每 5 秒扫描至多 32 条当前有效版本，一批最多 30 秒。按版本游标前进并回绕，失败用户不会永久阻塞后续用户；进程重启从持久状态重新扫描。
+
+Milvus 使用 `memory_version_id` 幂等主键，STRONG 确认后再做数据库 CAS。更新/删除通过 MySQL 当前版本校验立即阻止旧向量召回；迟到向量写入沿用墓碑重入队和删除确认机制。模型名称变更需要停旧写者并重投影，不能宣称跨模型滚动部署的跨库原子 fencing。
+
+完全相同的有效 ADD 可返回 ALREADY_EXISTS；已删除内容不会因重放 ADD 自动复活。内容哈希不等于语义冲突自动解决；turn 恢复会从原问题重新运行，不宣称跨崩溃的任意工具步骤 exactly-once。
 
 ## 升级已有数据库
 
-1. 停止旧 Agent/Worker 写者，备份数据库。不能让新旧记忆写入路径同时运行。
-2. 执行 `docs/database/migrations/2026-09-09-agent-context-compaction.sql`。Backend 的账号注销逻辑也用到新表，因此应先迁移再启动三个角色。
-3. 使用 `.env.example` 中的新配置：
+1. 停止旧 Agent/Worker 写者并备份数据库，避免新旧自动写入路径同时运行。
+2. 已有版本需具备 `2026-09-09-agent-context-compaction.sql` 的表，再执行 `docs/database/migrations/2026-11-08-agemem-memory-tools.sql`，来源唯一键改为版本维度。新安装使用更新后的 `script.sql`。
+3. 配置 `METRO_AI_MEMORY_ENABLED=true`、`METRO_AI_EMBEDDING_ENABLED=true`，部署 Agent 与 Worker。只启动 Agent 不会自动完成后台索引。
+4. Milvus 连接沿用 `metro.projection.article-chunk-milvus.*`；记忆使用独立 collection，默认 `metro_user_memories_v1`，1024 维。初次建表可受控开启 `METRO_AI_MEMORY_MILVUS_INITIALIZE_SCHEMA=true`，建好后关闭。
+5. 替换 collection 或同名模型权重时显式重建，不能继续信任原 PROJECTED 标记。历史重入队脚本见 `docs/database/operations/2026-09-09-requeue-memory-vectors.sql`。
+6. 用测试账号验证新增、更新、删除、跨会话召回、关闭记忆、临时模式和取消。模型必须支持原生 tools 与流式输出，实际成功率和成本需要按部署模型评估。
 
-   ```dotenv
-   METRO_AI_MEMORY_ENABLED=true
-   METRO_AI_EMBEDDING_ENABLED=true
-   METRO_AI_MEMORY_MILVUS_COLLECTION=metro_user_memories_v1
-   METRO_AI_MEMORY_MILVUS_INITIALIZE_SCHEMA=false
-   METRO_AI_MEMORY_MILVUS_PAGE_SIZE=32
-   ```
-
-   连接地址/凭据复用 `metro.projection.article-chunk-milvus.*`，不会展示到前端。
-   现有百炼 Embedding 配置可以继续使用，但必须输出 1024 维；不同维度不能写入此 collection。
-4. 首次没有 collection 时，可在具有相应 Milvus 建表权限的受控环境临时设置 `METRO_AI_MEMORY_MILVUS_INITIALIZE_SCHEMA=true`。首次索引操作会创建并校验 schema，随后改回 false。运行账号还需拥有此记忆 collection 的查询、写入、删除权限，不是只拥有文章 collection 权限。
-5. 若曾将记忆投影到另一 collection，切换前执行 `docs/database/operations/2026-09-09-requeue-memory-vectors.sql`，重新入队，而不是沿用旧 collection 的 PROJECTED 标记。旧 collection 的留存/清理需要另行处理，不能把切换视为自动删除旧数据。
-6. 启动 Backend、Agent、Worker，先用测试账号验证主对话、压缩、同义改写召回、删除与临时会话隔离。不要用真实密钥/敏感身份作为测试记忆。
-
-同名、同维但不同模型的向量不能混用。模型名变化会触发重投影；切换模型须先停旧写者，不能在异模型滚动部署时声称拥有跨库原子 fencing。升级模型权重但保持模型名不变时也应切 collection 并重建。
-
-旧 `METRO_AI_MEMORY_SEMANTIC_ENABLED`、`METRO_AI_MEMORY_SUMMARY_ENABLED`、`METRO_AI_MEMORY_SUMMARY_TURN_THRESHOLD` 已不再控制新流程；可从个人 `.env` 移除。项目不会读取或改写 API Key 明文来完成此次迁移。
-
-## 验证边界
-
-单元测试覆盖真实 Graph 节点顺序、预算与近期保留、压缩批次恢复、来源校验、向量可见性协议、失败不降级、版本/用户隔离、记忆管理锁序和临时模式。
-Mock SDK/数据库测试不等同于真实 MySQL/Milvus 联调。实际服务验证需要本地 Docker 及配置的模型服务可用。
-
-2026-09-09 与 ReAct 合并验证：Java 21 下执行 `./mvnw -q clean -Dtest='*Test,!*IntegrationTest,!*IT,!RecommendationMetricsTaskTest' test package`，68 个测试类、370 项测试通过，三个角色 Jar 构建成功。集成测试及依赖外部环境的 RecommendationMetricsTaskTest 未运行；本机 Docker daemon 当时不可用，未执行数据库迁移或真实模型联调。
+构建使用本机 SDKMAN Java 21 与 Maven。验证记录见 [本次验收记录](agemem-verification-2026-11-08.md)。

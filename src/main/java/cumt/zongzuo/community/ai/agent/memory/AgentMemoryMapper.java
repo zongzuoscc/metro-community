@@ -16,6 +16,97 @@ import java.util.List;
 @Mapper
 public interface AgentMemoryMapper {
 
+    /** 自动记忆写入遵循账号 → 运行权 → 会话 → 设置 → turn/item 的锁序。 */
+    @Select("SELECT id FROM sys_user WHERE id=#{userId} AND account_state='ACTIVE' FOR UPDATE")
+    Long lockActiveAccountForMemoryTools(long userId);
+
+    @Select("""
+            SELECT run_fence FROM agent_run_guard WHERE user_id=#{userId}
+              AND active_run_id=#{runId,typeHandler=cumt.zongzuo.community.event.persistence.UuidBinaryTypeHandler}
+              AND active_run_type='PERSISTENT' AND lease_until>CURRENT_TIMESTAMP(6) FOR UPDATE
+            """)
+    @Options(flushCache = Options.FlushCachePolicy.TRUE, useCache = false)
+    Long lockPersistentRunFence(@Param("userId") long userId, @Param("runId") java.util.UUID runId);
+
+    @Select("SELECT enabled FROM agent_memory_setting WHERE user_id=#{userId} FOR UPDATE")
+    Boolean lockMemoryEnabled(long userId);
+
+    @Select("SELECT memory_epoch FROM agent_conversation WHERE user_id=#{userId} FOR UPDATE")
+    @Options(flushCache = Options.FlushCachePolicy.TRUE, useCache = false)
+    Long lockMemoryEpoch(long userId);
+
+    @Select("""
+            SELECT id FROM agent_turn WHERE user_id=#{userId}
+              AND run_id=#{runId,typeHandler=cumt.zongzuo.community.event.persistence.UuidBinaryTypeHandler}
+              AND run_fence=#{runFence} AND state='RUNNING' AND lease_until>CURRENT_TIMESTAMP(6)
+            FOR UPDATE
+            """)
+    Long lockPersistentTurnId(@Param("userId") long userId, @Param("runId") java.util.UUID runId,
+                              @Param("runFence") long runFence);
+
+    @Select("""
+            SELECT m.id,m.category,v.content,v.version_no AS version,m.state,m.expires_at,
+              CASE WHEN EXISTS(SELECT 1 FROM agent_memory_source s
+                WHERE s.memory_id=m.id AND s.user_id=m.user_id) THEN 'CONVERSATION' ELSE 'MANUAL' END AS source_type
+            FROM agent_memory_item m JOIN agent_memory_version v
+              ON v.id=m.current_version_id AND v.user_id=m.user_id
+            WHERE m.id=#{memoryId} AND m.user_id=#{userId}
+            """)
+    AgentMemoryView findMutationTarget(@Param("memoryId") long memoryId, @Param("userId") long userId);
+
+    @Select("""
+            SELECT m.id,m.category,v.content,v.version_no AS version,m.state,m.expires_at,
+              CASE WHEN EXISTS(SELECT 1 FROM agent_memory_source s
+                WHERE s.memory_id=m.id AND s.user_id=m.user_id) THEN 'CONVERSATION' ELSE 'MANUAL' END AS source_type
+            FROM agent_memory_item m JOIN agent_memory_version v
+              ON v.id=m.current_version_id AND v.user_id=m.user_id
+            WHERE m.user_id=#{userId} AND v.content_hash=#{contentHash} AND m.state='ACTIVE'
+              AND v.state='ACTIVE' AND m.sensitivity='LOW'
+              AND (m.expires_at IS NULL OR m.expires_at>CURRENT_TIMESTAMP(6))
+            """)
+    AgentMemoryView findCurrentByHash(@Param("userId") long userId, @Param("contentHash") String contentHash);
+
+    @Select("SELECT current_version_id FROM agent_memory_item WHERE id=#{memoryId} AND user_id=#{userId}")
+    Long currentVersionId(@Param("memoryId") long memoryId, @Param("userId") long userId);
+
+    @Select("""
+            SELECT p.state FROM agent_memory_projection p JOIN agent_memory_item m
+              ON m.current_version_id=p.memory_version_id AND m.user_id=p.user_id
+            WHERE m.id=#{memoryId} AND m.user_id=#{userId}
+            """)
+    String projectionState(@Param("memoryId") long memoryId, @Param("userId") long userId);
+
+    /** 后台投影全局游标；关闭、过期、暂停和退役版本不会产生新的 embedding 请求。 */
+    @Select("""
+            SELECT p.memory_version_id,p.user_id,v.memory_id,m.category,m.sensitivity,v.content,
+              v.content_hash,m.expires_at,p.state,p.lock_version
+            FROM agent_memory_projection p
+            JOIN agent_memory_version v ON v.id=p.memory_version_id AND v.user_id=p.user_id
+            JOIN agent_memory_item m ON m.id=v.memory_id AND m.user_id=v.user_id
+            JOIN agent_memory_setting s ON s.user_id=p.user_id AND s.enabled=1
+            WHERE p.memory_version_id>#{afterVersionId}
+              AND (p.state IN ('PENDING','FAILED') OR (p.state='PROJECTED'
+                AND (p.embedding_model IS NULL OR BINARY p.embedding_model<>BINARY #{model})))
+              AND m.current_version_id=v.id AND v.state='ACTIVE' AND m.state='ACTIVE'
+              AND m.sensitivity='LOW' AND (m.expires_at IS NULL OR m.expires_at>CURRENT_TIMESTAMP(6))
+            ORDER BY p.memory_version_id LIMIT #{limit}
+            """)
+    List<cumt.zongzuo.community.ai.agent.memory.index.MemoryProjectionRow> listPendingVectorProjections(
+            @Param("model") String model, @Param("afterVersionId") long afterVersionId, @Param("limit") int limit);
+
+    @Select("""
+            SELECT COUNT(*) FROM agent_memory_projection p
+            JOIN agent_memory_version v ON v.id=p.memory_version_id AND v.user_id=p.user_id
+            JOIN agent_memory_item m ON m.id=v.memory_id AND m.user_id=v.user_id
+            JOIN agent_memory_setting s ON s.user_id=p.user_id AND s.enabled=1
+            WHERE p.user_id=#{userId}
+              AND (p.state IN ('PENDING','FAILED') OR (p.state='PROJECTED'
+                AND (p.embedding_model IS NULL OR BINARY p.embedding_model<>BINARY #{model})))
+              AND m.current_version_id=v.id AND v.state='ACTIVE' AND m.state='ACTIVE'
+              AND m.sensitivity='LOW' AND (m.expires_at IS NULL OR m.expires_at>CURRENT_TIMESTAMP(6))
+            """)
+    long countPendingVectorProjections(@Param("userId") long userId, @Param("model") String model);
+
     @Insert("""
             INSERT INTO agent_memory_setting(user_id,enabled,sensitive_projection_enabled,
               created_at,updated_at,lock_version)

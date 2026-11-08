@@ -80,6 +80,30 @@ final class ReActEvidence {
         }
     }
 
+    /** 本轮已提交的版本优先于最早的一条检索补充资料，仍维持有界集合。 */
+    void putCommittedMemory(AgentMemoryView value) {
+        if (!memories.containsKey(value.id()) && memories.size() >= MAX_ITEMS)
+            memories.remove(memories.keySet().iterator().next());
+        memories.put(value.id(), value);
+    }
+
+    boolean removeLowestPriority() {
+        if (!articles.isEmpty()) { articles.remove(new ArrayList<>(articles.keySet()).getLast()); return true; }
+        if (!history.isEmpty()) { history.remove(new ArrayList<>(history.keySet()).getLast()); return true; }
+        if (!memories.isEmpty()) { memories.remove(new ArrayList<>(memories.keySet()).getLast()); return true; }
+        if (!web.isEmpty() || !webSummaries.isEmpty()) { web.clear(); webSummaries.clear(); return true; }
+        return false;
+    }
+
+    void removeMemory(long id) { memories.remove(id); }
+
+    void filter(Set<String> ids) {
+        articles.keySet().removeAll(ids);
+        memories.values().removeIf(m -> ids.contains("M" + m.id() + ":V" + m.version()));
+        history.keySet().removeIf(id -> ids.contains("H" + id));
+        if (ids.contains("WEB")) { web.clear(); webSummaries.clear(); }
+    }
+
     ArticleRetrievalResult articles() {
         return new ArticleRetrievalResult(articles.size(),0,lexicalAvailable,denseAvailable,
                 List.copyOf(articles.values()),List.of());

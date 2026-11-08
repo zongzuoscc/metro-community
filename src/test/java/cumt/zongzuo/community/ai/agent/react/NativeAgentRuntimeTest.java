@@ -33,6 +33,46 @@ class NativeAgentRuntimeTest {
     private final AtomicInteger calls = new AtomicInteger();
 
     @Test
+    void nextModelRequestUsesTheEffectiveContextWithoutRevivingOldToolBodies() {
+        var context = new ArrayList<AiPromptMessage>();
+        context.add(new AiPromptMessage(AiPromptRole.USER, "obsolete-history-fragment"));
+        var route = route(prompt -> calls.get() == 1
+                ? tool("COMMUNITY_ARTICLES", "{\"query\":\"q\"}")
+                : response(new AssistantMessage("done"), "stop", "model"));
+        runtime(6).run(9, "effective", "protected-current-question", context, List.of(),
+                Set.of(AgentReadOnlyTool.COMMUNITY_ARTICLES), route, deadline, () -> false,
+                call -> {
+                    context.clear();
+                    context.add(new AiPromptMessage(AiPromptRole.USER, "replacement-summary"));
+                    return new AgentToolObservation(call, "OK", "obsolete-tool-body");
+                });
+        assertThat(prompts).hasSize(2);
+        assertThat(prompts.get(0).getContents()).contains("obsolete-history-fragment");
+        assertThat(prompts.get(1).getContents())
+                .contains("protected-current-question", "replacement-summary")
+                .doesNotContain("obsolete-history-fragment", "obsolete-tool-body");
+        assertThat(prompts.get(1).getInstructions()).anyMatch(m -> m instanceof ToolResponseMessage);
+    }
+
+    @ParameterizedTest
+    @CsvSource(delimiter = '|', value = {
+        "ADD|{\"category\":\"PREFERENCE\",\"content\":\"fact\",\"sourceQuote\":\"source\",\"userId\":9}",
+        "UPDATE|{\"memoryId\":1,\"expectedVersion\":0,\"content\":\"fact\",\"sourceQuote\":\"source\"}",
+        "DELETE|{\"memoryId\":1,\"expectedVersion\":1,\"sourceQuote\":\"source\",\"runId\":\"fake\"}",
+        "FILTER|{\"fragmentIds\":[1]}",
+        "SUMMARY|{\"fragmentIds\":[]}",
+        "RETRIEVE|{\"query\":\"q\",\"userId\":9}"
+    })
+    void ageMemSchemasRejectIdentityInjectionAndInvalidSelections(String name, String json) {
+        var route = route(prompt -> tool(name, json));
+        assertThatThrownBy(() -> runtime(6).run(9, "strict", "question", List.of(), List.of(),
+                Set.of(AgentReadOnlyTool.valueOf(name)), route, deadline, () -> false,
+                call -> { executed.add(call); return new AgentToolObservation(call, "OK", ""); }))
+                .isInstanceOf(ReActDecisionException.class);
+        assertThat(executed).isEmpty();
+    }
+
+    @Test
     void oversizedModelContentStillRespectsTheDecisionResponseBoundary() {
         var route =
                 route(

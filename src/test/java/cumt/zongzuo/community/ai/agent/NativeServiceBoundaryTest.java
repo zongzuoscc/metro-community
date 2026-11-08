@@ -29,6 +29,124 @@ import java.util.function.BiFunction;
 /** 用真实 ReactAgent 执行业务工具，防止权限、用户上下文或取消边界被框架改造弱化。 */
 class NativeServiceBoundaryTest {
     @Test
+    void filterRemovesAnOldTemporaryTurnFromBothSubsequentAndFinalModelInputs() {
+        var fixture = new Fixture();
+        fixture.model = (user, prompt) -> {
+            if (fixture.modelCalls.get() == 1) return structuredTool("FILTER",
+                    "{\"fragmentIds\":[\"T0\",\"T1\"]}");
+            assertThat(prompt.getContents()).contains("recent-question", "current-question")
+                    .doesNotContain("outdated-private-preference", "old-answer");
+            return done();
+        };
+        fixture.service(8).answerTemporary(9, "filter", "current-question",
+                List.of("USER\t outdated-private-preference", "ASSISTANT\t old-answer",
+                        "USER\t recent-question", "ASSISTANT\t recent-answer"), fixture.deadline);
+        assertThat(fixture.answerPrompts.getFirst()).contains("recent-question", "current-question")
+                .doesNotContain("outdated-private-preference", "old-answer");
+    }
+
+    @Test
+    void summaryReplacesHistoryInBothRequestsAndPreservesTheLatestCompleteTurn() {
+        var fixture = new Fixture();
+        fixture.model = (user, prompt) -> {
+            if (fixture.modelCalls.get() == 1) return structuredTool("SUMMARY",
+                    "{\"fragmentIds\":[\"T0\",\"T1\"]}");
+            assertThat(prompt.getContents()).contains("server-generated-short-summary", "recent-question")
+                    .doesNotContain("old-detailed-question", "old-detailed-answer");
+            return done();
+        };
+        fixture.service(8).answerTemporary(9, "summary", "current-question",
+                List.of("USER\t old-detailed-question", "ASSISTANT\t old-detailed-answer",
+                        "USER\t recent-question", "ASSISTANT\t recent-answer"), fixture.deadline);
+        assertThat(fixture.answerPrompts.getFirst())
+                .contains("server-generated-short-summary", "recent-question", "recent-answer")
+                .doesNotContain("old-detailed-question", "old-detailed-answer");
+    }
+
+    @Test
+    void filterCannotRemoveTheProtectedLatestCompleteTurn() {
+        var fixture = new Fixture();
+        fixture.model = (user, prompt) -> fixture.modelCalls.get() == 1
+                ? structuredTool("FILTER", "{\"fragmentIds\":[\"T0\",\"T1\"]}") : done();
+        fixture.service(8).answerTemporary(9, "protected", "current-question",
+                List.of("USER\t recent-question", "ASSISTANT\t recent-answer"), fixture.deadline);
+        assertThat(fixture.answerPrompts.getFirst()).contains("recent-question", "recent-answer", "FILTER=REJECTED");
+    }
+
+    @Test
+    void filterCannotSplitAnOldQuestionAndAnswerPair() {
+        var fixture = new Fixture();
+        fixture.model = (user, prompt) -> fixture.modelCalls.get() == 1
+                ? structuredTool("FILTER", "{\"fragmentIds\":[\"T0\"]}") : done();
+        fixture.service(8).answerTemporary(9, "complete", "current-question",
+                List.of("USER\t old-question", "ASSISTANT\t old-answer",
+                        "USER\t recent-question", "ASSISTANT\t recent-answer"), fixture.deadline);
+        assertThat(fixture.answerPrompts.getFirst()).contains("old-question", "old-answer", "FILTER=REJECTED");
+    }
+
+    @Test
+    void oversizedRetrievedHistoryIsRemovedFromTheSharedViewBeforeTheNextRequest() {
+        var fixture = new Fixture();
+        when(fixture.history.search(anyLong(), anyString(), anyInt())).thenReturn(List.of(
+                new cumt.zongzuo.community.ai.agent.history.AgentConversationHistoryHit(
+                        100, 10, 9, "USER", "oversized-optional-history".repeat(20_000), LocalDateTime.now())));
+        fixture.model = (user, prompt) -> {
+            if (fixture.modelCalls.get() == 1) return tool("CONVERSATION_HISTORY", "old detail");
+            assertThat(prompt.getContents()).contains("current-question").doesNotContain("oversized-optional-history");
+            return done();
+        };
+        var answer = fixture.service(8).answer(9, "bounded", "current-question", fixture.deadline);
+        assertThat(answer.historyUses()).isEmpty();
+        assertThat(fixture.answerPrompts.getFirst()).doesNotContain("oversized-optional-history");
+    }
+
+    @Test
+    void filteredPublicEvidenceDoesNotReturnThroughTheSecondaryWebQueryModel() {
+        var fixture = new Fixture();
+        var source = new ResolvedArticleChunk(31, 301, 3001, 0, "Public article", List.of(),
+                "obsolete-public-fragment", "a".repeat(64), "b".repeat(64));
+        doReturn(new ArticleRetrievalResult(1, 0, true, true, List.of(source), List.of())).when(fixture.retrieval).retrieve(any());
+        fixture.model = (user, prompt) -> switch (fixture.modelCalls.get()) {
+            case 1 -> structuredTool("FILTER", "{\"fragmentIds\":[\"A301:R3001:C31\"]}");
+            case 2 -> tool("WEB_SEARCH", "public refined");
+            default -> done();
+        };
+        fixture.service(8).answer(9, "filtered-public", "public question", true, fixture.deadline);
+        assertThat(fixture.publicPrompts).hasSize(1);
+        assertThat(fixture.publicPrompts.getFirst()).doesNotContain("obsolete-public-fragment");
+    }
+
+    @Test
+    void previewTrimsWholeOldTurnsAndCannotReloadThemDuringFinalAssembly() {
+        var fixture = new Fixture();
+        var rows = new ArrayList<cumt.zongzuo.community.ai.agent.history.AgentConversationHistoryHit>();
+        for (int turn = 1; turn <= 24; turn++) {
+            String question = turn <= 21 ? ("oldest-turn-" + turn + " ").repeat(100) : "newest-user-" + turn;
+            String answer = turn <= 21 ? ("old-answer-" + turn + " ").repeat(100) : "newest-answer-" + turn;
+            rows.add(new cumt.zongzuo.community.ai.agent.history.AgentConversationHistoryHit(turn * 2L,
+                    turn, 9, "USER", question, LocalDateTime.now()));
+            rows.add(new cumt.zongzuo.community.ai.agent.history.AgentConversationHistoryHit(turn * 2L + 1,
+                    turn, 9, "ASSISTANT", answer, LocalDateTime.now()));
+        }
+        when(fixture.history.conversationPage(eq(9L), eq(Long.MAX_VALUE), anyInt())).thenReturn(
+                new cumt.zongzuo.community.ai.agent.history.AgentConversationPage(rows, 1, false));
+        fixture.model = (user, prompt) -> {
+            assertThat(prompt.getContents()).contains("newest-user-22", "newest-answer-22", "newest-user-24", "newest-answer-24")
+                    .doesNotContain("oldest-turn-1 ");
+            return done();
+        };
+        fixture.service(8).answer(9, "preview", "current-question", fixture.deadline);
+        assertThat(fixture.answerPrompts.getFirst()).contains("newest-user-22", "newest-answer-24", "\"contextReduced\":true")
+                .doesNotContain("oldest-turn-1 ");
+        verify(fixture.history, times(1)).conversationPage(anyLong(), anyLong(), anyInt());
+    }
+
+    private static ChatResponse structuredTool(String name, String json) {
+        return NativeReActToolTest.response(AssistantMessage.builder().content("")
+                .toolCalls(List.of(new AssistantMessage.ToolCall(name, "function", name, json))).build(), "tool_calls");
+    }
+
+    @Test
     void duplicateQueriesDoNotRepeatDownstreamAndNoProgressStopsTheAgent() {
         var fixture = new Fixture();
         fixture.model = (user, prompt) -> tool("COMMUNITY_ARTICLES", "question");
@@ -230,6 +348,7 @@ class NativeServiceBoundaryTest {
         final List<String> queries = new CopyOnWriteArrayList<>();
         final List<String> webQueries = new CopyOnWriteArrayList<>();
         final List<String> publicPrompts = new CopyOnWriteArrayList<>();
+        final List<String> answerPrompts = new CopyOnWriteArrayList<>();
         final AtomicInteger modelCalls = new AtomicInteger();
         final AtomicInteger answerCalls = new AtomicInteger();
         BiFunction<Long, Prompt, ChatResponse> model = (user, prompt) -> done();
@@ -263,6 +382,9 @@ class NativeServiceBoundaryTest {
                                 publicPrompts.add(command.messages().toString());
                                 return result("{\"query\":\"public refined\"}");
                             }
+                            if (command.messages().getFirst().text().startsWith("Summarize selected"))
+                                return result("server-generated-short-summary");
+                            answerPrompts.add(command.messages().toString());
                             answerCalls.incrementAndGet();
                             return result("{\"answer\":\"回答完成\",\"citations\":[]}");
                         }

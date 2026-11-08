@@ -156,6 +156,44 @@ class AgentMemoryVectorServiceTest {
     }
 
     @Test
+    void recallDoesNotBuildPendingIndexAndOnlyEmbedsTheCurrentQuery() {
+        setup(List.of(row(1, "PENDING")));
+        AgentMemoryView current = new AgentMemoryView(20, "PREFERENCE", "喜欢简短回答", 2, "ACTIVE", null, "MANUAL");
+        when(vectors.search(eq(7L), eq("bge-m3"), any(), eq(12), eq(deadline)))
+                .thenReturn(List.of(91L));
+        when(mapper.findVectorRecall(91, 7, "bge-m3")).thenReturn(current);
+
+        assertThat(service().recall(7, "请言简意赅", 3, deadline)).containsExactly(current);
+
+        assertThat(embedded).containsExactly(List.of("请言简意赅"));
+        verify(mapper, never()).listVectorWork(anyLong(), anyString(), anyLong(), anyInt());
+        verify(vectors, never()).upsertAndVerify(anyList(), any());
+    }
+
+    @Test
+    void indexStatusReportsPendingWithoutInvokingEmbeddingAndHonorsMemorySetting() {
+        when(mapper.enabled(7)).thenReturn(true);
+        when(mapper.countPendingVectorProjections(7, "bge-m3")).thenReturn(2L, 0L);
+        assertThat(service().indexStatus(7)).isEqualTo(AgentMemoryVectorService.IndexStatus.PENDING);
+        assertThat(service().indexStatus(7)).isEqualTo(AgentMemoryVectorService.IndexStatus.CURRENT);
+        when(mapper.enabled(7)).thenReturn(false);
+        assertThat(service().indexStatus(7)).isEqualTo(AgentMemoryVectorService.IndexStatus.DISABLED);
+        assertThat(embedded).isEmpty();
+        verifyNoInteractions(vectors);
+    }
+
+    @Test
+    void backgroundProjectionRejectsMixedOwnersBeforeEmbedding() {
+        when(mapper.enabled(7)).thenReturn(true);
+        MemoryProjectionRow otherOwner = new MemoryProjectionRow(2, 8, 2, "PREFERENCE", "LOW", "偏好", "hash",
+                null, "PENDING", 0);
+        assertThatThrownBy(() -> service().projectBatch(7, List.of(row(1, "PENDING"), otherOwner), deadline))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("owner");
+        assertThat(embedded).isEmpty();
+        verifyNoInteractions(vectors);
+    }
+
+    @Test
     void disabledMemoryPerformsNoEmbeddingOrVectorSearch() {
         when(mapper.enabled(7)).thenReturn(false);
         assertThat(service().recall(7, "问题", 3, deadline)).isEmpty();

@@ -10,13 +10,12 @@ import java.util.*;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
-/** 使用真实 Alibaba Graph 执行器，验证模型、数据库、向量与上下文启用的顺序。 */
+/** 使用真实 Alibaba Graph 执行器，验证模型、数据库与上下文启用的顺序。 */
 class AgentCompactionGraphTest {
     final Instant now = Instant.parse("2026-09-09T00:00:00Z");
     final UUID run = UUID.randomUUID();
     final AgentCompactionStore store = mock(AgentCompactionStore.class);
     final AgentCompactionModel model = mock(AgentCompactionModel.class);
-    final AgentCompactionGraph.MemoryIndex index = mock(AgentCompactionGraph.MemoryIndex.class);
     final PreparedUserAiChat route = new PreparedUserAiChat("test", UserAiFundingSource.PLATFORM,
             command -> { throw new AssertionError("This fixture must not call a real model"); });
     final AgentCompactionStore.Snapshot initial = new AgentCompactionStore.Snapshot(1, 1, 0, true, 0, 0, "");
@@ -24,7 +23,7 @@ class AgentCompactionGraphTest {
     AgentCompactionGraph graph() {
         AgentContextProperties p = new AgentContextProperties();
         p.setPlatformWindowTokens(8192);
-        return new AgentCompactionGraph(store, model, index, new AgentPromptBudget(p),
+        return new AgentCompactionGraph(store, model, new AgentPromptBudget(p),
                 new AgentMemorySafetyPolicy(), Clock.fixed(now, ZoneOffset.UTC), 400_000);
     }
 
@@ -46,7 +45,7 @@ class AgentCompactionGraphTest {
         var result = graph().prepare(1,run,"继续",route,now.plusSeconds(90));
         assertThat(result.recent().messages()).containsExactlyElementsOf(rows);
         assertThat(result.summaries()).isEmpty();
-        verifyNoInteractions(model,index);
+        verifyNoInteractions(model);
     }
 
     @Test void compactsBeforeAnswerAndKeepsLastThreeCompleteTurns() {
@@ -63,25 +62,13 @@ class AgentCompactionGraphTest {
         when(store.stage(eq(1L),eq(run),eq(initial),eq(1L),any(),eq(old.subList(0,2))))
                 .thenReturn(staged);
         var result = graph().prepare(1,run,"第三个详细说",route,now.plusSeconds(90));
-        var order = inOrder(model,store,index);
+        var order = inOrder(model,store);
         order.verify(model).extract(any());
         order.verify(store).stage(eq(1L),eq(run),eq(initial),eq(1L),any(),eq(old.subList(0,2)));
-        order.verify(index).synchronize(1,now.plusSeconds(90));
         order.verify(store).activate(1,run,staged);
         var retained=new ArrayList<>(old.subList(2,4)); retained.addAll(recent);
         assertThat(result.recent().messages()).containsExactlyElementsOf(retained);
         assertThat(result.summaries()).singleElement().extracting(s->s.summary()).isEqualTo("旧轮次摘要");
-    }
-
-    @Test void indexFailureMustNotActivateSummaryOrPretendSuccess() {
-        var pending = new AgentCompactionStore.Batch(10,1,2,"尚不可见的摘要",true);
-        when(store.snapshot(1)).thenReturn(initial);
-        when(store.pending(1,1,0)).thenReturn(pending);
-        doThrow(new IllegalStateException("index unavailable")).when(index).synchronize(anyLong(),any());
-        assertThatThrownBy(()->graph().prepare(1,run,"继续",route,now.plusSeconds(90)))
-                .isInstanceOf(RuntimeException.class);
-        verify(store,never()).activate(anyLong(),any(),any());
-        verifyNoInteractions(model);
     }
 
     @Test void pendingBatchIsResumedWithoutGeneratingMemoriesAgain() {
@@ -92,7 +79,6 @@ class AgentCompactionGraphTest {
         when(store.recent(1,1,3)).thenReturn(turns(8,3,false));
         when(store.messages(1,1,2,8,24)).thenReturn(List.of());
         graph().prepare(1,run,"继续",route,now.plusSeconds(90));
-        verify(index).synchronize(1,now.plusSeconds(90));
         verify(store).activate(1,run,pending);
         verifyNoInteractions(model);
     }
@@ -106,8 +92,6 @@ class AgentCompactionGraphTest {
         var recent = turns(8,3,false);
         when(store.recent(1,1,3)).thenReturn(recent);
         when(store.messages(1,1,2,8,24)).thenReturn(List.of());
-        doThrow(new IllegalStateException("Persistent memory vector service is unavailable"))
-                .when(index).synchronize(anyLong(),any());
 
         var result = graph().prepare(1,run,"继续",route,now.plusSeconds(90));
 
@@ -115,7 +99,7 @@ class AgentCompactionGraphTest {
                 .isEqualTo("关闭记忆前已保存的摘要");
         assertThat(result.recent().messages()).containsExactlyElementsOf(recent);
         verify(store).activate(1,run,pending);
-        verifyNoInteractions(index,model);
+        verifyNoInteractions(model);
         verify(store,never()).stage(anyLong(),any(),any(),anyLong(),any(),any());
     }
 
@@ -150,12 +134,64 @@ class AgentCompactionGraphTest {
         var actualModel=new GatewayAgentCompactionModel(executor,
                 new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules(),promptBudget,
                 new AgentMemorySafetyPolicy(),Clock.fixed(now,ZoneOffset.UTC),20_000);
-        var graph=new AgentCompactionGraph(store,actualModel,index,promptBudget,new AgentMemorySafetyPolicy(),
+        var graph=new AgentCompactionGraph(store,actualModel,promptBudget,new AgentMemorySafetyPolicy(),
                 Clock.fixed(now,ZoneOffset.UTC),20_000);
         var prepared=graph.prepare(1,run,"继续",routed,now.plusSeconds(90));
         assertThat(calls.get()).isPositive();
         assertThat(prepared.recent().messages()).containsAll(all.subList(194,200));
         assertThat(prepared.recent().messages()).allMatch(m->m.turnId()>covered.get());
-        verifyNoInteractions(index);
+    }
+    @Test void newCompactionOnlySummarizesAndNeverWaitsForVectorProjection() {
+        when(model.fits(any())).thenReturn(true);
+        var recent = turns(8,3,false);
+        var old = turns(1,2,true);
+        var staged = new AgentCompactionStore.Batch(10,1,1,"摘要",true);
+        when(store.snapshot(1)).thenReturn(initial,
+                new AgentCompactionStore.Snapshot(1,1,1,true,0,1,"摘要"));
+        when(store.recent(1,1,3)).thenReturn(recent);
+        when(store.messages(1,1,0,8,24)).thenReturn(old);
+        when(store.messages(1,1,1,8,24)).thenReturn(old.subList(2,4));
+        when(model.extract(any())).thenAnswer(call -> {
+            AgentCompactionModel.Request request = call.getArgument(0);
+            assertThat(request.extractMemories()).isFalse();
+            return new AgentCompactionModel.Extraction("摘要",List.of());
+        });
+        when(store.stage(eq(1L),eq(run),eq(initial),eq(1L),any(),eq(old.subList(0,2))))
+                .thenReturn(staged);
+        var result = graph().prepare(1,run,"继续",route,now.plusSeconds(90));
+        assertThat(result.summaries()).singleElement().extracting(s->s.summary()).isEqualTo("摘要");
+        verify(store).activate(1,run,staged);
+    }
+
+    @Test void oldPendingBatchRecoversSummaryWithoutBlockingOnIndex() {
+        var pending = new AgentCompactionStore.Batch(10,1,2,"可恢复摘要",true);
+        when(store.snapshot(1)).thenReturn(initial,
+                new AgentCompactionStore.Snapshot(1,1,1,true,0,2,"可恢复摘要"));
+        when(store.pending(1,1,0)).thenReturn(pending);
+        when(store.recent(1,1,3)).thenReturn(turns(8,3,false));
+        when(store.messages(1,1,2,8,24)).thenReturn(List.of());
+        var result = graph().prepare(1,run,"继续",route,now.plusSeconds(90));
+        assertThat(result.summaries()).singleElement().extracting(s->s.summary()).isEqualTo("可恢复摘要");
+        verify(store).activate(1,run,pending);
+        verifyNoInteractions(model);
+    }
+    @Test void runtimeEnvelopeCanRequireCompactionBeforeTheLegacyBodyThreshold() {
+        var recent = turns(8,3,false);
+        var old = turns(1,1,false);
+        var staged = new AgentCompactionStore.Batch(10,1,1,"较早任务摘要",true);
+        when(model.fits(any())).thenReturn(true);
+        when(store.snapshot(1)).thenReturn(initial,
+                new AgentCompactionStore.Snapshot(1,1,1,true,0,1,"较早任务摘要"));
+        when(store.recent(1,1,3)).thenReturn(recent);
+        when(store.messages(1,1,0,8,24)).thenReturn(old);
+        when(store.messages(1,1,1,8,24)).thenReturn(List.of());
+        when(model.extract(any())).thenReturn(new AgentCompactionModel.Extraction("较早任务摘要",List.of()));
+        when(store.stage(eq(1L),eq(run),eq(initial),eq(1L),any(),eq(old))).thenReturn(staged);
+        // 模拟工具schema和JSON元信息挤占剩余预算，原文长度本身远低于70%水位。
+        var result = graph().prepare(1,run,"继续",route,now.plusSeconds(90),
+                prepared -> prepared.recent().messages().size() <= 6);
+        assertThat(result.recent().messages()).containsExactlyElementsOf(recent);
+        assertThat(result.summaries()).singleElement().extracting(v->v.summary()).isEqualTo("较早任务摘要");
+        verify(store).activate(1,run,staged);
     }
 }
